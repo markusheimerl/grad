@@ -3,8 +3,6 @@
 #include <math.h>
 #include <time.h>
 
-#define HIDDEN_SIZE 8
-
 typedef struct Value {
     double data, grad;     
     struct Value** prev;  
@@ -14,13 +12,13 @@ typedef struct Value {
 } Value;
 
 typedef struct Net {
-    Value* w1[HIDDEN_SIZE][2];
-    Value* b1[HIDDEN_SIZE];
-    Value* w2[HIDDEN_SIZE];
+    Value* w1[8][2];
+    Value* b1[8];
+    Value* w2[8];
     Value* b2;
     Value* x1;
     Value* x2;
-    Value* h[HIDDEN_SIZE];
+    Value* h[8];
     Value* out;
 } Net;
 
@@ -103,7 +101,7 @@ Net* create_network() {
     n->x1 = new_value(0.0);
     n->x2 = new_value(0.0);
     
-    for (int i = 0; i < HIDDEN_SIZE; i++) {
+    for (int i = 0; i < 8; i++) {
         n->w1[i][0] = new_value(((double)rand() / RAND_MAX) * 0.2 - 0.1);
         n->w1[i][1] = new_value(((double)rand() / RAND_MAX) * 0.2 - 0.1);
         n->b1[i] = new_value(0.0);
@@ -113,14 +111,14 @@ Net* create_network() {
     
     n->b2 = new_value(0.0);
     n->out = n->b2;
-    for (int i = 0; i < HIDDEN_SIZE; i++)
+    for (int i = 0; i < 8; i++)
         n->out = add(n->out, mul(n->w2[i], n->h[i]));
     n->out = tanh_val(n->out);
     return n;
 }
 
 void update_network(Net* n, double lr) {
-    for (int i = 0; i < HIDDEN_SIZE; i++) {
+    for (int i = 0; i < 8; i++) {
         n->w1[i][0]->data -= lr * n->w1[i][0]->grad;
         n->w1[i][1]->data -= lr * n->w1[i][1]->grad;
         n->b1[i]->data -= lr * n->b1[i]->grad;
@@ -211,8 +209,7 @@ int main() {
         n->x1->data = X[i][0];
         n->x2->data = X[i][1];
         forward_pass(n->out);
-        printf("Input: (%g, %g) -> Output: %g (Expected: %g)\n", 
-               X[i][0], X[i][1], n->out->data, Y[i]);
+        printf("Input: (%g, %g) -> Output: %g (Expected: %g)\n", X[i][0], X[i][1], n->out->data, Y[i]);
     }
 
     free_network(loss);
