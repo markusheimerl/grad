@@ -124,12 +124,12 @@ void update_network(Net* n, double lr) {
     n->b2->data -= lr * n->b2->grad;
 }
 
-void reset_network(Net* n) {
+void reset_network(Value* top) {
     Value** stack = malloc(1000 * sizeof(Value*));
     Value** visited = malloc(1000 * sizeof(Value*));
     int stack_size = 0, visited_size = 0;
     
-    stack[stack_size++] = n->out;
+    stack[stack_size++] = top;
     while (stack_size > 0) {
         Value* current = stack[--stack_size];
         int already_visited = 0;
@@ -152,14 +152,21 @@ int main() {
     Net* n = create_network();
     double X[][2] = {{0,0}, {0,1}, {1,0}, {1,1}};
     double Y[] = {0, 1, 1, 0};
+
+    Value* target1 = new_value(0.0);
+    Value* target2 = new_value(0.0);
+    Value* diff1 = add(n->out, target1);
+    Value* diff2 = add(n->out, target2);
+    Value* loss = mul(diff1, diff2);
     
     for (int epoch = 0; epoch < 10000; epoch++) {
         double total_loss = 0.0;
         for (int i = 0; i < 4; i++) {
-            reset_network(n);
+            reset_network(loss);
             n->x1->data = X[i][0];
             n->x2->data = X[i][1];
-            Value* loss = mul(add(n->out, new_value(-Y[i])), add(n->out, new_value(-Y[i])));
+            target1->data = -Y[i];
+            target2->data = -Y[i];
             forward_pass(loss);
             total_loss += loss->data;
             loss->grad = 1.0;
@@ -172,12 +179,10 @@ int main() {
     
     printf("\nTesting XOR:\n");
     for (int i = 0; i < 4; i++) {
-        reset_network(n);
         n->x1->data = X[i][0];
         n->x2->data = X[i][1];
         forward_pass(n->out);
-        printf("Input: (%g, %g) -> Output: %g (Expected: %g)\n", 
-               X[i][0], X[i][1], n->out->data, Y[i]);
+        printf("Input: (%g, %g) -> Output: %g (Expected: %g)\n", X[i][0], X[i][1], n->out->data, Y[i]);
     }
     return 0;
 }
