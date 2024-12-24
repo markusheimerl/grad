@@ -69,6 +69,22 @@ Value* tanh_val(Value* x) {
     return out;
 }
 
+Value* relu(Value* x) {
+    Value* out = new_value(0.0);
+    out->prev = malloc(sizeof(Value*));
+    out->prev[0] = x;
+    out->n_prev = 1;
+    out->forward = (double(*)(Value*))({
+        double f(Value* v) { return v->prev[0]->data > 0 ? v->prev[0]->data : 0; }; f;
+    });
+    out->backward = (void(*)(Value*))({
+        void f(Value* v) {
+            v->prev[0]->grad += (v->prev[0]->data > 0) ? v->grad : 0;
+        }; f;
+    });
+    return out;
+}
+
 void forward_pass(Value* v) {
     if (v->n_prev > 0) {
         for (int i = 0; i < v->n_prev; i++) forward_pass(v->prev[i]);
@@ -81,6 +97,10 @@ void backward_pass(Value* v) {
     for (int i = 0; i < v->n_prev; i++) backward_pass(v->prev[i]);
 }
 
+double xavier_init(int n_inputs) {
+    double limit = sqrt(2.0 / n_inputs);
+    return ((double)rand() / RAND_MAX) * 2 * limit - limit;
+}
 
 typedef struct Net {
     Value**** w;  // weights[layer][neuron][input]
@@ -101,18 +121,16 @@ Net* create_network(int n_inputs, int n_outputs, int n_hidden_layers, int hidden
     n->n_hidden_layers = n_hidden_layers;
     n->hidden_size = hidden_size;
     
-    // Allocate inputs
     n->x = malloc(n_inputs * sizeof(Value*));
     for(int i = 0; i < n_inputs; i++) {
         n->x[i] = new_value(0.0);
     }
     
-    // Allocate weights, biases and hidden layers
     n->w = malloc((n_hidden_layers + 1) * sizeof(Value***));
     n->b = malloc((n_hidden_layers + 1) * sizeof(Value**));
     n->h = malloc(n_hidden_layers * sizeof(Value**));
     
-    // First layer (input -> first hidden)
+    // First layer
     n->w[0] = malloc(hidden_size * sizeof(Value**));
     n->b[0] = malloc(hidden_size * sizeof(Value*));
     n->h[0] = malloc(hidden_size * sizeof(Value*));
@@ -120,7 +138,7 @@ Net* create_network(int n_inputs, int n_outputs, int n_hidden_layers, int hidden
     for(int i = 0; i < hidden_size; i++) {
         n->w[0][i] = malloc(n_inputs * sizeof(Value*));
         for(int j = 0; j < n_inputs; j++) {
-            n->w[0][i][j] = new_value(((double)rand() / RAND_MAX) * 0.2 - 0.1);
+            n->w[0][i][j] = new_value(xavier_init(n_inputs));
         }
         n->b[0][i] = new_value(0.0);
     }
@@ -134,7 +152,7 @@ Net* create_network(int n_inputs, int n_outputs, int n_hidden_layers, int hidden
         for(int i = 0; i < hidden_size; i++) {
             n->w[layer][i] = malloc(hidden_size * sizeof(Value*));
             for(int j = 0; j < hidden_size; j++) {
-                n->w[layer][i][j] = new_value(((double)rand() / RAND_MAX) * 0.2 - 0.1);
+                n->w[layer][i][j] = new_value(xavier_init(hidden_size));
             }
             n->b[layer][i] = new_value(0.0);
         }
@@ -148,7 +166,7 @@ Net* create_network(int n_inputs, int n_outputs, int n_hidden_layers, int hidden
     for(int i = 0; i < n_outputs; i++) {
         n->w[n_hidden_layers][i] = malloc(hidden_size * sizeof(Value*));
         for(int j = 0; j < hidden_size; j++) {
-            n->w[n_hidden_layers][i][j] = new_value(((double)rand() / RAND_MAX) * 0.2 - 0.1);
+            n->w[n_hidden_layers][i][j] = new_value(xavier_init(hidden_size));
         }
         n->b[n_hidden_layers][i] = new_value(0.0);
     }
@@ -160,7 +178,7 @@ Net* create_network(int n_inputs, int n_outputs, int n_hidden_layers, int hidden
         for(int j = 0; j < n_inputs; j++) {
             sum = add(sum, mul(n->w[0][i][j], n->x[j]));
         }
-        n->h[0][i] = tanh_val(sum);
+        n->h[0][i] = relu(sum);
     }
     
     // Hidden layers
@@ -170,7 +188,7 @@ Net* create_network(int n_inputs, int n_outputs, int n_hidden_layers, int hidden
             for(int j = 0; j < hidden_size; j++) {
                 sum = add(sum, mul(n->w[layer][i][j], n->h[layer-1][j]));
             }
-            n->h[layer][i] = tanh_val(sum);
+            n->h[layer][i] = relu(sum);
         }
     }
     
@@ -270,7 +288,7 @@ void free_network(Value* top) {
 
 int main() {
     srand(time(NULL));
-    Net* n = create_network(2, 1, 1, 8);
+    Net* n = create_network(2, 1, 1, 16);
     double X[][2] = {{0,0}, {0,1}, {1,0}, {1,1}};
     double Y[] = {0, 1, 1, 0};
 
@@ -288,7 +306,7 @@ int main() {
             total_loss += loss->data;
             loss->grad = 1.0;
             backward_pass(loss);
-            update_network(n, 0.05);
+            update_network(n, 0.01);
         }
         if (epoch % 1000 == 0)
             printf("Epoch %d: Avg Loss = %f\n", epoch, total_loss / 4);
