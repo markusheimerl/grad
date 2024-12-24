@@ -3,7 +3,6 @@
 #include <math.h>
 #include <time.h>
 #include <string.h>
-#include <stdint.h>
 
 typedef struct Value {
     double data;     
@@ -14,80 +13,34 @@ typedef struct Value {
     double (*forward)(struct Value*);
 } Value;
 
-// Getters - now just return the stored values
-double get_data(const Value* v) {
-    return v->data;
-}
-
-double get_grad(const Value* v) {
-    return v->grad;
-}
-
-struct Value** get_prev(const Value* v) {
-    return v->prev;
-}
-
-int get_n_prev(const Value* v) {
-    return v->n_prev;
-}
-
-// Setters remain the same
-void set_data(Value* v, double data) {
-    v->data = data;
-}
-
-void set_grad(Value* v, double grad) {
-    v->grad = grad;
-}
-
-void set_prev(Value* v, struct Value** prev) {
-    v->prev = prev;
-}
-
-void set_n_prev(Value* v, int n_prev) {
-    v->n_prev = n_prev;
-}
-
-void set_backward(Value* v, void (*backward)(struct Value*)) {
-    v->backward = backward;
-}
-
-void set_forward(Value* v, double (*forward)(struct Value*)) {
-    v->forward = forward;
-}
-
 Value* new_value(double data) {
     Value* v = malloc(sizeof(Value));
-    if (v == NULL) {
-        return NULL;
-    }
-    set_data(v, data);
-    set_grad(v, 0.0);
-    set_prev(v, NULL);
-    set_n_prev(v, 0);
-    set_backward(v, NULL);
-    set_forward(v, NULL);
+    v->data = data;
+    v->grad = 0.0;
+    v->prev = NULL;
+    v->n_prev = 0;
+    v->backward = NULL;
+    v->forward = NULL;
     return v;
 }
 
 Value* add(Value* a, Value* b) {
     Value* out = new_value(0.0);
-    Value** prev = malloc(2 * sizeof(Value*));
-    prev[0] = a;
-    prev[1] = b;
-    set_prev(out, prev);
-    set_n_prev(out, 2);
+    out->prev = malloc(2 * sizeof(Value*));
+    out->prev[0] = a;
+    out->prev[1] = b;
+    out->n_prev = 2;
     
     out->forward = (double(*)(Value*))({
         double f(Value* v) {
-            return get_data(v->prev[0]) + get_data(v->prev[1]);
+            return v->prev[0]->data + v->prev[1]->data;
         }; f;
     });
     
     out->backward = (void(*)(Value*))({
         void f(Value* v) {
-            set_grad(v->prev[0], get_grad(v->prev[0]) + get_grad(v));
-            set_grad(v->prev[1], get_grad(v->prev[1]) + get_grad(v));
+            v->prev[0]->grad += v->grad;
+            v->prev[1]->grad += v->grad;
         }; f;
     });
     return out;
@@ -95,22 +48,21 @@ Value* add(Value* a, Value* b) {
 
 Value* mul(Value* a, Value* b) {
     Value* out = new_value(0.0);
-    Value** prev = malloc(2 * sizeof(Value*));
-    prev[0] = a;
-    prev[1] = b;
-    set_prev(out, prev);
-    set_n_prev(out, 2);
+    out->prev = malloc(2 * sizeof(Value*));
+    out->prev[0] = a;
+    out->prev[1] = b;
+    out->n_prev = 2;
     
     out->forward = (double(*)(Value*))({
         double f(Value* v) {
-            return get_data(v->prev[0]) * get_data(v->prev[1]);
+            return v->prev[0]->data * v->prev[1]->data;
         }; f;
     });
     
     out->backward = (void(*)(Value*))({
         void f(Value* v) {
-            set_grad(v->prev[0], get_grad(v->prev[0]) + get_data(v->prev[1]) * get_grad(v));
-            set_grad(v->prev[1], get_grad(v->prev[1]) + get_data(v->prev[0]) * get_grad(v));
+            v->prev[0]->grad += v->prev[1]->data * v->grad;
+            v->prev[1]->grad += v->prev[0]->data * v->grad;
         }; f;
     });
     return out;
@@ -118,94 +70,63 @@ Value* mul(Value* a, Value* b) {
 
 Value* tanh_val(Value* x) {
     Value* out = new_value(0.0);
-    Value** prev = malloc(sizeof(Value*));
-    prev[0] = x;
-    set_prev(out, prev);
-    set_n_prev(out, 1);
+    out->prev = malloc(sizeof(Value*));
+    out->prev[0] = x;
+    out->n_prev = 1;
     
     out->forward = (double(*)(Value*))({
         double f(Value* v) {
-            return tanh(get_data(v->prev[0]));
+            return tanh(v->prev[0]->data);
         }; f;
     });
     
     out->backward = (void(*)(Value*))({
         void f(Value* v) {
-            double current_grad = get_grad(v->prev[0]);
-            set_grad(v->prev[0], current_grad + (1.0 - (get_data(v) * get_data(v))) * get_grad(v));
+            v->prev[0]->grad += (1.0 - (v->data * v->data)) * v->grad;
         }; f;
     });
     return out;
 }
 
-// Forward pass through the computation graph
 void forward_pass(Value* v) {
     if (v->n_prev > 0) {
         for (int i = 0; i < v->n_prev; i++) {
             forward_pass(v->prev[i]);
         }
-    }
-    if (v->forward) {
-        v->data = v->forward(v);
+        if (v->forward) v->data = v->forward(v);
     }
 }
 
 void backward_pass(Value* v) {
-    if (v->backward) {
-        v->backward(v);
+    if (v->backward) v->backward(v);
+    for (int i = 0; i < v->n_prev; i++) {
+        backward_pass(v->prev[i]);
     }
-    for (int i = 0; i < get_n_prev(v); i++) {
-        backward_pass(get_prev(v)[i]);
-    }
-}
-
-#define HIDDEN_SIZE 8
-
-Value* build_network(Value* x1, Value* x2, Value* w1[HIDDEN_SIZE][2], Value* b1[HIDDEN_SIZE], Value* w2[HIDDEN_SIZE], Value* b2) {
-    Value* h[HIDDEN_SIZE];
-    for (int j = 0; j < HIDDEN_SIZE; j++) {
-        h[j] = tanh_val(add(add(mul(w1[j][0], x1), mul(w1[j][1], x2)), b1[j]));
-    }
-    
-    Value* out = b2;
-    for (int j = 0; j < HIDDEN_SIZE; j++) {
-        out = add(out, mul(w2[j], h[j]));
-    }
-    return tanh_val(out);
 }
 
 void reset_node(Value* v, Value** visited, int* visited_size) {
-    // Check if we've already visited this node
     for (int i = 0; i < *visited_size; i++) {
         if (v == visited[i]) return;
     }
-    
-    // Add this node to visited array
     visited[*visited_size] = v;
     (*visited_size)++;
-    
-    // Reset the node's gradient
-    set_grad(v, 0.0);
-    
-    // Recursively reset all children
+    v->grad = 0.0;
     for (int i = 0; i < v->n_prev; i++) {
         reset_node(v->prev[i], visited, visited_size);
     }
 }
 
+#define HIDDEN_SIZE 8
+
 int main() {
     srand(time(NULL));
-    
     const double LEARNING_RATE = 0.05;
     const int EPOCHS = 10000;
     
-    // Initialize network parameters
-    Value* w1[HIDDEN_SIZE][2];
-    Value* b1[HIDDEN_SIZE];
-    Value* w2[HIDDEN_SIZE];
-    Value* b2;
+    Value* w1[HIDDEN_SIZE][2], *b1[HIDDEN_SIZE], *w2[HIDDEN_SIZE], *b2;
+    Value* x1 = new_value(0.0), *x2 = new_value(0.0);
+    Value* visited[1000] = {NULL};
     
-    // Initialize weights and biases
     for (int i = 0; i < HIDDEN_SIZE; i++) {
         for (int j = 0; j < 2; j++) {
             w1[i][j] = new_value(((double)rand() / RAND_MAX) * 0.2 - 0.1);
@@ -215,14 +136,16 @@ int main() {
     }
     b2 = new_value(0.0);
     
-    // Create input nodes once
-    Value* x1 = new_value(0.0);
-    Value* x2 = new_value(0.0);
-    Value* out = build_network(x1, x2, w1, b1, w2, b2);
+    Value* h[HIDDEN_SIZE];
+    for (int j = 0; j < HIDDEN_SIZE; j++) {
+        h[j] = tanh_val(add(add(mul(w1[j][0], x1), mul(w1[j][1], x2)), b1[j]));
+    }
     
-    // Array to keep track of visited nodes during reset
-    Value* visited[1000] = {NULL};  // Adjust size based on your network size
-    int visited_size = 0;
+    Value* out = b2;
+    for (int j = 0; j < HIDDEN_SIZE; j++) {
+        out = add(out, mul(w2[j], h[j]));
+    }
+    out = tanh_val(out);
     
     double X[][2] = {{0,0}, {0,1}, {1,0}, {1,1}};
     double Y[] = {0, 1, 1, 0};
@@ -231,35 +154,27 @@ int main() {
         double total_loss = 0.0;
         
         for (int i = 0; i < 4; i++) {
-            // Reset all nodes in the graph
-            visited_size = 0;
-            memset(visited, 0, sizeof(visited));
+            int visited_size = 0;
             reset_node(out, visited, &visited_size);
             
-            // Set input values
-            set_data(x1, X[i][0]);
-            set_data(x2, X[i][1]);
+            x1->data = X[i][0];
+            x2->data = X[i][1];
             
-            // Create loss node
             Value* loss = mul(add(out, new_value(-Y[i])), add(out, new_value(-Y[i])));
-            
-            // Forward pass
             forward_pass(loss);
-            total_loss += get_data(loss);
+            total_loss += loss->data;
             
-            // Backward pass
-            set_grad(loss, 1.0);
+            loss->grad = 1.0;
             backward_pass(loss);
             
-            // Update parameters
             for (int j = 0; j < HIDDEN_SIZE; j++) {
                 for (int k = 0; k < 2; k++) {
-                    set_data(w1[j][k], get_data(w1[j][k]) - LEARNING_RATE * get_grad(w1[j][k]));
+                    w1[j][k]->data -= LEARNING_RATE * w1[j][k]->grad;
                 }
-                set_data(b1[j], get_data(b1[j]) - LEARNING_RATE * get_grad(b1[j]));
-                set_data(w2[j], get_data(w2[j]) - LEARNING_RATE * get_grad(w2[j]));
+                b1[j]->data -= LEARNING_RATE * b1[j]->grad;
+                w2[j]->data -= LEARNING_RATE * w2[j]->grad;
             }
-            set_data(b2, get_data(b2) - LEARNING_RATE * get_grad(b2));
+            b2->data -= LEARNING_RATE * b2->grad;
         }
         
         if (epoch % 1000 == 0) {
@@ -269,15 +184,14 @@ int main() {
     
     printf("\nTesting XOR:\n");
     for (int i = 0; i < 4; i++) {
-        // Reset all nodes in the graph
-        visited_size = 0;
-        memset(visited, 0, sizeof(visited));
+        int visited_size = 0;
         reset_node(out, visited, &visited_size);
         
-        set_data(x1, X[i][0]);
-        set_data(x2, X[i][1]);
+        x1->data = X[i][0];
+        x2->data = X[i][1];
         forward_pass(out);
-        printf("Input: (%g, %g) -> Output: %g (Expected: %g)\n", X[i][0], X[i][1], get_data(out), Y[i]);
+        printf("Input: (%g, %g) -> Output: %g (Expected: %g)\n", 
+               X[i][0], X[i][1], out->data, Y[i]);
     }
     
     return 0;
