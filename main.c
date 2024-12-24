@@ -12,12 +12,12 @@ typedef struct Value {
 } Value;
 
 typedef struct Net {
+    Value* x1;
+    Value* x2;
     Value* w1[8][2];
     Value* b1[8];
     Value* w2[8];
     Value* b2;
-    Value* x1;
-    Value* x2;
     Value* h[8];
     Value* out;
 } Net;
