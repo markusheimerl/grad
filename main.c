@@ -159,29 +159,43 @@ void update_network(Net* n, double learning_rate) {
     n->b2->data -= learning_rate * n->b2->grad;
 }
 
-void reset_value(Value* v, Value** visited, int* visited_size) {
-    // Check if we've already visited this node
-    for (int i = 0; i < *visited_size; i++) {
-        if (v == visited[i]) return;
-    }
-    
-    // Mark as visited and reset gradient
-    visited[*visited_size] = v;
-    (*visited_size)++;
-    v->grad = 0.0;
-    
-    // Recursively reset all previous nodes
-    for (int i = 0; i < v->n_prev; i++) {
-        reset_value(v->prev[i], visited, visited_size);
-    }
-}
-
 void reset_network(Net* n) {
-    Value* visited[1000] = {NULL};  // Adjust size as needed
+    // Create a stack to store nodes to process
+    Value** stack = malloc(1000 * sizeof(Value*));  // Adjust size as needed
+    Value** visited = malloc(1000 * sizeof(Value*)); // Adjust size as needed
+    int stack_size = 0;
     int visited_size = 0;
     
-    // Reset output node and all its dependencies
-    reset_value(n->out, visited, &visited_size);
+    // Push initial node (output node)
+    stack[stack_size++] = n->out;
+    
+    while (stack_size > 0) {
+        // Pop a node from the stack
+        Value* current = stack[--stack_size];
+        
+        // Check if we've already visited this node
+        int already_visited = 0;
+        for (int i = 0; i < visited_size; i++) {
+            if (current == visited[i]) {
+                already_visited = 1;
+                break;
+            }
+        }
+        
+        if (!already_visited) {
+            // Mark as visited and reset gradient
+            visited[visited_size++] = current;
+            current->grad = 0.0;
+            
+            // Push all previous nodes to stack
+            for (int i = 0; i < current->n_prev; i++) {
+                stack[stack_size++] = current->prev[i];
+            }
+        }
+    }
+    
+    free(stack);
+    free(visited);
 }
 
 void free_network(Net* n) {
@@ -207,7 +221,6 @@ int main() {
     const int EPOCHS = 10000;
     
     Net* n = create_network();
-    Value* visited[1000] = {NULL};
     
     double X[][2] = {{0,0}, {0,1}, {1,0}, {1,1}};
     double Y[] = {0, 1, 1, 0};
