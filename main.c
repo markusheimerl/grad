@@ -12,11 +12,8 @@ typedef struct Value {
     double (*forward)(struct Value*);
 } Value;
 
-// Getters
+// Getters - now just return the stored values
 double get_data(const Value* v) {
-    if (v->forward) {
-        ((Value*)v)->data = v->forward((Value*)v);
-    }
     return v->data;
 }
 
@@ -32,7 +29,7 @@ int get_n_prev(const Value* v) {
     return v->n_prev;
 }
 
-// Setters
+// Setters remain the same
 void set_data(Value* v, double data) {
     v->data = data;
 }
@@ -139,6 +136,18 @@ Value* tanh_val(Value* x) {
     return out;
 }
 
+// Forward pass through the computation graph
+void forward_pass(Value* v) {
+    if (v->n_prev > 0) {
+        for (int i = 0; i < v->n_prev; i++) {
+            forward_pass(v->prev[i]);
+        }
+    }
+    if (v->forward) {
+        v->data = v->forward(v);
+    }
+}
+
 void backward_pass(Value* v) {
     if (v->backward) {
         v->backward(v);
@@ -150,8 +159,7 @@ void backward_pass(Value* v) {
 
 #define HIDDEN_SIZE 8
 
-Value* build_network(Value* x1, Value* x2, Value* w1[HIDDEN_SIZE][2], 
-              Value* b1[HIDDEN_SIZE], Value* w2[HIDDEN_SIZE], Value* b2) {
+Value* build_network(Value* x1, Value* x2, Value* w1[HIDDEN_SIZE][2], Value* b1[HIDDEN_SIZE], Value* w2[HIDDEN_SIZE], Value* b2) {
     Value* h[HIDDEN_SIZE];
     for (int j = 0; j < HIDDEN_SIZE; j++) {
         h[j] = tanh_val(add(add(mul(w1[j][0], x1), mul(w1[j][1], x2)), b1[j]));
@@ -170,6 +178,7 @@ int main() {
     const double LEARNING_RATE = 0.05;
     const int EPOCHS = 10000;
     
+    // Initialize network parameters
     Value* w1[HIDDEN_SIZE][2];
     Value* b1[HIDDEN_SIZE];
     Value* w2[HIDDEN_SIZE];
@@ -191,6 +200,7 @@ int main() {
         double total_loss = 0.0;
         
         for (int i = 0; i < 4; i++) {
+            // Reset gradients
             for (int j = 0; j < HIDDEN_SIZE; j++) {
                 for (int k = 0; k < 2; k++) set_grad(w1[j][k], 0);
                 set_grad(b1[j], 0);
@@ -198,17 +208,21 @@ int main() {
             }
             set_grad(b2, 0);
             
+            // Forward pass
             Value* x1 = new_value(X[i][0]);
             Value* x2 = new_value(X[i][1]);
             Value* out = build_network(x1, x2, w1, b1, w2, b2);
+            Value* loss = mul(add(out, new_value(-Y[i])), add(out, new_value(-Y[i])));
             
-            Value* loss = mul(add(out, new_value(-Y[i])), 
-                            add(out, new_value(-Y[i])));
+            // Explicitly compute forward pass
+            forward_pass(loss);
             total_loss += get_data(loss);
             
+            // Backward pass
             set_grad(loss, 1.0);
             backward_pass(loss);
             
+            // Update parameters
             for (int j = 0; j < HIDDEN_SIZE; j++) {
                 for (int k = 0; k < 2; k++) {
                     set_data(w1[j][k], get_data(w1[j][k]) - LEARNING_RATE * get_grad(w1[j][k]));
@@ -229,7 +243,7 @@ int main() {
         Value* x1 = new_value(X[i][0]);
         Value* x2 = new_value(X[i][1]);
         Value* out = build_network(x1, x2, w1, b1, w2, b2);
-        
+        forward_pass(out);
         printf("Input: (%g, %g) -> Output: %g (Expected: %g)\n", X[i][0], X[i][1], get_data(out), Y[i]);
     }
     return 0;
