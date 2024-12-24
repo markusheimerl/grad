@@ -8,11 +8,15 @@ typedef struct Value {
     double grad;     
     struct Value** prev;  
     int n_prev;      
-    void (*backward)(struct Value*);  
+    void (*backward)(struct Value*);
+    double (*forward)(struct Value*);
 } Value;
 
 // Getters
 double get_data(const Value* v) {
+    if (v->forward) {
+        ((Value*)v)->data = v->forward((Value*)v);
+    }
     return v->data;
 }
 
@@ -49,6 +53,10 @@ void set_backward(Value* v, void (*backward)(struct Value*)) {
     v->backward = backward;
 }
 
+void set_forward(Value* v, double (*forward)(struct Value*)) {
+    v->forward = forward;
+}
+
 Value* new_value(double data) {
     Value* v = malloc(sizeof(Value));
     if (v == NULL) {
@@ -59,16 +67,23 @@ Value* new_value(double data) {
     set_prev(v, NULL);
     set_n_prev(v, 0);
     set_backward(v, NULL);
+    set_forward(v, NULL);
     return v;
 }
 
 Value* add(Value* a, Value* b) {
-    Value* out = new_value(get_data(a) + get_data(b));
+    Value* out = new_value(0.0);
     Value** prev = malloc(2 * sizeof(Value*));
     prev[0] = a;
     prev[1] = b;
     set_prev(out, prev);
     set_n_prev(out, 2);
+    
+    out->forward = (double(*)(Value*))({
+        double f(Value* v) {
+            return get_data(v->prev[0]) + get_data(v->prev[1]);
+        }; f;
+    });
     
     out->backward = (void(*)(Value*))({
         void f(Value* v) {
@@ -80,12 +95,18 @@ Value* add(Value* a, Value* b) {
 }
 
 Value* mul(Value* a, Value* b) {
-    Value* out = new_value(get_data(a) * get_data(b));
+    Value* out = new_value(0.0);
     Value** prev = malloc(2 * sizeof(Value*));
     prev[0] = a;
     prev[1] = b;
     set_prev(out, prev);
     set_n_prev(out, 2);
+    
+    out->forward = (double(*)(Value*))({
+        double f(Value* v) {
+            return get_data(v->prev[0]) * get_data(v->prev[1]);
+        }; f;
+    });
     
     out->backward = (void(*)(Value*))({
         void f(Value* v) {
@@ -97,11 +118,17 @@ Value* mul(Value* a, Value* b) {
 }
 
 Value* tanh_val(Value* x) {
-    Value* out = new_value(tanh(get_data(x)));
+    Value* out = new_value(0.0);
     Value** prev = malloc(sizeof(Value*));
     prev[0] = x;
     set_prev(out, prev);
     set_n_prev(out, 1);
+    
+    out->forward = (double(*)(Value*))({
+        double f(Value* v) {
+            return tanh(get_data(v->prev[0]));
+        }; f;
+    });
     
     out->backward = (void(*)(Value*))({
         void f(Value* v) {
@@ -123,13 +150,11 @@ void backward_pass(Value* v) {
 
 #define HIDDEN_SIZE 8
 
-Value* forward(Value* x1, Value* x2, Value* w1[HIDDEN_SIZE][2], 
+Value* build_network(Value* x1, Value* x2, Value* w1[HIDDEN_SIZE][2], 
               Value* b1[HIDDEN_SIZE], Value* w2[HIDDEN_SIZE], Value* b2) {
     Value* h[HIDDEN_SIZE];
     for (int j = 0; j < HIDDEN_SIZE; j++) {
-        h[j] = tanh_val(add(add(mul(w1[j][0], x1), 
-                              mul(w1[j][1], x2)), 
-                          b1[j]));
+        h[j] = tanh_val(add(add(mul(w1[j][0], x1), mul(w1[j][1], x2)), b1[j]));
     }
     
     Value* out = b2;
@@ -175,7 +200,7 @@ int main() {
             
             Value* x1 = new_value(X[i][0]);
             Value* x2 = new_value(X[i][1]);
-            Value* out = forward(x1, x2, w1, b1, w2, b2);
+            Value* out = build_network(x1, x2, w1, b1, w2, b2);
             
             Value* loss = mul(add(out, new_value(-Y[i])), 
                             add(out, new_value(-Y[i])));
@@ -203,10 +228,9 @@ int main() {
     for (int i = 0; i < 4; i++) {
         Value* x1 = new_value(X[i][0]);
         Value* x2 = new_value(X[i][1]);
-        Value* out = forward(x1, x2, w1, b1, w2, b2);
+        Value* out = build_network(x1, x2, w1, b1, w2, b2);
         
-        printf("Input: (%g, %g) -> Output: %g (Expected: %g)\n", 
-               X[i][0], X[i][1], get_data(out), Y[i]);
+        printf("Input: (%g, %g) -> Output: %g (Expected: %g)\n", X[i][0], X[i][1], get_data(out), Y[i]);
     }
     return 0;
 }
