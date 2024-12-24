@@ -118,34 +118,84 @@ void reset_node(Value* v, Value** visited, int* visited_size) {
 
 #define HIDDEN_SIZE 8
 
+typedef struct Net {
+    Value* w1[HIDDEN_SIZE][2];  // Input -> Hidden weights
+    Value* b1[HIDDEN_SIZE];     // Hidden bias
+    Value* w2[HIDDEN_SIZE];     // Hidden -> Output weights
+    Value* b2;                  // Output bias
+    Value* x1;                  // Input 1
+    Value* x2;                  // Input 2
+    Value* h[HIDDEN_SIZE];      // Hidden layer nodes
+    Value* out;                 // Output node
+} Net;
+
+Net* create_network() {
+    Net* n = malloc(sizeof(Net));
+    
+    // Initialize inputs
+    n->x1 = new_value(0.0);
+    n->x2 = new_value(0.0);
+    
+    // Initialize weights and biases
+    for (int i = 0; i < HIDDEN_SIZE; i++) {
+        for (int j = 0; j < 2; j++) {
+            n->w1[i][j] = new_value(((double)rand() / RAND_MAX) * 0.2 - 0.1);
+        }
+        n->b1[i] = new_value(0.0);
+        n->w2[i] = new_value(((double)rand() / RAND_MAX) * 0.2 - 0.1);
+    }
+    n->b2 = new_value(0.0);
+    
+    // Build nwork structure
+    for (int j = 0; j < HIDDEN_SIZE; j++) {
+        n->h[j] = tanh_val(add(add(mul(n->w1[j][0], n->x1), mul(n->w1[j][1], n->x2)), n->b1[j]));
+    }
+    
+    n->out = n->b2;
+    for (int j = 0; j < HIDDEN_SIZE; j++) {
+        n->out = add(n->out, mul(n->w2[j], n->h[j]));
+    }
+    n->out = tanh_val(n->out);
+    
+    return n;
+}
+
+void update_network(Net* n, double learning_rate) {
+    for (int j = 0; j < HIDDEN_SIZE; j++) {
+        for (int k = 0; k < 2; k++) {
+            n->w1[j][k]->data -= learning_rate * n->w1[j][k]->grad;
+        }
+        n->b1[j]->data -= learning_rate * n->b1[j]->grad;
+        n->w2[j]->data -= learning_rate * n->w2[j]->grad;
+    }
+    n->b2->data -= learning_rate * n->b2->grad;
+}
+
+void free_network(Net* n) {
+    // Free all allocated memory
+    for (int i = 0; i < HIDDEN_SIZE; i++) {
+        for (int j = 0; j < 2; j++) {
+            free(n->w1[i][j]);
+        }
+        free(n->b1[i]);
+        free(n->w2[i]);
+        free(n->h[i]);
+    }
+    free(n->b2);
+    free(n->x1);
+    free(n->x2);
+    free(n->out);
+    free(n);
+}
+
+// Modified main function:
 int main() {
     srand(time(NULL));
     const double LEARNING_RATE = 0.05;
     const int EPOCHS = 10000;
     
-    Value* w1[HIDDEN_SIZE][2], *b1[HIDDEN_SIZE], *w2[HIDDEN_SIZE], *b2;
-    Value* x1 = new_value(0.0), *x2 = new_value(0.0);
+    Net* n = create_network();
     Value* visited[1000] = {NULL};
-    
-    for (int i = 0; i < HIDDEN_SIZE; i++) {
-        for (int j = 0; j < 2; j++) {
-            w1[i][j] = new_value(((double)rand() / RAND_MAX) * 0.2 - 0.1);
-        }
-        b1[i] = new_value(0.0);
-        w2[i] = new_value(((double)rand() / RAND_MAX) * 0.2 - 0.1);
-    }
-    b2 = new_value(0.0);
-    
-    Value* h[HIDDEN_SIZE];
-    for (int j = 0; j < HIDDEN_SIZE; j++) {
-        h[j] = tanh_val(add(add(mul(w1[j][0], x1), mul(w1[j][1], x2)), b1[j]));
-    }
-    
-    Value* out = b2;
-    for (int j = 0; j < HIDDEN_SIZE; j++) {
-        out = add(out, mul(w2[j], h[j]));
-    }
-    out = tanh_val(out);
     
     double X[][2] = {{0,0}, {0,1}, {1,0}, {1,1}};
     double Y[] = {0, 1, 1, 0};
@@ -155,26 +205,19 @@ int main() {
         
         for (int i = 0; i < 4; i++) {
             int visited_size = 0;
-            reset_node(out, visited, &visited_size);
+            reset_node(n->out, visited, &visited_size);
             
-            x1->data = X[i][0];
-            x2->data = X[i][1];
+            n->x1->data = X[i][0];
+            n->x2->data = X[i][1];
             
-            Value* loss = mul(add(out, new_value(-Y[i])), add(out, new_value(-Y[i])));
+            Value* loss = mul(add(n->out, new_value(-Y[i])), add(n->out, new_value(-Y[i])));
             forward_pass(loss);
             total_loss += loss->data;
             
             loss->grad = 1.0;
             backward_pass(loss);
             
-            for (int j = 0; j < HIDDEN_SIZE; j++) {
-                for (int k = 0; k < 2; k++) {
-                    w1[j][k]->data -= LEARNING_RATE * w1[j][k]->grad;
-                }
-                b1[j]->data -= LEARNING_RATE * b1[j]->grad;
-                w2[j]->data -= LEARNING_RATE * w2[j]->grad;
-            }
-            b2->data -= LEARNING_RATE * b2->grad;
+            update_network(n, LEARNING_RATE);
         }
         
         if (epoch % 1000 == 0) {
@@ -185,14 +228,14 @@ int main() {
     printf("\nTesting XOR:\n");
     for (int i = 0; i < 4; i++) {
         int visited_size = 0;
-        reset_node(out, visited, &visited_size);
+        reset_node(n->out, visited, &visited_size);
         
-        x1->data = X[i][0];
-        x2->data = X[i][1];
-        forward_pass(out);
-        printf("Input: (%g, %g) -> Output: %g (Expected: %g)\n", 
-               X[i][0], X[i][1], out->data, Y[i]);
+        n->x1->data = X[i][0];
+        n->x2->data = X[i][1];
+        forward_pass(n->out);
+        printf("Input: (%g, %g) -> Output: %g (Expected: %g)\n", X[i][0], X[i][1], n->out->data, Y[i]);
     }
     
+    free_network(n);
     return 0;
 }
