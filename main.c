@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
+#include <string.h>
+#include <stdint.h>
 
 typedef struct Value {
     double data;     
@@ -172,6 +174,25 @@ Value* build_network(Value* x1, Value* x2, Value* w1[HIDDEN_SIZE][2], Value* b1[
     return tanh_val(out);
 }
 
+void reset_node(Value* v, Value** visited, int* visited_size) {
+    // Check if we've already visited this node
+    for (int i = 0; i < *visited_size; i++) {
+        if (v == visited[i]) return;
+    }
+    
+    // Add this node to visited array
+    visited[*visited_size] = v;
+    (*visited_size)++;
+    
+    // Reset the node's gradient
+    set_grad(v, 0.0);
+    
+    // Recursively reset all children
+    for (int i = 0; i < v->n_prev; i++) {
+        reset_node(v->prev[i], visited, visited_size);
+    }
+}
+
 int main() {
     srand(time(NULL));
     
@@ -184,6 +205,7 @@ int main() {
     Value* w2[HIDDEN_SIZE];
     Value* b2;
     
+    // Initialize weights and biases
     for (int i = 0; i < HIDDEN_SIZE; i++) {
         for (int j = 0; j < 2; j++) {
             w1[i][j] = new_value(((double)rand() / RAND_MAX) * 0.2 - 0.1);
@@ -193,6 +215,15 @@ int main() {
     }
     b2 = new_value(0.0);
     
+    // Create input nodes once
+    Value* x1 = new_value(0.0);
+    Value* x2 = new_value(0.0);
+    Value* out = build_network(x1, x2, w1, b1, w2, b2);
+    
+    // Array to keep track of visited nodes during reset
+    Value* visited[1000] = {NULL};  // Adjust size based on your network size
+    int visited_size = 0;
+    
     double X[][2] = {{0,0}, {0,1}, {1,0}, {1,1}};
     double Y[] = {0, 1, 1, 0};
     
@@ -200,21 +231,19 @@ int main() {
         double total_loss = 0.0;
         
         for (int i = 0; i < 4; i++) {
-            // Reset gradients
-            for (int j = 0; j < HIDDEN_SIZE; j++) {
-                for (int k = 0; k < 2; k++) set_grad(w1[j][k], 0);
-                set_grad(b1[j], 0);
-                set_grad(w2[j], 0);
-            }
-            set_grad(b2, 0);
+            // Reset all nodes in the graph
+            visited_size = 0;
+            memset(visited, 0, sizeof(visited));
+            reset_node(out, visited, &visited_size);
             
-            // Forward pass
-            Value* x1 = new_value(X[i][0]);
-            Value* x2 = new_value(X[i][1]);
-            Value* out = build_network(x1, x2, w1, b1, w2, b2);
+            // Set input values
+            set_data(x1, X[i][0]);
+            set_data(x2, X[i][1]);
+            
+            // Create loss node
             Value* loss = mul(add(out, new_value(-Y[i])), add(out, new_value(-Y[i])));
             
-            // Explicitly compute forward pass
+            // Forward pass
             forward_pass(loss);
             total_loss += get_data(loss);
             
@@ -240,11 +269,16 @@ int main() {
     
     printf("\nTesting XOR:\n");
     for (int i = 0; i < 4; i++) {
-        Value* x1 = new_value(X[i][0]);
-        Value* x2 = new_value(X[i][1]);
-        Value* out = build_network(x1, x2, w1, b1, w2, b2);
+        // Reset all nodes in the graph
+        visited_size = 0;
+        memset(visited, 0, sizeof(visited));
+        reset_node(out, visited, &visited_size);
+        
+        set_data(x1, X[i][0]);
+        set_data(x2, X[i][1]);
         forward_pass(out);
         printf("Input: (%g, %g) -> Output: %g (Expected: %g)\n", X[i][0], X[i][1], get_data(out), Y[i]);
     }
+    
     return 0;
 }
