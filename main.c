@@ -84,14 +84,18 @@ Value* tanh_val(Value* x) {
 
 void forward_pass(Value* v) {
     if (v->n_prev > 0) {
-        for (int i = 0; i < v->n_prev; i++) forward_pass(v->prev[i]);
-        if (v->forward) v->data = v->forward(v);
+        for (int i = 0; i < v->n_prev; i++) 
+            forward_pass(v->prev[i]);
+        if (v->forward) 
+            v->data = v->forward(v);
     }
 }
 
 void backward_pass(Value* v) {
-    if (v->backward) v->backward(v);
-    for (int i = 0; i < v->n_prev; i++) backward_pass(v->prev[i]);
+    if (v->backward) 
+        v->backward(v);
+    for (int i = 0; i < v->n_prev; i++) 
+        backward_pass(v->prev[i]);
 }
 
 Net* create_network() {
@@ -174,7 +178,6 @@ void free_network(Value* top) {
         free(visited[i]->prev);
         free(visited[i]);
     }
-    
     free(stack);
     free(visited);
 }
@@ -182,13 +185,9 @@ void free_network(Value* top) {
 int main() {
     srand(time(NULL));
     Net* n = create_network();
-    double X[][2] = {{0,0}, {0,1}, {1,0}, {1,1}};
-    double Y[] = {0, 1, 1, 0};
-
+    double X[][2] = {{0,0}, {0,1}, {1,0}, {1,1}}, Y[] = {0, 1, 1, 0};
     Value* target = new_value(0.0);
-    Value* diff1 = add(n->out, target);
-    Value* diff2 = add(n->out, target);
-    Value* loss = mul(diff1, diff2);
+    Value* loss = mul(add(n->out, target), add(n->out, target));
     
     for (int epoch = 0; epoch < 10000; epoch++) {
         double total_loss = 0.0;
@@ -212,7 +211,8 @@ int main() {
         n->x1->data = X[i][0];
         n->x2->data = X[i][1];
         forward_pass(n->out);
-        printf("Input: (%g, %g) -> Output: %g (Expected: %g)\n", X[i][0], X[i][1], n->out->data, Y[i]);
+        printf("Input: (%g, %g) -> Output: %g (Expected: %g)\n", 
+               X[i][0], X[i][1], n->out->data, Y[i]);
     }
 
     free_network(loss);
