@@ -83,12 +83,32 @@ void backward_pass(Value* v) {
     }
 }
 
+#define HIDDEN_SIZE 8
+
+// Forward pass through the network
+Value* forward(Value* x1, Value* x2, Value* w1[HIDDEN_SIZE][2], 
+              Value* b1[HIDDEN_SIZE], Value* w2[HIDDEN_SIZE], Value* b2) {
+    // Hidden layer
+    Value* h[HIDDEN_SIZE];
+    for (int j = 0; j < HIDDEN_SIZE; j++) {
+        h[j] = tanh_val(add(add(mul(w1[j][0], x1), 
+                              mul(w1[j][1], x2)), 
+                          b1[j]));
+    }
+    
+    // Output layer
+    Value* out = b2;
+    for (int j = 0; j < HIDDEN_SIZE; j++) {
+        out = add(out, mul(w2[j], h[j]));
+    }
+    return tanh_val(out);
+}
+
 int main() {
     // Initialize random seed
     srand(time(NULL));
     
     // Network architecture
-    const int HIDDEN_SIZE = 8;
     const double LEARNING_RATE = 0.05;
     const int EPOCHS = 10000;
     
@@ -128,21 +148,7 @@ int main() {
             // Forward pass
             Value* x1 = new_value(X[i][0]);
             Value* x2 = new_value(X[i][1]);
-            Value* h[HIDDEN_SIZE];
-            
-            // Hidden layer
-            for (int j = 0; j < HIDDEN_SIZE; j++) {
-                h[j] = tanh_val(add(add(mul(w1[j][0], x1), 
-                                      mul(w1[j][1], x2)), 
-                                  b1[j]));
-            }
-            
-            // Output layer
-            Value* out = b2;
-            for (int j = 0; j < HIDDEN_SIZE; j++) {
-                out = add(out, mul(w2[j], h[j]));
-            }
-            out = tanh_val(out);
+            Value* out = forward(x1, x2, w1, b1, w2, b2);
             
             // Compute loss
             Value* loss = mul(add(out, new_value(-Y[i])), 
@@ -175,19 +181,7 @@ int main() {
     for (int i = 0; i < 4; i++) {
         Value* x1 = new_value(X[i][0]);
         Value* x2 = new_value(X[i][1]);
-        Value* h[HIDDEN_SIZE];
-        
-        for (int j = 0; j < HIDDEN_SIZE; j++) {
-            h[j] = tanh_val(add(add(mul(w1[j][0], x1), 
-                                  mul(w1[j][1], x2)), 
-                              b1[j]));
-        }
-        
-        Value* out = b2;
-        for (int j = 0; j < HIDDEN_SIZE; j++) {
-            out = add(out, mul(w2[j], h[j]));
-        }
-        out = tanh_val(out);
+        Value* out = forward(x1, x2, w1, b1, w2, b2);
         
         printf("Input: (%g, %g) -> Output: %g (Expected: %g)\n", 
                X[i][0], X[i][1], out->data, Y[i]);
