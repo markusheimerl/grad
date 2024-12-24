@@ -147,6 +147,52 @@ void reset_network(Value* top) {
     free(visited);
 }
 
+void free_network(Value* top) {
+    // Create arrays to keep track of nodes to process and nodes already freed
+    Value** stack = malloc(1000 * sizeof(Value*));
+    Value** visited = malloc(1000 * sizeof(Value*));
+    int stack_size = 0, visited_size = 0;
+    
+    // Start with the top node
+    stack[stack_size++] = top;
+    
+    // Process all nodes in the graph
+    while (stack_size > 0) {
+        Value* current = stack[--stack_size];
+        
+        // Check if we've already visited this node
+        int already_visited = 0;
+        for (int i = 0; i < visited_size && !already_visited; i++) {
+            if (current == visited[i]) {
+                already_visited = 1;
+            }
+        }
+        
+        // If not visited, process it
+        if (!already_visited) {
+            // Add to visited list
+            visited[visited_size++] = current;
+            
+            // Add all previous nodes to the stack
+            for (int i = 0; i < current->n_prev; i++) {
+                stack[stack_size++] = current->prev[i];
+            }
+        }
+    }
+    
+    // Free all nodes in reverse order (to handle dependencies correctly)
+    for (int i = visited_size - 1; i >= 0; i--) {
+        if (visited[i]->prev) {
+            free(visited[i]->prev);
+        }
+        free(visited[i]);
+    }
+    
+    // Free the temporary arrays
+    free(stack);
+    free(visited);
+}
+
 int main() {
     srand(time(NULL));
     Net* n = create_network();
@@ -184,5 +230,8 @@ int main() {
         forward_pass(n->out);
         printf("Input: (%g, %g) -> Output: %g (Expected: %g)\n", X[i][0], X[i][1], n->out->data, Y[i]);
     }
+
+    free_network(loss);
+    free(n);
     return 0;
 }
