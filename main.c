@@ -100,8 +100,8 @@ Net* create_network() {
     n->x2 = new_value(0.0);
     
     for (int i = 0; i < HIDDEN_SIZE; i++) {
-        for (int j = 0; j < 2; j++) 
-            n->w1[i][j] = new_value(((double)rand() / RAND_MAX) * 0.2 - 0.1);
+        n->w1[i][0] = new_value(((double)rand() / RAND_MAX) * 0.2 - 0.1);
+        n->w1[i][1] = new_value(((double)rand() / RAND_MAX) * 0.2 - 0.1);
         n->b1[i] = new_value(0.0);
         n->w2[i] = new_value(((double)rand() / RAND_MAX) * 0.2 - 0.1);
         n->h[i] = tanh_val(add(add(mul(n->w1[i][0], n->x1), mul(n->w1[i][1], n->x2)), n->b1[i]));
@@ -109,17 +109,18 @@ Net* create_network() {
     
     n->b2 = new_value(0.0);
     n->out = n->b2;
-    for (int j = 0; j < HIDDEN_SIZE; j++)
-        n->out = add(n->out, mul(n->w2[j], n->h[j]));
+    for (int i = 0; i < HIDDEN_SIZE; i++)
+        n->out = add(n->out, mul(n->w2[i], n->h[i]));
     n->out = tanh_val(n->out);
     return n;
 }
 
 void update_network(Net* n, double lr) {
-    for (int j = 0; j < HIDDEN_SIZE; j++) {
-        for (int k = 0; k < 2; k++) n->w1[j][k]->data -= lr * n->w1[j][k]->grad;
-        n->b1[j]->data -= lr * n->b1[j]->grad;
-        n->w2[j]->data -= lr * n->w2[j]->grad;
+    for (int i = 0; i < HIDDEN_SIZE; i++) {
+        n->w1[i][0]->data -= lr * n->w1[i][0]->grad;
+        n->w1[i][1]->data -= lr * n->w1[i][1]->grad;
+        n->b1[i]->data -= lr * n->b1[i]->grad;
+        n->w2[i]->data -= lr * n->w2[i]->grad;
     }
     n->b2->data -= lr * n->b2->grad;
 }
@@ -148,47 +149,32 @@ void reset_network(Value* top) {
 }
 
 void free_network(Value* top) {
-    // Create arrays to keep track of nodes to process and nodes already freed
     Value** stack = malloc(1000 * sizeof(Value*));
     Value** visited = malloc(1000 * sizeof(Value*));
     int stack_size = 0, visited_size = 0;
     
-    // Start with the top node
     stack[stack_size++] = top;
-    
-    // Process all nodes in the graph
     while (stack_size > 0) {
         Value* current = stack[--stack_size];
-        
-        // Check if we've already visited this node
         int already_visited = 0;
-        for (int i = 0; i < visited_size && !already_visited; i++) {
+        for (int i = 0; i < visited_size; i++)
             if (current == visited[i]) {
                 already_visited = 1;
+                break;
             }
-        }
         
-        // If not visited, process it
         if (!already_visited) {
-            // Add to visited list
             visited[visited_size++] = current;
-            
-            // Add all previous nodes to the stack
-            for (int i = 0; i < current->n_prev; i++) {
+            for (int i = 0; i < current->n_prev; i++)
                 stack[stack_size++] = current->prev[i];
-            }
         }
     }
     
-    // Free all nodes in reverse order (to handle dependencies correctly)
     for (int i = visited_size - 1; i >= 0; i--) {
-        if (visited[i]->prev) {
-            free(visited[i]->prev);
-        }
+        free(visited[i]->prev);
         free(visited[i]);
     }
     
-    // Free the temporary arrays
     free(stack);
     free(visited);
 }
