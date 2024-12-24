@@ -18,33 +18,31 @@ int main() {
     srand(time(NULL));
     
     // Parameters
-    double w1 = 0.1, w2 = 0.1, w3 = -0.1, b = 0;
+    double w1 = 0.1, w2 = 0.1, b = 0;
     const int EPOCHS = 1000, BATCH_SIZE = 1000;
     const double LR = 0.1;
     
     // Training
     for (int epoch = 0; epoch < EPOCHS; epoch++) {
-        double loss = 0, dw1 = 0, dw2 = 0, dw3 = 0, db = 0;
+        double loss = 0, dw1 = 0, dw2 = 0, db = 0;
         
         for (int i = 0; i < BATCH_SIZE; i++) {
             double x = random_range(-1.5, 1.5);
             double y = random_range(-1.5, 1.5);
             int label = (x*x + y*y) <= 1.0;
             
-            Dual pred = sigmoid((Dual){w1*x + w2*y + w3*(x*x + y*y) + b, 1.0});
+            Dual pred = sigmoid((Dual){w1*x + w2*y + b, 1.0});
             double error = pred.val - label;
             
             double grad = 2 * error * pred.der;
             dw1 += grad * x;
             dw2 += grad * y;
-            dw3 += grad * (x*x + y*y);
             db += grad;
             loss += error * error;
         }
         
         w1 -= LR * dw1/BATCH_SIZE;
         w2 -= LR * dw2/BATCH_SIZE;
-        w3 -= LR * dw3/BATCH_SIZE;
         b -= LR * db/BATCH_SIZE;
         
         if (epoch % 100 == 0)
@@ -60,7 +58,7 @@ int main() {
         double x = random_range(-1.5, 1.5);
         double y = random_range(-1.5, 1.5);
         int true_label = (x*x + y*y) <= 1.0;
-        int pred_label = 1.0/(1.0 + exp(-(w1*x + w2*y + w3*(x*x + y*y) + b))) > 0.5;
+        int pred_label = 1.0/(1.0 + exp(-(w1*x + w2*y + b))) > 0.5;
         
         correct += (true_label == pred_label);
         printf("(%.2f, %.2f): %s, true=%s %s\n", 
