@@ -1,2 +1,2 @@
-# gradient
+# grad
 A differentiation library

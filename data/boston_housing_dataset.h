@@ -922,7 +922,6 @@ double Y_train[406] = {
     5};
 
 double Y_test[100] = {
-
     11.9,
     27.9,
     17.2,
