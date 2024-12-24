@@ -53,17 +53,20 @@ Value* mul(Value* a, Value* b) {
     return out;
 }
 
-Value* tanh_val(Value* x) {
+Value* sigmoid(Value* x) {
     Value* out = new_value(0.0);
     out->prev = malloc(sizeof(Value*));
     out->prev[0] = x;
     out->n_prev = 1;
     out->forward = (double(*)(Value*))({
-        double f(Value* v) { return tanh(v->prev[0]->data); }; f;
+        double f(Value* v) { 
+            return 1.0 / (1.0 + exp(-v->prev[0]->data)); 
+        }; f;
     });
     out->backward = (void(*)(Value*))({
         void f(Value* v) {
-            v->prev[0]->grad += (1.0 - (v->data * v->data)) * v->grad;
+            double s = v->data;
+            v->prev[0]->grad += (s * (1.0 - s)) * v->grad;
         }; f;
     });
     return out;
@@ -198,7 +201,7 @@ Net* create_network(int n_inputs, int n_outputs, int n_hidden_layers, int hidden
         for(int j = 0; j < hidden_size; j++) {
             sum = add(sum, mul(n->w[n_hidden_layers][i][j], n->h[n_hidden_layers-1][j]));
         }
-        n->out[i] = tanh_val(sum);
+        n->out[i] = sigmoid(sum);
     }
     
     return n;
@@ -288,7 +291,7 @@ void free_network(Value* top) {
 
 int main() {
     srand(time(NULL));
-    Net* n = create_network(2, 1, 1, 16);
+    Net* n = create_network(2, 1, 2, 8);
     double X[][2] = {{0,0}, {0,1}, {1,0}, {1,1}};
     double Y[] = {0, 1, 1, 0};
 
