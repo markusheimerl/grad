@@ -104,18 +104,6 @@ void backward_pass(Value* v) {
     }
 }
 
-void reset_node(Value* v, Value** visited, int* visited_size) {
-    for (int i = 0; i < *visited_size; i++) {
-        if (v == visited[i]) return;
-    }
-    visited[*visited_size] = v;
-    (*visited_size)++;
-    v->grad = 0.0;
-    for (int i = 0; i < v->n_prev; i++) {
-        reset_node(v->prev[i], visited, visited_size);
-    }
-}
-
 #define HIDDEN_SIZE 8
 
 typedef struct Net {
@@ -171,6 +159,31 @@ void update_network(Net* n, double learning_rate) {
     n->b2->data -= learning_rate * n->b2->grad;
 }
 
+void reset_value(Value* v, Value** visited, int* visited_size) {
+    // Check if we've already visited this node
+    for (int i = 0; i < *visited_size; i++) {
+        if (v == visited[i]) return;
+    }
+    
+    // Mark as visited and reset gradient
+    visited[*visited_size] = v;
+    (*visited_size)++;
+    v->grad = 0.0;
+    
+    // Recursively reset all previous nodes
+    for (int i = 0; i < v->n_prev; i++) {
+        reset_value(v->prev[i], visited, visited_size);
+    }
+}
+
+void reset_network(Net* n) {
+    Value* visited[1000] = {NULL};  // Adjust size as needed
+    int visited_size = 0;
+    
+    // Reset output node and all its dependencies
+    reset_value(n->out, visited, &visited_size);
+}
+
 void free_network(Net* n) {
     // Free all allocated memory
     for (int i = 0; i < HIDDEN_SIZE; i++) {
@@ -188,7 +201,6 @@ void free_network(Net* n) {
     free(n);
 }
 
-// Modified main function:
 int main() {
     srand(time(NULL));
     const double LEARNING_RATE = 0.05;
@@ -204,8 +216,7 @@ int main() {
         double total_loss = 0.0;
         
         for (int i = 0; i < 4; i++) {
-            int visited_size = 0;
-            reset_node(n->out, visited, &visited_size);
+            reset_network(n);
             
             n->x1->data = X[i][0];
             n->x2->data = X[i][1];
@@ -227,8 +238,7 @@ int main() {
     
     printf("\nTesting XOR:\n");
     for (int i = 0; i < 4; i++) {
-        int visited_size = 0;
-        reset_node(n->out, visited, &visited_size);
+        reset_network(n);
         
         n->x1->data = X[i][0];
         n->x2->data = X[i][1];
