@@ -5,51 +5,37 @@
 #include <signal.h>
 #include "data/boston_housing_dataset.h"
 
-#define HIDDEN_SIZE 128
-#define M_PI 3.14159265358979323846
+#define BATCH_SIZE 32
+#define HIDDEN_SIZE 512
 
-typedef struct Value {
+typedef struct {
     double data, grad;
-    struct Value** prev;
-    int n_prev;
-    void (*backward)(struct Value*);
 } Value;
 
 typedef struct {
     int in_size, out_size;
-    Value** w;
-    Value** b;
-    Value** out;
+    Value* w;
+    Value* b;
+    Value* out;
 } Layer;
 
 typedef struct {
-    Value** inputs;
-    Layer* hidden;
-    Layer* output;
+    Value* inputs;
+    Layer hidden;
+    Layer output;
 } Net;
 
 static Net* g_net = NULL;
 
 void cleanup() {
     if (g_net) {
-        if (g_net->inputs) {
-            for (int i = 0; i < 12; i++) {
-                free(g_net->inputs[i]);
-            }
-            free(g_net->inputs);
-        }
-        if (g_net->hidden) {
-            free(g_net->hidden->w);
-            free(g_net->hidden->b);
-            free(g_net->hidden->out);
-            free(g_net->hidden);
-        }
-        if (g_net->output) {
-            free(g_net->output->w);
-            free(g_net->output->b);
-            free(g_net->output->out);
-            free(g_net->output);
-        }
+        free(g_net->inputs);
+        free(g_net->hidden.w);
+        free(g_net->hidden.b);
+        free(g_net->hidden.out);
+        free(g_net->output.w);
+        free(g_net->output.b);
+        free(g_net->output.out);
         free(g_net);
     }
 }
@@ -60,136 +46,127 @@ void signal_handler(int signum) {
     exit(signum);
 }
 
-Value* new_value(double data) {
-    Value* v = malloc(sizeof(Value));
-    v->data = data;
-    v->grad = 0;
-    v->prev = NULL;
-    v->n_prev = 0;
-    v->backward = NULL;
-    return v;
-}
-
-Layer* create_layer(int in_size, int out_size) {
-    Layer* l = malloc(sizeof(Layer));
-    l->in_size = in_size;
-    l->out_size = out_size;
+Layer create_layer(int in_size, int out_size) {
+    Layer l;
+    l.in_size = in_size;
+    l.out_size = out_size;
     
-    l->w = malloc(in_size * out_size * sizeof(Value*));
-    l->b = malloc(out_size * sizeof(Value*));
-    l->out = malloc(out_size * sizeof(Value*));
+    l.w = calloc(in_size * out_size, sizeof(Value));
+    l.b = calloc(out_size, sizeof(Value));
+    l.out = calloc(out_size, sizeof(Value));
     
-    // Xavier initialization
     double scale = sqrt(2.0 / (in_size + out_size));
     for (int i = 0; i < in_size * out_size; i++) {
-        l->w[i] = new_value(((double)rand() / RAND_MAX * 2 - 1) * scale);
-    }
-    for (int i = 0; i < out_size; i++) {
-        l->b[i] = new_value(0);
-        l->out[i] = NULL;
+        l.w[i].data = ((double)rand() / RAND_MAX * 2 - 1) * scale;
     }
     return l;
 }
 
 void zero_grad(Layer* l) {
     for (int i = 0; i < l->in_size * l->out_size; i++) {
-        l->w[i]->grad = 0;
+        l->w[i].grad = 0;
     }
     for (int i = 0; i < l->out_size; i++) {
-        l->b[i]->grad = 0;
+        l->b[i].grad = 0;
     }
 }
 
-double relu(double x) {
-    return x > 0 ? x : 0.01 * x;  // Leaky ReLU
+inline double relu(double x) {
+    return x > 0 ? x : 0.01 * x;
 }
 
-double relu_grad(double x) {
+inline double relu_grad(double x) {
     return x > 0 ? 1.0 : 0.01;
 }
 
-void forward_layer(Layer* l, Value** inputs) {
+void forward_layer(Layer* l, Value* inputs) {
     for (int j = 0; j < l->out_size; j++) {
-        double sum = l->b[j]->data;
+        double sum = l->b[j].data;
         for (int i = 0; i < l->in_size; i++) {
-            sum += inputs[i]->data * l->w[i * l->out_size + j]->data;
+            sum += inputs[i].data * l->w[i * l->out_size + j].data;
         }
-        if (l->out[j] == NULL) {
-            l->out[j] = new_value(0);
-        }
-        l->out[j]->data = relu(sum);
+        l->out[j].data = relu(sum);
     }
 }
 
 double predict(Net* net, double* x, double* x_min, double* x_max) {
     for (int j = 0; j < 12; j++) {
-        net->inputs[j]->data = (x[j] - x_min[j]) / (x_max[j] - x_min[j] + 1e-8);
+        net->inputs[j].data = (x[j] - x_min[j]) / (x_max[j] - x_min[j] + 1e-8);
     }
-    forward_layer(net->hidden, net->inputs);
-    forward_layer(net->output, net->hidden->out);
-    return net->output->out[0]->data;
+    forward_layer(&net->hidden, net->inputs);
+    forward_layer(&net->output, net->hidden.out);
+    return net->output.out[0].data;
 }
 
-void backward_layer(Layer* l, Value** inputs, double* grad_out) {
+void backward_layer(Layer* l, Value* inputs, double grad_out) {
     for (int j = 0; j < l->out_size; j++) {
-        double grad = grad_out[j] * relu_grad(l->out[j]->data);
-        l->b[j]->grad += grad;
+        double grad = grad_out * relu_grad(l->out[j].data);
+        l->b[j].grad += grad;
         for (int i = 0; i < l->in_size; i++) {
-            l->w[i * l->out_size + j]->grad += inputs[i]->data * grad;
+            l->w[i * l->out_size + j].grad += inputs[i].data * grad;
         }
     }
 }
 
 void update_layer(Layer* l, double lr) {
     for (int i = 0; i < l->in_size * l->out_size; i++) {
-        l->w[i]->data -= lr * l->w[i]->grad;
+        l->w[i].data -= lr * l->w[i].grad;
     }
     for (int i = 0; i < l->out_size; i++) {
-        l->b[i]->data -= lr * l->b[i]->grad;
+        l->b[i].data -= lr * l->b[i].grad;
     }
+}
+
+void train_batch(Net* net, int start, int end, double* x_min, double* x_max, 
+                double y_min, double y_max, double* total_loss) {
+    zero_grad(&net->hidden);
+    zero_grad(&net->output);
+    
+    double batch_loss = 0;
+    for (int i = start; i < end; i++) {
+        double pred = predict(net, X_train[i], x_min, x_max);
+        double target = (Y_train[i] - y_min) / (y_max - y_min);
+        double error = pred - target;
+        batch_loss += error * error;
+        
+        double grad = 2 * error / (end - start);
+        backward_layer(&net->output, net->hidden.out, grad);
+        backward_layer(&net->hidden, net->inputs, net->output.out[0].grad);
+    }
+    
+    *total_loss += batch_loss;
 }
 
 int main() {
     signal(SIGTERM, signal_handler);
     signal(SIGINT, signal_handler);
-    
     srand(time(NULL));
     
-    // Create network
     Net* net = malloc(sizeof(Net));
     g_net = net;
     
-    net->inputs = malloc(12 * sizeof(Value*));
-    for (int i = 0; i < 12; i++) {
-        net->inputs[i] = new_value(0);
-    }
-    net->hidden = create_layer(12, 512);
-    net->output = create_layer(64, 1);
+    net->inputs = calloc(12, sizeof(Value));
+    net->hidden = create_layer(12, HIDDEN_SIZE);
+    net->output = create_layer(HIDDEN_SIZE, 1);
     
-    // Compute normalization parameters
-    double x_min[12], x_max[12], y_min = Y_train[0], y_max = Y_train[0];
-    for (int j = 0; j < 12; j++) {
-        x_min[j] = x_max[j] = X_train[0][j];
-    }
+    double x_min[12] = {0}, x_max[12] = {0};
+    double y_min = Y_train[0], y_max = Y_train[0];
     
     for (int i = 0; i < 406; i++) {
         for (int j = 0; j < 12; j++) {
-            if (X_train[i][j] < x_min[j]) x_min[j] = X_train[i][j];
-            if (X_train[i][j] > x_max[j]) x_max[j] = X_train[i][j];
+            if (i == 0 || X_train[i][j] < x_min[j]) x_min[j] = X_train[i][j];
+            if (i == 0 || X_train[i][j] > x_max[j]) x_max[j] = X_train[i][j];
         }
         if (Y_train[i] < y_min) y_min = Y_train[i];
         if (Y_train[i] > y_max) y_max = Y_train[i];
     }
     
-    // Training parameters
     double lr = 0.5;
     int epochs = 20000;
-    int batch_size = 32;
     double best_val_rmse = 1e9;
     int patience = 200;
     int no_improve = 0;
     
-    // Training loop
     for (int epoch = 0; epoch < epochs; epoch++) {
         double total_loss = 0;
         
@@ -207,36 +184,12 @@ int main() {
         }
         
         // Mini-batch training
-        for (int i = 0; i < 406; i += batch_size) {
-            int batch_end = i + batch_size;
+        for (int i = 0; i < 406; i += BATCH_SIZE) {
+            int batch_end = i + BATCH_SIZE;
             if (batch_end > 406) batch_end = 406;
-            
-            zero_grad(net->hidden);
-            zero_grad(net->output);
-            
-            double batch_loss = 0;
-            for (int j = i; j < batch_end; j++) {
-                double pred = predict(net, X_train[j], x_min, x_max);
-                double target = (Y_train[j] - y_min) / (y_max - y_min);
-                double error = pred - target;
-                batch_loss += error * error;
-                
-                // Backward pass
-                double grad = 2 * error / (batch_end - i);
-                double output_grad = grad;
-                backward_layer(net->output, net->hidden->out, &output_grad);
-                
-                double hidden_grads[64] = {0};
-                for (int k = 0; k < 64; k++) {
-                    hidden_grads[k] = net->hidden->out[k]->grad;
-                }
-                backward_layer(net->hidden, net->inputs, hidden_grads);
-            }
-            
-            update_layer(net->hidden, lr);
-            update_layer(net->output, lr);
-            
-            total_loss += batch_loss;
+            train_batch(net, i, batch_end, x_min, x_max, y_min, y_max, &total_loss);
+            update_layer(&net->hidden, lr);
+            update_layer(&net->output, lr);
         }
         
         // Validation
@@ -266,8 +219,7 @@ int main() {
         lr *= 0.999;  // Learning rate decay
     }
     
-    // Final test predictions
-    printf("\nFinal Test Predictions:\n");
+    printf("\nTest Predictions:\n");
     double test_mse = 0;
     for (int i = 0; i < 10; i++) {
         double pred = predict(net, X_test[i], x_min, x_max);
