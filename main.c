@@ -6,9 +6,7 @@
 
 double compute_mean(double* array, int size) {
     double sum = 0;
-    for(int i = 0; i < size; i++) {
-        sum += array[i];
-    }
+    for(int i = 0; i < size; i++) sum += array[i];
     return sum / size;
 }
 
@@ -21,83 +19,72 @@ double compute_std(double* array, int size, double mean) {
     return sqrt(sum_squared_diff / size);
 }
 
-int main() {
-    srand(time(NULL));
+void normalize_feature(double (*data)[13], int rows, int col, double* mean, double* std) {
+    double* column = malloc(rows * sizeof(double));
+    for(int i = 0; i < rows; i++) column[i] = data[i][col];
     
-    const int total_samples = 506;
-    const int features = 13;
+    *mean = compute_mean(column, rows);
+    *std = compute_std(column, rows, *mean);
     
-    // Allocate memory for train/test splits
-    const int train_size = (int)(0.8 * total_samples);
-    const int test_size = total_samples - train_size;
+    for(int i = 0; i < rows; i++) 
+        data[i][col] = (data[i][col] - *mean) / *std;
     
-    double** X_train = malloc(train_size * sizeof(double*));
-    double** X_test = malloc(test_size * sizeof(double*));
-    double* y_train = malloc(train_size * sizeof(double));
-    double* y_test = malloc(test_size * sizeof(double));
-    
-    for(int i = 0; i < train_size; i++) {
-        X_train[i] = malloc(features * sizeof(double));
-    }
-    for(int i = 0; i < test_size; i++) {
-        X_test[i] = malloc(features * sizeof(double));
-    }
-    
-    // Z-score normalization for each feature
-    for(int j = 0; j < features; j++) {
-        double* column = malloc(total_samples * sizeof(double));
-        for(int i = 0; i < total_samples; i++) {
-            column[i] = X[i][j];
-        }
-        
-        double mean = compute_mean(column, total_samples);
-        double std = compute_std(column, total_samples, mean);
-        
-        for(int i = 0; i < total_samples; i++) {
-            X[i][j] = (X[i][j] - mean) / std;
-        }
-        
-        free(column);
-    }
-    
-    // Z-score normalization for target variable
-    double y_mean = compute_mean(y, total_samples);
-    double y_std = compute_std(y, total_samples, y_mean);
-    
-    for(int i = 0; i < total_samples; i++) {
-        y[i] = (y[i] - y_mean) / y_std;
-    }
-    
-    // Store normalization parameters for later use
-    printf("Target normalization parameters:\n");
-    printf("Mean: %.3f, Std: %.3f\n", y_mean, y_std);
-    
-    // Create index array for shuffling
-    int* indices = malloc(total_samples * sizeof(int));
-    for(int i = 0; i < total_samples; i++) {
-        indices[i] = i;
-    }
-    
-    // Shuffle indices
-    for(int i = total_samples - 1; i > 0; i--) {
+    free(column);
+}
+
+void shuffle_indices(int* indices, int size) {
+    for(int i = size - 1; i > 0; i--) {
         int j = rand() % (i + 1);
         int temp = indices[i];
         indices[i] = indices[j];
         indices[j] = temp;
     }
+}
+
+int main() {
+    srand(time(NULL));
     
-    // Split into train and test using shuffled indices
+    const int total_samples = 506;
+    const int features = 13;
+    const int train_size = (int)(0.8 * total_samples);
+    const int test_size = total_samples - train_size;
+    
+    // Allocate memory
+    double** X_train = malloc(train_size * sizeof(double*));
+    double** X_test = malloc(test_size * sizeof(double*));
+    double* y_train = malloc(train_size * sizeof(double));
+    double* y_test = malloc(test_size * sizeof(double));
+    
+    for(int i = 0; i < train_size; i++) X_train[i] = malloc(features * sizeof(double));
+    for(int i = 0; i < test_size; i++) X_test[i] = malloc(features * sizeof(double));
+    
+    // Normalize features
+    for(int j = 0; j < features; j++) {
+        double mean, std;
+        normalize_feature(X, total_samples, j, &mean, &std);
+    }
+    
+    // Normalize target
+    double y_mean = compute_mean(y, total_samples);
+    double y_std = compute_std(y, total_samples, y_mean);
+    for(int i = 0; i < total_samples; i++) y[i] = (y[i] - y_mean) / y_std;
+    
+    printf("Target normalization parameters:\n");
+    printf("Mean: %.3f, Std: %.3f\n", y_mean, y_std);
+    
+    // Create and shuffle indices
+    int* indices = malloc(total_samples * sizeof(int));
+    for(int i = 0; i < total_samples; i++) indices[i] = i;
+    shuffle_indices(indices, total_samples);
+    
+    // Split data
     for(int i = 0; i < train_size; i++) {
-        for(int j = 0; j < features; j++) {
-            X_train[i][j] = X[indices[i]][j];
-        }
+        for(int j = 0; j < features; j++) X_train[i][j] = X[indices[i]][j];
         y_train[i] = y[indices[i]];
     }
     
     for(int i = 0; i < test_size; i++) {
-        for(int j = 0; j < features; j++) {
-            X_test[i][j] = X[indices[i + train_size]][j];
-        }
+        for(int j = 0; j < features; j++) X_test[i][j] = X[indices[i + train_size]][j];
         y_test[i] = y[indices[i + train_size]];
     }
     
@@ -114,12 +101,8 @@ int main() {
     }
     
     // Cleanup
-    for(int i = 0; i < train_size; i++) {
-        free(X_train[i]);
-    }
-    for(int i = 0; i < test_size; i++) {
-        free(X_test[i]);
-    }
+    for(int i = 0; i < train_size; i++) free(X_train[i]);
+    for(int i = 0; i < test_size; i++) free(X_test[i]);
     free(X_train);
     free(X_test);
     free(y_train);
