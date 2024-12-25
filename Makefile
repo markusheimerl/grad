@@ -1,6 +1,6 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -O2
-LDFLAGS = -lm
+CFLAGS = -Wall -Wextra -O3 -march=native -ffast-math -flto
+LDFLAGS = -lm -flto
 
 TARGET = autodiff.out
 SRC = main.c
