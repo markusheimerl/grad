@@ -3,195 +3,216 @@
 #include <math.h>
 #include <time.h>
 
-// Matrix structure
-typedef struct {
-    int rows, cols;
-    double* data;
-} Matrix;
+typedef struct Value {
+    double data, grad;     
+    struct Value** prev;  
+    int n_prev;      
+    void (*backward)(struct Value*);
+    double (*forward)(struct Value*);
+} Value;
 
-// Layer structure
-typedef struct {
-    Matrix weights;
-    Matrix bias;
-    Matrix output;
-    Matrix gradient_w;
-    Matrix gradient_b;
-} Layer;
+typedef struct Net {
+    Value* x1;
+    Value* x2;
+    Value* w1[8][2];
+    Value* b1[8];
+    Value* w2[8];
+    Value* b2;
+    Value* h[8];
+    Value* out;
+} Net;
 
-// Neural Network structure
-typedef struct {
-    Layer hidden;
-    Layer output;
-} Network;
-
-// Matrix operations
-Matrix create_matrix(int rows, int cols) {
-    Matrix m = {rows, cols, malloc(rows * cols * sizeof(double))};
-    return m;
+Value* new_value(double data) {
+    Value* v = malloc(sizeof(Value));
+    *v = (Value){data, 0.0, NULL, 0, NULL, NULL};
+    return v;
 }
 
-void free_matrix(Matrix m) {
-    free(m.data);
+Value* add(Value* a, Value* b) {
+    Value* out = new_value(0.0);
+    out->prev = malloc(2 * sizeof(Value*));
+    out->prev[0] = a;
+    out->prev[1] = b;
+    out->n_prev = 2;
+    out->forward = (double(*)(Value*))({
+        double f(Value* v) { return v->prev[0]->data + v->prev[1]->data; }; f;
+    });
+    out->backward = (void(*)(Value*))({
+        void f(Value* v) {
+            v->prev[0]->grad += v->grad;
+            v->prev[1]->grad += v->grad;
+        }; f;
+    });
+    return out;
 }
 
-void random_init(Matrix m, double scale) {
-    for(int i = 0; i < m.rows * m.cols; i++) {
-        m.data[i] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * scale;
+Value* mul(Value* a, Value* b) {
+    Value* out = new_value(0.0);
+    out->prev = malloc(2 * sizeof(Value*));
+    out->prev[0] = a;
+    out->prev[1] = b;
+    out->n_prev = 2;
+    out->forward = (double(*)(Value*))({
+        double f(Value* v) { return v->prev[0]->data * v->prev[1]->data; }; f;
+    });
+    out->backward = (void(*)(Value*))({
+        void f(Value* v) {
+            v->prev[0]->grad += v->prev[1]->data * v->grad;
+            v->prev[1]->grad += v->prev[0]->data * v->grad;
+        }; f;
+    });
+    return out;
+}
+
+Value* tanh_val(Value* x) {
+    Value* out = new_value(0.0);
+    out->prev = malloc(sizeof(Value*));
+    out->prev[0] = x;
+    out->n_prev = 1;
+    out->forward = (double(*)(Value*))({
+        double f(Value* v) { return tanh(v->prev[0]->data); }; f;
+    });
+    out->backward = (void(*)(Value*))({
+        void f(Value* v) {
+            v->prev[0]->grad += (1.0 - (v->data * v->data)) * v->grad;
+        }; f;
+    });
+    return out;
+}
+
+void forward_pass(Value* v) {
+    if (v->n_prev > 0) {
+        for (int i = 0; i < v->n_prev; i++) 
+            forward_pass(v->prev[i]);
+        if (v->forward) 
+            v->data = v->forward(v);
     }
 }
 
-void matrix_multiply(Matrix a, Matrix b, Matrix c) {
-    for(int i = 0; i < a.rows; i++) {
-        for(int j = 0; j < b.cols; j++) {
-            double sum = 0.0;
-            for(int k = 0; k < a.cols; k++) {
-                sum += a.data[i * a.cols + k] * b.data[k * b.cols + j];
-            }
-            c.data[i * c.cols + j] = sum;
-        }
+void backward_pass(Value* v) {
+    if (v->backward) 
+        v->backward(v);
+    for (int i = 0; i < v->n_prev; i++) 
+        backward_pass(v->prev[i]);
+}
+
+Net* create_network() {
+    Net* n = malloc(sizeof(Net));
+    n->x1 = new_value(0.0);
+    n->x2 = new_value(0.0);
+    
+    for (int i = 0; i < 8; i++) {
+        n->w1[i][0] = new_value(((double)rand() / RAND_MAX) * 0.2 - 0.1);
+        n->w1[i][1] = new_value(((double)rand() / RAND_MAX) * 0.2 - 0.1);
+        n->b1[i] = new_value(0.0);
+        n->w2[i] = new_value(((double)rand() / RAND_MAX) * 0.2 - 0.1);
+        n->h[i] = tanh_val(add(add(mul(n->w1[i][0], n->x1), mul(n->w1[i][1], n->x2)), n->b1[i]));
     }
+    
+    n->b2 = new_value(0.0);
+    n->out = n->b2;
+    for (int i = 0; i < 8; i++)
+        n->out = add(n->out, mul(n->w2[i], n->h[i]));
+    n->out = tanh_val(n->out);
+    return n;
 }
 
-void add_matrix(Matrix a, Matrix b, Matrix c) {
-    for(int i = 0; i < a.rows * a.cols; i++) {
-        c.data[i] = a.data[i] + b.data[i];
+void update_network(Net* n, double lr) {
+    for (int i = 0; i < 8; i++) {
+        n->w1[i][0]->data -= lr * n->w1[i][0]->grad;
+        n->w1[i][1]->data -= lr * n->w1[i][1]->grad;
+        n->b1[i]->data -= lr * n->b1[i]->grad;
+        n->w2[i]->data -= lr * n->w2[i]->grad;
     }
+    n->b2->data -= lr * n->b2->grad;
 }
 
-void tanh_matrix(Matrix m) {
-    for(int i = 0; i < m.rows * m.cols; i++) {
-        m.data[i] = tanh(m.data[i]);
-    }
-}
-
-void tanh_derivative(Matrix output, Matrix gradient) {
-    for(int i = 0; i < output.rows * output.cols; i++) {
-        gradient.data[i] *= (1.0 - output.data[i] * output.data[i]);
-    }
-}
-
-// Neural Network operations
-Network create_network(int input_size, int hidden_size) {
-    Network net;
+void reset_network(Value* top) {
+    Value** stack = malloc(1000 * sizeof(Value*));
+    Value** visited = malloc(1000 * sizeof(Value*));
+    int stack_size = 0, visited_size = 0;
     
-    // Hidden layer
-    net.hidden.weights = create_matrix(hidden_size, input_size);
-    net.hidden.bias = create_matrix(hidden_size, 1);
-    net.hidden.output = create_matrix(hidden_size, 1);
-    net.hidden.gradient_w = create_matrix(hidden_size, input_size);
-    net.hidden.gradient_b = create_matrix(hidden_size, 1);
-    
-    // Output layer
-    net.output.weights = create_matrix(1, hidden_size);
-    net.output.bias = create_matrix(1, 1);
-    net.output.output = create_matrix(1, 1);
-    net.output.gradient_w = create_matrix(1, hidden_size);
-    net.output.gradient_b = create_matrix(1, 1);
-    
-    // Initialize weights and biases
-    random_init(net.hidden.weights, 0.1);
-    random_init(net.hidden.bias, 0.1);
-    random_init(net.output.weights, 0.1);
-    random_init(net.output.bias, 0.1);
-    
-    return net;
-}
-
-void forward(Network* net, Matrix input) {
-    // Hidden layer
-    matrix_multiply(net->hidden.weights, input, net->hidden.output);
-    add_matrix(net->hidden.output, net->hidden.bias, net->hidden.output);
-    tanh_matrix(net->hidden.output);
-    
-    // Output layer
-    matrix_multiply(net->output.weights, net->hidden.output, net->output.output);
-    add_matrix(net->output.output, net->output.bias, net->output.output);
-    tanh_matrix(net->output.output);
-}
-
-void backward(Network* net, Matrix input, Matrix target, double learning_rate) {
-    // Output layer gradients
-    double error = net->output.output.data[0] - target.data[0];
-    net->output.output.data[0] = error * (1 - net->output.output.data[0] * net->output.output.data[0]);
-    
-    // Update output layer
-    for(int i = 0; i < net->output.weights.cols; i++) {
-        net->output.weights.data[i] -= learning_rate * net->output.output.data[0] * net->hidden.output.data[i];
-    }
-    net->output.bias.data[0] -= learning_rate * net->output.output.data[0];
-    
-    // Hidden layer gradients
-    for(int i = 0; i < net->hidden.output.rows; i++) {
-        double grad = net->output.output.data[0] * net->output.weights.data[i];
-        grad *= (1 - net->hidden.output.data[i] * net->hidden.output.data[i]);
+    stack[stack_size++] = top;
+    while (stack_size > 0) {
+        Value* current = stack[--stack_size];
+        int already_visited = 0;
+        for (int i = 0; i < visited_size && !already_visited; i++)
+            if (current == visited[i]) already_visited = 1;
         
-        // Update hidden layer weights
-        for(int j = 0; j < net->hidden.weights.cols; j++) {
-            net->hidden.weights.data[i * net->hidden.weights.cols + j] -= 
-                learning_rate * grad * input.data[j];
+        if (!already_visited) {
+            visited[visited_size++] = current;
+            current->grad = 0.0;
+            for (int i = 0; i < current->n_prev; i++)
+                stack[stack_size++] = current->prev[i];
         }
-        net->hidden.bias.data[i] -= learning_rate * grad;
     }
+    free(stack);
+    free(visited);
+}
+
+void free_network(Value* top) {
+    Value** stack = malloc(1000 * sizeof(Value*));
+    Value** visited = malloc(1000 * sizeof(Value*));
+    int stack_size = 0, visited_size = 0;
+    
+    stack[stack_size++] = top;
+    while (stack_size > 0) {
+        Value* current = stack[--stack_size];
+        int already_visited = 0;
+        for (int i = 0; i < visited_size; i++)
+            if (current == visited[i]) {
+                already_visited = 1;
+                break;
+            }
+        
+        if (!already_visited) {
+            visited[visited_size++] = current;
+            for (int i = 0; i < current->n_prev; i++)
+                stack[stack_size++] = current->prev[i];
+        }
+    }
+    
+    for (int i = visited_size - 1; i >= 0; i--) {
+        free(visited[i]->prev);
+        free(visited[i]);
+    }
+    free(stack);
+    free(visited);
 }
 
 int main() {
     srand(time(NULL));
+    Net* n = create_network();
+    double X[][2] = {{0,0}, {0,1}, {1,0}, {1,1}}, Y[] = {0, 1, 1, 0};
+    Value* target = new_value(0.0);
+    Value* loss = mul(add(n->out, target), add(n->out, target));
     
-    // Create network
-    Network net = create_network(2, 8);
-    
-    // Training data
-    double X[][2] = {{0,0}, {0,1}, {1,0}, {1,1}};
-    double Y[] = {0, 1, 1, 0};
-    
-    // Training matrices
-    Matrix input = create_matrix(2, 1);
-    Matrix target = create_matrix(1, 1);
-    
-    // Training loop
-    for(int epoch = 0; epoch < 10000; epoch++) {
+    for (int epoch = 0; epoch < 10000; epoch++) {
         double total_loss = 0.0;
-        
-        for(int i = 0; i < 4; i++) {
-            // Set input and target
-            input.data[0] = X[i][0];
-            input.data[1] = X[i][1];
-            target.data[0] = Y[i];
-            
-            // Forward and backward passes
-            forward(&net, input);
-            total_loss += pow(net.output.output.data[0] - target.data[0], 2);
-            backward(&net, input, target, 0.1);
+        for (int i = 0; i < 4; i++) {
+            reset_network(loss);
+            n->x1->data = X[i][0];
+            n->x2->data = X[i][1];
+            target->data = -Y[i];
+            forward_pass(loss);
+            total_loss += loss->data;
+            loss->grad = 1.0;
+            backward_pass(loss);
+            update_network(n, 0.05);
         }
-        
-        if(epoch % 1000 == 0) {
-            printf("Epoch %d: Loss = %f\n", epoch, total_loss / 4);
-        }
+        if (epoch % 1000 == 0)
+            printf("Epoch %d: Avg Loss = %f\n", epoch, total_loss / 4);
     }
     
-    // Test the network
     printf("\nTesting XOR:\n");
-    for(int i = 0; i < 4; i++) {
-        input.data[0] = X[i][0];
-        input.data[1] = X[i][1];
-        forward(&net, input);
-        printf("Input: (%g, %g) -> Output: %g (Expected: %g)\n",
-               X[i][0], X[i][1], net.output.output.data[0], Y[i]);
+    for (int i = 0; i < 4; i++) {
+        n->x1->data = X[i][0];
+        n->x2->data = X[i][1];
+        forward_pass(n->out);
+        printf("Input: (%g, %g) -> Output: %g (Expected: %g)\n", X[i][0], X[i][1], n->out->data, Y[i]);
     }
-    
-    // Cleanup
-    free_matrix(input);
-    free_matrix(target);
-    free_matrix(net.hidden.weights);
-    free_matrix(net.hidden.bias);
-    free_matrix(net.hidden.output);
-    free_matrix(net.hidden.gradient_w);
-    free_matrix(net.hidden.gradient_b);
-    free_matrix(net.output.weights);
-    free_matrix(net.output.bias);
-    free_matrix(net.output.output);
-    free_matrix(net.output.gradient_w);
-    free_matrix(net.output.gradient_b);
-    
+
+    free_network(loss);
+    free(n);
     return 0;
 }
