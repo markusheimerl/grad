@@ -66,7 +66,7 @@ void train(double* w, double* b, double** X, double* y, int samples, int feature
             free(w_grad);
         }
         
-        if ((epoch + 1) % 100 == 0)
+        if ((epoch + 1) % 1000 == 0)
             printf("Epoch %d/%d - MSE: %.6f\n", epoch + 1, epochs, total_error/samples);
     }
     free(indices);
@@ -107,11 +107,13 @@ int main() {
         y_test[i] = y[idx[i + TRAIN]];
     }
     
-    double* weights = calloc(F, sizeof(double));
-    double bias = 0;
+    double* weights = malloc(F * sizeof(double));
+    for (int i = 0; i < F; i++) 
+        weights[i] = ((double)rand() / RAND_MAX * 2.0 - 1.0) * sqrt(6.0 / F);
+    double bias = ((double)rand() / RAND_MAX * 2.0 - 1.0) * sqrt(6.0 / F);
     
     printf("\nTraining linear regression...\n");
-    train(weights, &bias, X_train, y_train, TRAIN, F, 0.001, 1000, 32);
+    train(weights, &bias, X_train, y_train, TRAIN, F, 0.001, 10000, 32);
     
     int train_correct = 0, test_correct = 0;
     for (int i = 0; i < TRAIN; i++) {
