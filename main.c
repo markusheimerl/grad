@@ -43,9 +43,7 @@ void shuffle_indices(int* indices, int size) {
 
 double predict(double* weights, double bias, double* x, int features) {
     double prediction = bias;
-    for(int i = 0; i < features; i++) {
-        prediction += weights[i] * x[i];
-    }
+    for(int i = 0; i < features; i++) prediction += weights[i] * x[i];
     return prediction;
 }
 
@@ -86,16 +84,10 @@ void train_batch(double* weights, double* bias, double** X, double* y,
 
 void train(double* weights, double* bias, double** X_train, double* y_train, 
           int train_size, int features, double learning_rate, int epochs, int batch_size) {
-    
     for(int epoch = 0; epoch < epochs; epoch++) {
         for(int i = 0; i < train_size; i += batch_size) {
             int actual_batch_size = (i + batch_size > train_size) ? (train_size - i) : batch_size;
             train_batch(weights, bias, X_train, y_train, i, actual_batch_size, learning_rate, features);
-        }
-        
-        if((epoch + 1) % 100 == 0) {
-            double mse = compute_mse(weights, *bias, X_train, y_train, train_size, features);
-            printf("Epoch %d: MSE = %.6f\n", epoch + 1, mse);
         }
     }
 }
