@@ -127,13 +127,13 @@ void evaluate_predictions(LinearRegression* model, double** X_test, double* y_te
         double denorm_actual = y_test[i] * stds[N_FEATURES] + means[N_FEATURES];
         double diff = denorm_pred - denorm_actual;
         
-        if (fabs(diff) <= 3000.0) correct_predictions++;
+        if (fabs(diff) <= 5000.0) correct_predictions++;
         if (i < 10) {
             printf("$%.2f\t$%.2f\t$%.2f\n", 
                    denorm_pred, denorm_actual, diff);
         }
     }
-    printf("\nPredictions within $3000 margin: %d out of %d (%.2f%%)\n", 
+    printf("\nPredictions within $5000 margin: %d out of %d (%.2f%%)\n", 
            correct_predictions, n_test, (double)correct_predictions / n_test * 100);
 }
 
