@@ -6,7 +6,7 @@
 
 #define N_FEATURES 8
 #define TRAIN_SPLIT 0.8
-#define LEARNING_RATE 0.0001  // Reduced learning rate
+#define LEARNING_RATE 0.0001
 #define N_EPOCHS 100
 
 typedef struct {
@@ -14,8 +14,13 @@ typedef struct {
     double bias;
 } LinearRegression;
 
-void preprocess(const char* filename, double** X_train, double* y_train, int n_train,
-                double** X_test, double* y_test, int n_test) {
+typedef struct {
+    double* means;
+    double* stds;
+} ScaleParams;
+
+ScaleParams preprocess(const char* filename, double** X_train, double* y_train, int n_train,
+                      double** X_test, double* y_test, int n_test) {
     FILE* f = fopen(filename, "r");
     char line[32768];
     int i = 0;
@@ -31,11 +36,9 @@ void preprocess(const char* filename, double** X_train, double* y_train, int n_t
     }
     fclose(f);
 
-    // Normalize features
-    double* means = calloc(N_FEATURES + 1, sizeof(double));  // +1 for target
-    double* stds = calloc(N_FEATURES + 1, sizeof(double));   // +1 for target
+    double* means = calloc(N_FEATURES + 1, sizeof(double));
+    double* stds = calloc(N_FEATURES + 1, sizeof(double));
     
-    // Calculate means and stds for features and target
     for (int j = 0; j <= N_FEATURES; j++) {
         for (int i = 0; i < n_train + n_test; i++) {
             double val;
@@ -52,7 +55,6 @@ void preprocess(const char* filename, double** X_train, double* y_train, int n_t
         if (stds[j] == 0) stds[j] = 1;
     }
 
-    // Normalize features
     for (int j = 0; j < N_FEATURES; j++) {
         for (int i = 0; i < n_train; i++)
             X_train[i][j] = (X_train[i][j] - means[j]) / stds[j];
@@ -60,14 +62,13 @@ void preprocess(const char* filename, double** X_train, double* y_train, int n_t
             X_test[i][j] = (X_test[i][j] - means[j]) / stds[j];
     }
 
-    // Normalize target
     for (int i = 0; i < n_train; i++)
         y_train[i] = (y_train[i] - means[N_FEATURES]) / stds[N_FEATURES];
     for (int i = 0; i < n_test; i++)
         y_test[i] = (y_test[i] - means[N_FEATURES]) / stds[N_FEATURES];
 
-    free(means);
-    free(stds);
+    ScaleParams params = {means, stds};
+    return params;
 }
 
 double predict(LinearRegression* model, double* x) {
@@ -86,7 +87,6 @@ void train(LinearRegression* model, double** X_train, double* y_train, int n_tra
     for (int epoch = 0; epoch < N_EPOCHS; epoch++) {
         double train_mse = 0.0;
         
-        // Shuffle training data
         for (int i = n_train-1; i > 0; i--) {
             int j = rand() % (i + 1);
             for (int k = 0; k < N_FEATURES; k++) {
@@ -129,14 +129,42 @@ void train(LinearRegression* model, double** X_train, double* y_train, int n_tra
         }
     }
 
-    // Restore best model
     memcpy(model->weights, best_weights, N_FEATURES * sizeof(double));
     model->bias = best_bias;
     free(best_weights);
 }
 
+void evaluate_predictions(LinearRegression* model, double** X_test, double* y_test, 
+                         int n_test, ScaleParams params) {
+    int correct_predictions = 0;
+    printf("\nFinal Predictions (showing first 10 examples):\n");
+    printf("Predicted Price\tActual Price\tDifference\n");
+    
+    for (int i = 0; i < n_test; i++) {
+        double pred = predict(model, X_test[i]);
+        
+        // Denormalize predictions and actual values
+        double denorm_pred = pred * params.stds[N_FEATURES] + params.means[N_FEATURES];
+        double denorm_actual = y_test[i] * params.stds[N_FEATURES] + params.means[N_FEATURES];
+        double diff = denorm_pred - denorm_actual;
+        
+        if (fabs(diff) <= 3000.0) {
+            correct_predictions++;
+        }
+        
+        if (i < 10) {
+            printf("$%.2f\t$%.2f\t$%.2f\n", 
+                   denorm_pred, denorm_actual, diff);
+        }
+    }
+    
+    double accuracy = (double)correct_predictions / n_test * 100;
+    printf("\nPredictions within $3000 margin: %d out of %d (%.2f%%)\n", 
+           correct_predictions, n_test, accuracy);
+}
+
 int main() {
-    srand(time(NULL));  // Initialize random seed
+    srand(time(NULL));
 
     FILE* f = fopen("data/cal_housing.data", "r");
     int n = 0;
@@ -153,12 +181,19 @@ int main() {
     double* y_train = malloc(n_train * sizeof(double));
     double* y_test = malloc(n_test * sizeof(double));
 
-    preprocess("data/cal_housing.data", X_train, y_train, n_train, X_test, y_test, n_test);
+    ScaleParams scale_params = preprocess("data/cal_housing.data", X_train, y_train, 
+                                        n_train, X_test, y_test, n_test);
 
     LinearRegression model = {.weights = calloc(N_FEATURES, sizeof(double)), .bias = 0.0};
     train(&model, X_train, y_train, n_train, X_test, y_test, n_test);
 
+    printf("\nFinal Model Evaluation:\n");
+    evaluate_predictions(&model, X_test, y_test, n_test, scale_params);
+
+    // Cleanup
     free(model.weights);
+    free(scale_params.means);
+    free(scale_params.stds);
     for (int i = 0; i < n_train; i++) free(X_train[i]);
     for (int i = 0; i < n_test; i++) free(X_test[i]);
     free(X_train); free(X_test);
