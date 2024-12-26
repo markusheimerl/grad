@@ -2,10 +2,8 @@
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
-#include <string.h>
 #include "data/boston_housing_dataset.h"
 
-// Hyperparameters
 #define NUM_BASE_MODELS 256
 #define NUM_META_MODELS 64
 #define FEATURES 13
@@ -17,269 +15,142 @@
 
 typedef struct {
     double* weights;
-    double bias;
-    // Adam parameters
     double* m_weights;
     double* v_weights;
-    double m_bias;
-    double v_bias;
-    size_t input_size;
-    size_t output_size;
+    double bias, m_bias, v_bias;
+    size_t input_size, output_size;
 } Layer;
 
 typedef struct {
-    Layer** base_layers;    // First level ensemble
-    Layer** meta_layers;    // Second level ensemble
-    Layer* final_layer;     // Final aggregation
-    size_t num_base;
-    size_t num_meta;
-    size_t features;
+    Layer** base_layers;
+    Layer** meta_layers;
+    Layer* final_layer;
+    size_t num_base, num_meta, features;
 } EnsembleModel;
 
 typedef struct {
     double* data;
-    size_t rows;
-    size_t cols;
+    size_t rows, cols;
 } Matrix;
 
 typedef struct {
-    double* data;
-    size_t size;
-} Vector;
+    double* base_outputs;
+    double* base_raw;
+    double* meta_outputs;
+    double* meta_raw;
+    double final_output;
+    double final_raw;
+} ForwardPass;
 
-// Utility functions
-Matrix create_matrix(size_t rows, size_t cols) {
-    Matrix m = {
-        .data = calloc(rows * cols, sizeof(double)),
-        .rows = rows,
-        .cols = cols
-    };
-    return m;
-}
-
-Vector create_vector(size_t size) {
-    Vector v = {
-        .data = calloc(size, sizeof(double)),
-        .size = size
-    };
-    return v;
-}
-
-void free_matrix(Matrix* m) {
-    free(m->data);
-    m->data = NULL;
-}
-
-void free_vector(Vector* v) {
-    free(v->data);
-    v->data = NULL;
-}
-
-// Layer operations
 Layer* create_layer(size_t input_size, size_t output_size) {
     Layer* layer = malloc(sizeof(Layer));
+    double scale = sqrt(2.0 / input_size);
     
     layer->weights = malloc(input_size * output_size * sizeof(double));
     layer->m_weights = calloc(input_size * output_size, sizeof(double));
     layer->v_weights = calloc(input_size * output_size, sizeof(double));
     
-    layer->input_size = input_size;
-    layer->output_size = output_size;
-    layer->m_bias = 0.0;
-    layer->v_bias = 0.0;
-    
-    // He initialization
-    double scale = sqrt(2.0 / input_size);
     for (size_t i = 0; i < input_size * output_size; i++) {
         layer->weights[i] = ((double)rand()/RAND_MAX * 2 - 1) * scale;
     }
     layer->bias = ((double)rand()/RAND_MAX * 2 - 1) * scale;
-    
+    layer->input_size = input_size;
+    layer->output_size = output_size;
     return layer;
 }
 
-void free_layer(Layer* layer) {
-    free(layer->weights);
-    free(layer->m_weights);
-    free(layer->v_weights);
-    free(layer);
-}
-
-// Model creation and cleanup
 EnsembleModel* create_ensemble() {
     EnsembleModel* model = malloc(sizeof(EnsembleModel));
+    model->base_layers = malloc(NUM_BASE_MODELS * sizeof(Layer*));
+    model->meta_layers = malloc(NUM_META_MODELS * sizeof(Layer*));
     
+    for (int i = 0; i < NUM_BASE_MODELS; i++) 
+        model->base_layers[i] = create_layer(FEATURES, 1);
+    for (int i = 0; i < NUM_META_MODELS; i++) 
+        model->meta_layers[i] = create_layer(NUM_BASE_MODELS, 1);
+    
+    model->final_layer = create_layer(NUM_META_MODELS, 1);
     model->num_base = NUM_BASE_MODELS;
     model->num_meta = NUM_META_MODELS;
     model->features = FEATURES;
-    
-    // Create base models
-    model->base_layers = malloc(NUM_BASE_MODELS * sizeof(Layer*));
-    for (int i = 0; i < NUM_BASE_MODELS; i++) {
-        model->base_layers[i] = create_layer(FEATURES, 1);
-    }
-    
-    // Create meta models
-    model->meta_layers = malloc(NUM_META_MODELS * sizeof(Layer*));
-    for (int i = 0; i < NUM_META_MODELS; i++) {
-        model->meta_layers[i] = create_layer(NUM_BASE_MODELS, 1);
-    }
-    
-    // Create final layer
-    model->final_layer = create_layer(NUM_META_MODELS, 1);
-    
     return model;
 }
 
-void free_ensemble(EnsembleModel* model) {
-    for (size_t i = 0; i < model->num_base; i++) {
-        free_layer(model->base_layers[i]);
-    }
-    for (size_t i = 0; i < model->num_meta; i++) {
-        free_layer(model->meta_layers[i]);
-    }
-    free_layer(model->final_layer);
-    
-    free(model->base_layers);
-    free(model->meta_layers);
-    free(model);
-}
-
-// Data preprocessing
-void normalize_data(Matrix* X, Vector* y) {
-    // Normalize features
+void normalize_data(Matrix* X, double* y, size_t y_size) {
     for (size_t j = 0; j < X->cols; j++) {
         double mean = 0, std = 0;
-        
-        for (size_t i = 0; i < X->rows; i++) {
-            mean += X->data[i * X->cols + j];
-        }
+        for (size_t i = 0; i < X->rows; i++) mean += X->data[i * X->cols + j];
         mean /= X->rows;
         
-        for (size_t i = 0; i < X->rows; i++) {
+        for (size_t i = 0; i < X->rows; i++) 
             std += pow(X->data[i * X->cols + j] - mean, 2);
-        }
         std = sqrt(std / X->rows);
         
-        for (size_t i = 0; i < X->rows; i++) {
+        for (size_t i = 0; i < X->rows; i++)
             X->data[i * X->cols + j] = (X->data[i * X->cols + j] - mean) / (std + 1e-8);
-        }
     }
     
-    // Normalize target
     double mean = 0, std = 0;
-    for (size_t i = 0; i < y->size; i++) mean += y->data[i];
-    mean /= y->size;
+    for (size_t i = 0; i < y_size; i++) mean += y[i];
+    mean /= y_size;
     
-    for (size_t i = 0; i < y->size; i++) std += pow(y->data[i] - mean, 2);
-    std = sqrt(std / y->size);
+    for (size_t i = 0; i < y_size; i++) std += pow(y[i] - mean, 2);
+    std = sqrt(std / y_size);
     
-    for (size_t i = 0; i < y->size; i++) {
-        y->data[i] = (y->data[i] - mean) / (std + 1e-8);
-    }
+    for (size_t i = 0; i < y_size; i++)
+        y[i] = (y[i] - mean) / (std + 1e-8);
 }
 
-// Forward propagation structures
-typedef struct {
-    double* base_outputs;    // Outputs from base models
-    double* base_raw;        // Pre-activation base outputs
-    double* meta_outputs;    // Outputs from meta models
-    double* meta_raw;        // Pre-activation meta outputs
-    double final_output;     // Final prediction
-    double final_raw;        // Pre-activation final output
-} ForwardPass;
-
-ForwardPass* create_forward_pass() {
+ForwardPass* forward_propagate(EnsembleModel* model, const double* input) {
     ForwardPass* fp = malloc(sizeof(ForwardPass));
     fp->base_outputs = malloc(NUM_BASE_MODELS * sizeof(double));
     fp->base_raw = malloc(NUM_BASE_MODELS * sizeof(double));
     fp->meta_outputs = malloc(NUM_META_MODELS * sizeof(double));
     fp->meta_raw = malloc(NUM_META_MODELS * sizeof(double));
-    return fp;
-}
-
-void free_forward_pass(ForwardPass* fp) {
-    free(fp->base_outputs);
-    free(fp->base_raw);
-    free(fp->meta_outputs);
-    free(fp->meta_raw);
-    free(fp);
-}
-
-// Activation function
-double relu(double x) {
-    return fmax(0, x);
-}
-
-// Forward propagation
-ForwardPass* forward_propagate(EnsembleModel* model, const double* input) {
-    ForwardPass* fp = create_forward_pass();
     
-    // Base models forward pass
     for (size_t i = 0; i < model->num_base; i++) {
-        Layer* layer = model->base_layers[i];
-        double sum = layer->bias;
-        
-        for (size_t j = 0; j < model->features; j++) {
-            sum += input[j] * layer->weights[j];
-        }
-        
+        double sum = model->base_layers[i]->bias;
+        for (size_t j = 0; j < model->features; j++)
+            sum += input[j] * model->base_layers[i]->weights[j];
         fp->base_raw[i] = sum;
-        fp->base_outputs[i] = relu(sum);
+        fp->base_outputs[i] = fmax(0, sum);
     }
     
-    // Meta models forward pass
     for (size_t i = 0; i < model->num_meta; i++) {
-        Layer* layer = model->meta_layers[i];
-        double sum = layer->bias;
-        
-        for (size_t j = 0; j < model->num_base; j++) {
-            sum += fp->base_outputs[j] * layer->weights[j];
-        }
-        
+        double sum = model->meta_layers[i]->bias;
+        for (size_t j = 0; j < model->num_base; j++)
+            sum += fp->base_outputs[j] * model->meta_layers[i]->weights[j];
         fp->meta_raw[i] = sum;
-        fp->meta_outputs[i] = relu(sum);
+        fp->meta_outputs[i] = fmax(0, sum);
     }
     
-    // Final layer forward pass
     double sum = model->final_layer->bias;
-    for (size_t i = 0; i < model->num_meta; i++) {
+    for (size_t i = 0; i < model->num_meta; i++)
         sum += fp->meta_outputs[i] * model->final_layer->weights[i];
-    }
     
-    fp->final_raw = sum;
-    fp->final_output = sum;  // Linear activation for final layer
-    
+    fp->final_raw = fp->final_output = sum;
     return fp;
 }
 
-// AdamW update function
-void adam_update(double* weight, double* m, double* v, double grad, double lr, 
-                double beta1, double beta2, double epsilon, double weight_decay, int t) {
-    *m = beta1 * (*m) + (1 - beta1) * grad;
-    *v = beta2 * (*v) + (1 - beta2) * grad * grad;
-    
-    double m_hat = *m / (1 - pow(beta1, t));
-    double v_hat = *v / (1 - pow(beta2, t));
-    
-    *weight *= (1 - lr * weight_decay);
-    *weight -= lr * m_hat / (sqrt(v_hat) + epsilon);
+void adam_update(double* w, double* m, double* v, double g, double lr, double b1, double b2, double eps, double wd, int t) {
+    *m = b1 * (*m) + (1 - b1) * g;
+    *v = b2 * (*v) + (1 - b2) * g * g;
+    double m_hat = *m / (1 - pow(b1, t));
+    double v_hat = *v / (1 - pow(b2, t));
+    *w *= (1 - lr * wd);
+    *w -= lr * m_hat / (sqrt(v_hat) + eps);
 }
 
-// Training function
-void train_ensemble(EnsembleModel* model, Matrix* X, Vector* y, int epochs) {
-    const double beta1 = 0.9;
-    const double beta2 = 0.999;
-    const double epsilon = 1e-8;
-    const double weight_decay = 0.01;
-    int t = 0;  // Adam time step
+void train_ensemble(EnsembleModel* model, Matrix* X, double* y) {
+    const double b1 = 0.9, b2 = 0.999, eps = 1e-8, wd = 0.01;
+    int t = 0;
     
-    for (int epoch = 0; epoch < epochs; epoch++) {
-        double total_loss = 0.0;
-        
-        // Create random batch indices
+    for (int epoch = 0; epoch < EPOCHS; epoch++) {
+        double loss = 0;
         int* indices = malloc(X->rows * sizeof(int));
         for (int i = 0; i < X->rows; i++) indices[i] = i;
+        
+        // Shuffle indices
         for (int i = X->rows - 1; i > 0; i--) {
             int j = rand() % (i + 1);
             int temp = indices[i];
@@ -287,13 +158,12 @@ void train_ensemble(EnsembleModel* model, Matrix* X, Vector* y, int epochs) {
             indices[j] = temp;
         }
         
-        // Mini-batch training
-        for (int batch_start = 0; batch_start < X->rows; batch_start += BATCH_SIZE) {
+        for (int b = 0; b < X->rows; b += BATCH_SIZE) {
             t++;
-            int batch_end = fmin(batch_start + BATCH_SIZE, X->rows);
-            int batch_size = batch_end - batch_start;
+            int batch_end = fmin(b + BATCH_SIZE, X->rows);
+            int batch_size = batch_end - b;
             
-            // Accumulate gradients over batch
+            // Initialize gradients
             double** base_grads = malloc(NUM_BASE_MODELS * sizeof(double*));
             double* base_bias_grads = calloc(NUM_BASE_MODELS, sizeof(double));
             double** meta_grads = malloc(NUM_META_MODELS * sizeof(double*));
@@ -301,101 +171,88 @@ void train_ensemble(EnsembleModel* model, Matrix* X, Vector* y, int epochs) {
             double* final_grads = calloc(NUM_META_MODELS, sizeof(double));
             double final_bias_grad = 0.0;
             
-            for (int i = 0; i < NUM_BASE_MODELS; i++) {
+            for (int i = 0; i < NUM_BASE_MODELS; i++) 
                 base_grads[i] = calloc(FEATURES, sizeof(double));
-            }
-            for (int i = 0; i < NUM_META_MODELS; i++) {
+            for (int i = 0; i < NUM_META_MODELS; i++) 
                 meta_grads[i] = calloc(NUM_BASE_MODELS, sizeof(double));
-            }
             
-            // Process each sample in batch
-            for (int b = batch_start; b < batch_end; b++) {
-                int idx = indices[b];
+            // Process batch
+            for (int i = b; i < batch_end; i++) {
+                int idx = indices[i];
                 ForwardPass* fp = forward_propagate(model, &X->data[idx * X->cols]);
+                double error = fp->final_output - y[idx];
+                loss += error * error;
                 
-                // Compute prediction error
-                double error = fp->final_output - y->data[idx];
-                total_loss += error * error;
-                
-                // Backward propagation
                 // Final layer gradients
-                for (int i = 0; i < NUM_META_MODELS; i++) {
-                    final_grads[i] += error * fp->meta_outputs[i];
+                for (int j = 0; j < NUM_META_MODELS; j++) {
+                    final_grads[j] += error * fp->meta_outputs[j];
                 }
                 final_bias_grad += error;
                 
                 // Meta layer gradients
-                for (int i = 0; i < NUM_META_MODELS; i++) {
-                    if (fp->meta_raw[i] <= 0) continue;  // ReLU derivative
-                    double meta_error = error * model->final_layer->weights[i];
+                for (int j = 0; j < NUM_META_MODELS; j++) {
+                    if (fp->meta_raw[j] <= 0) continue;
+                    double meta_error = error * model->final_layer->weights[j];
                     
-                    for (int j = 0; j < NUM_BASE_MODELS; j++) {
-                        meta_grads[i][j] += meta_error * fp->base_outputs[j];
+                    for (int k = 0; k < NUM_BASE_MODELS; k++) {
+                        meta_grads[j][k] += meta_error * fp->base_outputs[k];
                     }
-                    meta_bias_grads[i] += meta_error;
+                    meta_bias_grads[j] += meta_error;
                 }
                 
                 // Base layer gradients
-                for (int i = 0; i < NUM_BASE_MODELS; i++) {
-                    if (fp->base_raw[i] <= 0) continue;  // ReLU derivative
+                for (int j = 0; j < NUM_BASE_MODELS; j++) {
+                    if (fp->base_raw[j] <= 0) continue;
                     
                     double base_error = 0;
-                    for (int j = 0; j < NUM_META_MODELS; j++) {
-                        if (fp->meta_raw[j] > 0) {
-                            base_error += error * model->final_layer->weights[j] * 
-                                        model->meta_layers[j]->weights[i];
+                    for (int k = 0; k < NUM_META_MODELS; k++) {
+                        if (fp->meta_raw[k] > 0) {
+                            base_error += error * model->final_layer->weights[k] * 
+                                        model->meta_layers[k]->weights[j];
                         }
                     }
                     
-                    for (int j = 0; j < FEATURES; j++) {
-                        base_grads[i][j] += base_error * X->data[idx * X->cols + j];
+                    for (int k = 0; k < FEATURES; k++) {
+                        base_grads[j][k] += base_error * X->data[idx * X->cols + k];
                     }
-                    base_bias_grads[i] += base_error;
+                    base_bias_grads[j] += base_error;
                 }
                 
-                free_forward_pass(fp);
+                free(fp);
             }
             
-            // Update parameters using AdamW
-            // Base layers
+            // Update parameters
             for (int i = 0; i < NUM_BASE_MODELS; i++) {
                 Layer* layer = model->base_layers[i];
                 for (int j = 0; j < FEATURES; j++) {
                     adam_update(&layer->weights[j], &layer->m_weights[j], &layer->v_weights[j],
-                              base_grads[i][j] / batch_size, BASE_LR, beta1, beta2, 
-                              epsilon, weight_decay, t);
+                              base_grads[i][j] / batch_size, BASE_LR, b1, b2, eps, wd, t);
                 }
                 adam_update(&layer->bias, &layer->m_bias, &layer->v_bias,
-                          base_bias_grads[i] / batch_size, BASE_LR, beta1, beta2,
-                          epsilon, weight_decay, t);
+                          base_bias_grads[i] / batch_size, BASE_LR, b1, b2, eps, wd, t);
             }
             
-            // Meta layers
             for (int i = 0; i < NUM_META_MODELS; i++) {
                 Layer* layer = model->meta_layers[i];
                 for (int j = 0; j < NUM_BASE_MODELS; j++) {
                     adam_update(&layer->weights[j], &layer->m_weights[j], &layer->v_weights[j],
-                              meta_grads[i][j] / batch_size, META_LR, beta1, beta2,
-                              epsilon, weight_decay, t);
+                              meta_grads[i][j] / batch_size, META_LR, b1, b2, eps, wd, t);
                 }
                 adam_update(&layer->bias, &layer->m_bias, &layer->v_bias,
-                          meta_bias_grads[i] / batch_size, META_LR, beta1, beta2,
-                          epsilon, weight_decay, t);
+                          meta_bias_grads[i] / batch_size, META_LR, b1, b2, eps, wd, t);
             }
             
-            // Final layer
             for (int i = 0; i < NUM_META_MODELS; i++) {
                 adam_update(&model->final_layer->weights[i], 
                           &model->final_layer->m_weights[i],
                           &model->final_layer->v_weights[i],
-                          final_grads[i] / batch_size, FINAL_LR, beta1, beta2,
-                          epsilon, weight_decay, t);
+                          final_grads[i] / batch_size, FINAL_LR, b1, b2, eps, wd, t);
             }
             adam_update(&model->final_layer->bias, &model->final_layer->m_bias,
                       &model->final_layer->v_bias, final_bias_grad / batch_size,
-                      FINAL_LR, beta1, beta2, epsilon, weight_decay, t);
+                      FINAL_LR, b1, b2, eps, wd, t);
             
-            // Cleanup batch gradients
+            // Cleanup
             for (int i = 0; i < NUM_BASE_MODELS; i++) free(base_grads[i]);
             for (int i = 0; i < NUM_META_MODELS; i++) free(meta_grads[i]);
             free(base_grads);
@@ -406,32 +263,29 @@ void train_ensemble(EnsembleModel* model, Matrix* X, Vector* y, int epochs) {
         }
         
         if ((epoch + 1) % 100 == 0) {
-            printf("Epoch %d/%d - MSE: %.6f\n", 
-                   epoch + 1, epochs, total_loss / X->rows);
+            printf("Epoch %d/%d - MSE: %.6f\n", epoch + 1, EPOCHS, loss / X->rows);
         }
         
         free(indices);
     }
 }
 
-// Prediction function
 double predict(EnsembleModel* model, const double* input) {
     ForwardPass* fp = forward_propagate(model, input);
-    double prediction = fp->final_output;
-    free_forward_pass(fp);
-    return prediction;
+    double pred = fp->final_output;
+    free(fp);
+    return pred;
 }
 
 int main() {
     srand(time(NULL));
     
-    // Create and prepare data
-    Matrix X_train = create_matrix(404, 13);
-    Matrix X_test = create_matrix(102, 13);
-    Vector y_train = create_vector(404);
-    Vector y_test = create_vector(102);
+    Matrix X_train = {malloc(404 * 13 * sizeof(double)), 404, 13};
+    Matrix X_test = {malloc(102 * 13 * sizeof(double)), 102, 13};
+    double* y_train = malloc(404 * sizeof(double));
+    double* y_test = malloc(102 * sizeof(double));
     
-    // Copy data and create train/test split
+    // Create train/test split
     int* indices = malloc(506 * sizeof(int));
     for (int i = 0; i < 506; i++) indices[i] = i;
     for (int i = 505; i > 0; i--) {
@@ -446,45 +300,43 @@ int main() {
         for (int j = 0; j < 13; j++) {
             X_train.data[i * 13 + j] = X[indices[i]][j];
         }
-        y_train.data[i] = y[indices[i]];
+        y_train[i] = y[indices[i]];
     }
     
     for (int i = 0; i < 102; i++) {
         for (int j = 0; j < 13; j++) {
             X_test.data[i * 13 + j] = X[indices[i + 404]][j];
         }
-        y_test.data[i] = y[indices[i + 404]];
+        y_test[i] = y[indices[i + 404]];
     }
     
-    // Save statistics for denormalization
+    // Calculate statistics for denormalization
     double y_mean = 0, y_std = 0;
     for (int i = 0; i < 506; i++) y_mean += y[i];
     y_mean /= 506;
     for (int i = 0; i < 506; i++) y_std += pow(y[i] - y_mean, 2);
     y_std = sqrt(y_std / 506);
     
-    // Normalize data
-    normalize_data(&X_train, &y_train);
-    normalize_data(&X_test, &y_test);
+    normalize_data(&X_train, y_train, 404);
+    normalize_data(&X_test, y_test, 102);
     
-    // Create and train model
     printf("Creating and training ensemble...\n");
     EnsembleModel* model = create_ensemble();
-    train_ensemble(model, &X_train, &y_train, EPOCHS);
+    train_ensemble(model, &X_train, y_train);
     
     // Evaluate
     int train_correct = 0, test_correct = 0;
     
     for (int i = 0; i < 404; i++) {
         double pred = predict(model, &X_train.data[i * 13]);
-        double true_val = y_train.data[i] * y_std + y_mean;
+        double true_val = y_train[i] * y_std + y_mean;
         double pred_val = pred * y_std + y_mean;
         if (fabs(true_val - pred_val) <= 3.0) train_correct++;
     }
     
     for (int i = 0; i < 102; i++) {
         double pred = predict(model, &X_test.data[i * 13]);
-        double true_val = y_test.data[i] * y_std + y_mean;
+        double true_val = y_test[i] * y_std + y_mean;
         double pred_val = pred * y_std + y_mean;
         if (fabs(true_val - pred_val) <= 3.0) test_correct++;
     }
@@ -496,11 +348,10 @@ int main() {
            (double)test_correct/102 * 100, test_correct, 102);
     
     // Cleanup
-    free_ensemble(model);
-    free_matrix(&X_train);
-    free_matrix(&X_test);
-    free_vector(&y_train);
-    free_vector(&y_test);
+    free(X_train.data);
+    free(X_test.data);
+    free(y_train);
+    free(y_test);
     free(indices);
     
     return 0;
