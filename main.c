@@ -80,11 +80,49 @@ double predict(const double* weights, double bias, const double* x, int features
     return prediction;
 }
 
+double compute_mse(const double* weights, double bias, double** X, const double* y, 
+                  int n_samples, int features) {
+    double mse = 0;
+    for(int i = 0; i < n_samples; i++) {
+        double error = predict(weights, bias, X[i], features) - y[i];
+        mse += error * error;
+    }
+    return mse / n_samples;
+}
+
 void train(double* weights, double* bias, double** X, double* y, 
           int n_samples, int features, double learning_rate, int epochs, int batch_size) {
     double* gradients = malloc(features * sizeof(double));
     
+    // Create arrays for shuffling
+    int* indices = malloc(n_samples * sizeof(int));
+    double** X_shuffled = malloc(n_samples * sizeof(double*));
+    double* y_shuffled = malloc(n_samples * sizeof(double));
+    
+    // Initialize X_shuffled array
+    for(int i = 0; i < n_samples; i++) {
+        X_shuffled[i] = malloc(features * sizeof(double));
+        indices[i] = i;
+    }
+    
     for(int epoch = 0; epoch < epochs; epoch++) {
+        // Shuffle indices using Fisher-Yates algorithm
+        for(int i = n_samples - 1; i > 0; i--) {
+            int j = rand() % (i + 1);
+            int temp = indices[i];
+            indices[i] = indices[j];
+            indices[j] = temp;
+        }
+        
+        // Create shuffled dataset
+        for(int i = 0; i < n_samples; i++) {
+            for(int j = 0; j < features; j++) {
+                X_shuffled[i][j] = X[indices[i]][j];
+            }
+            y_shuffled[i] = y[indices[i]];
+        }
+        
+        // Train on shuffled data
         for(int batch_start = 0; batch_start < n_samples; batch_start += batch_size) {
             int actual_batch_size = fmin(batch_size, n_samples - batch_start);
             
@@ -94,9 +132,9 @@ void train(double* weights, double* bias, double** X, double* y,
             
             // Compute gradients for batch
             for(int i = batch_start; i < batch_start + actual_batch_size; i++) {
-                double error = predict(weights, *bias, X[i], features) - y[i];
+                double error = predict(weights, *bias, X_shuffled[i], features) - y_shuffled[i];
                 for(int j = 0; j < features; j++)
-                    gradients[j] += error * X[i][j];
+                    gradients[j] += error * X_shuffled[i][j];
                 bias_gradient += error;
             }
             
@@ -105,19 +143,22 @@ void train(double* weights, double* bias, double** X, double* y,
                 weights[j] -= learning_rate * (gradients[j] / actual_batch_size);
             *bias -= learning_rate * (bias_gradient / actual_batch_size);
         }
+        
+        // Print progress every 100 epochs
+        if((epoch + 1) % 100 == 0) {
+            double mse = compute_mse(weights, *bias, X, y, n_samples, features);
+            printf("Epoch %d/%d - MSE: %.6f\n", epoch + 1, epochs, mse);
+        }
     }
     
+    // Cleanup
     free(gradients);
-}
-
-double compute_mse(const double* weights, double bias, double** X, const double* y, 
-                  int n_samples, int features) {
-    double mse = 0;
+    free(indices);
     for(int i = 0; i < n_samples; i++) {
-        double error = predict(weights, bias, X[i], features) - y[i];
-        mse += error * error;
+        free(X_shuffled[i]);
     }
-    return mse / n_samples;
+    free(X_shuffled);
+    free(y_shuffled);
 }
 
 int main() {
