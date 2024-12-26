@@ -4,197 +4,170 @@
 #include <time.h>
 #include "data/boston_housing_dataset.h"
 
-// Utility function for shuffling
-void shuffle_indices(int* indices, int size) {
-    for(int i = size - 1; i > 0; i--) {
+// Utility functions
+void shuffle(int* arr, int n) {
+    for (int i = n-1; i > 0; i--) {
         int j = rand() % (i + 1);
-        int temp = indices[i];
-        indices[i] = indices[j];
-        indices[j] = temp;
+        int tmp = arr[i];
+        arr[i] = arr[j];
+        arr[j] = tmp;
     }
 }
 
-// Statistical functions
-double compute_mean(const double* array, int size) {
+double mean(const double* arr, int n) {
     double sum = 0;
-    for(int i = 0; i < size; i++) sum += array[i];
-    return sum / size;
+    for (int i = 0; i < n; i++) sum += arr[i];
+    return sum / n;
 }
 
-double compute_std(const double* array, int size, double mean) {
-    double sum_squared_diff = 0;
-    for(int i = 0; i < size; i++) {
-        double diff = array[i] - mean;
-        sum_squared_diff += diff * diff;
-    }
-    return sqrt(sum_squared_diff / size);
+double stddev(const double* arr, int n, double m) {
+    double sum = 0;
+    for (int i = 0; i < n; i++) 
+        sum += pow(arr[i] - m, 2);
+    return sqrt(sum / n);
 }
 
 // Data preprocessing
-void normalize_data(double (*data)[13], double* y, int rows, int cols) {
-    for(int j = 0; j < cols; j++) {
-        double mean = 0, std = 0;
-        for(int i = 0; i < rows; i++) mean += data[i][j];
-        mean /= rows;
+void normalize(double (*X)[13], double* y, int rows, int cols) {
+    // Normalize features
+    for (int j = 0; j < cols; j++) {
+        double m = 0, s = 0;
+        for (int i = 0; i < rows; i++) m += X[i][j];
+        m /= rows;
         
-        for(int i = 0; i < rows; i++) {
-            double diff = data[i][j] - mean;
-            std += diff * diff;
-        }
-        std = sqrt(std / rows);
+        for (int i = 0; i < rows; i++) 
+            s += pow(X[i][j] - m, 2);
+        s = sqrt(s / rows);
         
-        for(int i = 0; i < rows; i++) 
-            data[i][j] = (data[i][j] - mean) / std;
+        for (int i = 0; i < rows; i++) 
+            X[i][j] = (X[i][j] - m) / s;
     }
     
-    double y_mean = compute_mean(y, rows);
-    double y_std = compute_std(y, rows, y_mean);
-    for(int i = 0; i < rows; i++) y[i] = (y[i] - y_mean) / y_std;
-}
-
-void split_data(double** X_train, double** X_test, double* y_train, double* y_test,
-                double (*X)[13], double* y, int total_samples, int train_size, int features) {
-    int* indices = malloc(total_samples * sizeof(int));
-    for(int i = 0; i < total_samples; i++) indices[i] = i;
-    
-    shuffle_indices(indices, total_samples);
-    
-    for(int i = 0; i < train_size; i++) {
-        for(int j = 0; j < features; j++) 
-            X_train[i][j] = X[indices[i]][j];
-        y_train[i] = y[indices[i]];
-    }
-    
-    int test_size = total_samples - train_size;
-    for(int i = 0; i < test_size; i++) {
-        for(int j = 0; j < features; j++)
-            X_test[i][j] = X[indices[i + train_size]][j];
-        y_test[i] = y[indices[i + train_size]];
-    }
-    
-    free(indices);
+    // Normalize target
+    double m = mean(y, rows);
+    double s = stddev(y, rows, m);
+    for (int i = 0; i < rows; i++) 
+        y[i] = (y[i] - m) / s;
 }
 
 // Model functions
-double predict(const double* weights, double bias, const double* x, int features) {
-    double prediction = bias;
-    for(int i = 0; i < features; i++) 
-        prediction += weights[i] * x[i];
-    return prediction;
+double predict(const double* w, double b, const double* x, int n) {
+    double p = b;
+    for (int i = 0; i < n; i++) p += w[i] * x[i];
+    return p;
 }
 
-double compute_mse(const double* weights, double bias, double** X, const double* y, 
-                  int n_samples, int features) {
-    double mse = 0;
-    for(int i = 0; i < n_samples; i++) {
-        double error = predict(weights, bias, X[i], features) - y[i];
-        mse += error * error;
-    }
-    return mse / n_samples;
-}
-
-void train(double* weights, double* bias, double** X, double* y, 
-          int n_samples, int features, double learning_rate, int epochs, int batch_size) {
-    double* gradients = malloc(features * sizeof(double));
-    int* indices = malloc(n_samples * sizeof(int));
-    double** X_shuffled = malloc(n_samples * sizeof(double*));
-    double* y_shuffled = malloc(n_samples * sizeof(double));
-    
-    for(int i = 0; i < n_samples; i++) {
-        X_shuffled[i] = malloc(features * sizeof(double));
-        indices[i] = i;
-    }
-    
-    for(int epoch = 0; epoch < epochs; epoch++) {
-        shuffle_indices(indices, n_samples);
+void train(double* w, double* b, double** X, double* y, 
+          int samples, int features, double lr, int epochs) {
+    for (int epoch = 0; epoch < epochs; epoch++) {
+        double total_error = 0;
         
-        for(int i = 0; i < n_samples; i++) {
-            for(int j = 0; j < features; j++) {
-                X_shuffled[i][j] = X[indices[i]][j];
-            }
-            y_shuffled[i] = y[indices[i]];
+        for (int i = 0; i < samples; i++) {
+            double pred = predict(w, *b, X[i], features);
+            double error = pred - y[i];
+            
+            // Update weights and bias
+            for (int j = 0; j < features; j++)
+                w[j] -= lr * error * X[i][j];
+            *b -= lr * error;
+            
+            total_error += error * error;
         }
         
-        for(int batch_start = 0; batch_start < n_samples; batch_start += batch_size) {
-            int actual_batch_size = fmin(batch_size, n_samples - batch_start);
-            
-            for(int j = 0; j < features; j++) gradients[j] = 0;
-            double bias_gradient = 0;
-            
-            for(int i = batch_start; i < batch_start + actual_batch_size; i++) {
-                double error = predict(weights, *bias, X_shuffled[i], features) - y_shuffled[i];
-                for(int j = 0; j < features; j++)
-                    gradients[j] += error * X_shuffled[i][j];
-                bias_gradient += error;
-            }
-            
-            for(int j = 0; j < features; j++)
-                weights[j] -= learning_rate * (gradients[j] / actual_batch_size);
-            *bias -= learning_rate * (bias_gradient / actual_batch_size);
-        }
-        
-        if((epoch + 1) % 100 == 0) {
-            double mse = compute_mse(weights, *bias, X, y, n_samples, features);
-            printf("Epoch %d/%d - MSE: %.6f\n", epoch + 1, epochs, mse);
-        }
+        if ((epoch + 1) % 100 == 0)
+            printf("Epoch %d/%d - MSE: %.6f\n", epoch + 1, epochs, total_error/samples);
     }
-    
-    free(gradients);
-    free(indices);
-    for(int i = 0; i < n_samples; i++) {
-        free(X_shuffled[i]);
-    }
-    free(X_shuffled);
-    free(y_shuffled);
 }
 
 int main() {
     srand(time(NULL));
     
-    const int total_samples = 506;
-    const int features = 13;
-    const int train_size = 0.8 * total_samples;
-    const int test_size = total_samples - train_size;
+    const int N = 506;  // Total samples
+    const int F = 13;   // Features
+    const int TRAIN = 404;  // 80% for training
+    const int TEST = N - TRAIN;
     
-    double** X_train = malloc(train_size * sizeof(double*));
-    double** X_test = malloc(test_size * sizeof(double*));
-    for(int i = 0; i < train_size; i++) X_train[i] = malloc(features * sizeof(double));
-    for(int i = 0; i < test_size; i++) X_test[i] = malloc(features * sizeof(double));
+    // Allocate memory
+    double** X_train = malloc(TRAIN * sizeof(double*));
+    double** X_test = malloc(TEST * sizeof(double*));
+    for (int i = 0; i < TRAIN; i++) X_train[i] = malloc(F * sizeof(double));
+    for (int i = 0; i < TEST; i++) X_test[i] = malloc(F * sizeof(double));
+    double* y_train = malloc(TRAIN * sizeof(double));
+    double* y_test = malloc(TEST * sizeof(double));
     
-    double* y_train = malloc(train_size * sizeof(double));
-    double* y_test = malloc(test_size * sizeof(double));
+    // Get original scale parameters for later use
+    double y_mean = mean(y, N);
+    double y_std = stddev(y, N, y_mean);
     
-    double y_mean = compute_mean(y, total_samples);
-    double y_std = compute_std(y, total_samples, y_mean);
+    // Normalize data
+    normalize(X, y, N, F);
     
-    normalize_data(X, y, total_samples, features);
-    split_data(X_train, X_test, y_train, y_test, X, y, total_samples, train_size, features);
+    // Split data
+    int* idx = malloc(N * sizeof(int));
+    for (int i = 0; i < N; i++) idx[i] = i;
+    shuffle(idx, N);
     
-    double* weights = calloc(features, sizeof(double));
+    for (int i = 0; i < TRAIN; i++) {
+        for (int j = 0; j < F; j++) 
+            X_train[i][j] = X[idx[i]][j];
+        y_train[i] = y[idx[i]];
+    }
+    
+    for (int i = 0; i < TEST; i++) {
+        for (int j = 0; j < F; j++)
+            X_test[i][j] = X[idx[i + TRAIN]][j];
+        y_test[i] = y[idx[i + TRAIN]];
+    }
+    
+    // Train model
+    double* weights = calloc(F, sizeof(double));
     double bias = 0;
     
     printf("\nTraining linear regression...\n");
-    train(weights, &bias, X_train, y_train, train_size, features, 0.001, 1000, 32);
+    train(weights, &bias, X_train, y_train, TRAIN, F, 0.001, 1000);
     
-    printf("\nFinal Results:\n");
-    printf("Training MSE: %.6f\n", compute_mse(weights, bias, X_train, y_train, train_size, features));
-    printf("Test MSE: %.6f\n", compute_mse(weights, bias, X_test, y_test, test_size, features));
-    
-    printf("\nSample predictions (showing original scale):\n");
-    for(int i = 0; i < 5; i++) {
-        double pred = predict(weights, bias, X_test[i], features);
-        printf("True: %.2f, Predicted: %.2f\n",
-               y_test[i] * y_std + y_mean,
-               pred * y_std + y_mean);
+    // Evaluate
+    int train_correct = 0, test_correct = 0;
+    for (int i = 0; i < TRAIN; i++) {
+        double pred = predict(weights, bias, X_train[i], F);
+        double true_value = y_train[i] * y_std + y_mean;
+        double pred_value = pred * y_std + y_mean;
+        if (fabs(true_value - pred_value) <= 3.0) train_correct++;
     }
     
-    for(int i = 0; i < train_size; i++) free(X_train[i]);
-    for(int i = 0; i < test_size; i++) free(X_test[i]);
+    for (int i = 0; i < TEST; i++) {
+        double pred = predict(weights, bias, X_test[i], F);
+        double true_value = y_test[i] * y_std + y_mean;
+        double pred_value = pred * y_std + y_mean;
+        if (fabs(true_value - pred_value) <= 3.0) test_correct++;
+    }
+    
+    printf("\nFinal Results:\n");
+    printf("Training Accuracy (within ±3.0): %.2f%% (%d/%d correct)\n", 
+           (double)train_correct/TRAIN * 100, train_correct, TRAIN);
+    printf("Test Accuracy (within ±3.0): %.2f%% (%d/%d correct)\n", 
+           (double)test_correct/TEST * 100, test_correct, TEST);
+    
+    printf("\nSample predictions (showing original scale):\n");
+    for (int i = 0; i < 5; i++) {
+        double pred = predict(weights, bias, X_test[i], F);
+        double true_value = y_test[i] * y_std + y_mean;
+        double pred_value = pred * y_std + y_mean;
+        printf("True: %.2f, Predicted: %.2f, Difference: %.2f, Within ±3.0: %s\n",
+               true_value, pred_value, 
+               fabs(true_value - pred_value),
+               fabs(true_value - pred_value) <= 3.0 ? "Yes" : "No");
+    }
+    
+    // Cleanup
+    for (int i = 0; i < TRAIN; i++) free(X_train[i]);
+    for (int i = 0; i < TEST; i++) free(X_test[i]);
     free(X_train);
     free(X_test);
     free(y_train);
     free(y_test);
     free(weights);
+    free(idx);
     
     return 0;
 }
