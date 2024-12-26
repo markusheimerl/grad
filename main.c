@@ -92,9 +92,50 @@ double predict_deep_ensemble(const DeepEnsembleModel* model, const double* x) {
 
 void train_deep_ensemble(DeepEnsembleModel* model, double** X, double* y, int samples,
                         double lr, int epochs, int batch_size) {
+    const double beta1 = 0.9;
+    const double beta2 = 0.999;
+    const double epsilon = 1e-8;
+    const double weight_decay = 0.01;  // AdamW weight decay parameter
+
     int* indices = malloc(samples * sizeof(int));
     for (int i = 0; i < samples; i++) indices[i] = i;
     
+    // Adam parameters for base models
+    double** base_m = malloc(model->num_base * sizeof(double*));
+    double** base_v = malloc(model->num_base * sizeof(double*));
+    double* base_m_bias = malloc(model->num_base * sizeof(double));
+    double* base_v_bias = malloc(model->num_base * sizeof(double));
+    
+    // Adam parameters for meta models
+    double** meta_m = malloc(model->num_meta * sizeof(double*));
+    double** meta_v = malloc(model->num_meta * sizeof(double*));
+    double* meta_m_bias = malloc(model->num_meta * sizeof(double));
+    double* meta_v_bias = malloc(model->num_meta * sizeof(double));
+    
+    // Adam parameters for meta-meta model
+    double* meta_meta_m = malloc(model->num_meta * sizeof(double));
+    double* meta_meta_v = malloc(model->num_meta * sizeof(double));
+    double meta_meta_m_bias = 0;
+    double meta_meta_v_bias = 0;
+
+    // Initialize Adam parameters
+    for (int i = 0; i < model->num_base; i++) {
+        base_m[i] = calloc(model->features, sizeof(double));
+        base_v[i] = calloc(model->features, sizeof(double));
+    }
+    
+    for (int i = 0; i < model->num_meta; i++) {
+        meta_m[i] = calloc(model->num_base, sizeof(double));
+        meta_v[i] = calloc(model->num_base, sizeof(double));
+    }
+    
+    memset(base_m_bias, 0, model->num_base * sizeof(double));
+    memset(base_v_bias, 0, model->num_base * sizeof(double));
+    memset(meta_m_bias, 0, model->num_meta * sizeof(double));
+    memset(meta_v_bias, 0, model->num_meta * sizeof(double));
+    memset(meta_meta_m, 0, model->num_meta * sizeof(double));
+    memset(meta_meta_v, 0, model->num_meta * sizeof(double));
+
     double** base_w_grads = malloc(model->num_base * sizeof(double*));
     double* base_b_grads = malloc(model->num_base * sizeof(double));
     double** meta_w_grads = malloc(model->num_meta * sizeof(double*));
@@ -107,12 +148,16 @@ void train_deep_ensemble(DeepEnsembleModel* model, double** X, double* y, int sa
     for (int i = 0; i < model->num_meta; i++) {
         meta_w_grads[i] = malloc(model->num_base * sizeof(double));
     }
+
+    int t = 0;  // Time step for Adam
     
     for (int epoch = 0; epoch < epochs; epoch++) {
         double total_error = 0;
         shuffle(indices, samples);
         
         for (int batch = 0; batch < samples/batch_size; batch++) {
+            t++;  // Increment time step
+            
             memset(meta_meta_w_grads, 0, model->num_meta * sizeof(double));
             double meta_meta_b_grad = 0;
             
@@ -126,7 +171,7 @@ void train_deep_ensemble(DeepEnsembleModel* model, double** X, double* y, int sa
                 base_b_grads[i] = 0;
             }
             
-            for (int i = batch * batch_size; i < (batch + 1) * batch_size; i++) {
+            for (int i = batch * batch_size; i < (batch + 1) * batch_size && i < samples; i++) {
                 int idx = indices[i];
                 double* base_outputs = malloc(model->num_base * sizeof(double));
                 double* base_raw = malloc(model->num_base * sizeof(double));
@@ -197,22 +242,73 @@ void train_deep_ensemble(DeepEnsembleModel* model, double** X, double* y, int sa
                 free(meta_raw);
             }
             
-            // Update weights
+            // AdamW updates
+            double correction1 = 1.0 / (1.0 - pow(beta1, t));
+            double correction2 = 1.0 / (1.0 - pow(beta2, t));
+            
             for (int i = 0; i < model->num_base; i++) {
                 for (int j = 0; j < model->features; j++) {
-                    model->base_models[i].weights[j] -= lr * base_w_grads[i][j] / batch_size;
+                    double grad = base_w_grads[i][j] / batch_size;
+                    base_m[i][j] = beta1 * base_m[i][j] + (1 - beta1) * grad;
+                    base_v[i][j] = beta2 * base_v[i][j] + (1 - beta2) * grad * grad;
+                    
+                    double m_hat = base_m[i][j] * correction1;
+                    double v_hat = base_v[i][j] * correction2;
+                    
+                    model->base_models[i].weights[j] *= (1 - lr * weight_decay);
+                    model->base_models[i].weights[j] -= lr * m_hat / (sqrt(v_hat) + epsilon);
                 }
-                model->base_models[i].bias -= lr * base_b_grads[i] / batch_size;
+                
+                double grad = base_b_grads[i] / batch_size;
+                base_m_bias[i] = beta1 * base_m_bias[i] + (1 - beta1) * grad;
+                base_v_bias[i] = beta2 * base_v_bias[i] + (1 - beta2) * grad * grad;
+                
+                double m_hat = base_m_bias[i] * correction1;
+                double v_hat = base_v_bias[i] * correction2;
+                
+                model->base_models[i].bias -= lr * m_hat / (sqrt(v_hat) + epsilon);
             }
             
             for (int i = 0; i < model->num_meta; i++) {
                 for (int j = 0; j < model->num_base; j++) {
-                    model->meta_models[i].weights[j] -= lr * meta_w_grads[i][j] / batch_size;
+                    double grad = meta_w_grads[i][j] / batch_size;
+                    meta_m[i][j] = beta1 * meta_m[i][j] + (1 - beta1) * grad;
+                    meta_v[i][j] = beta2 * meta_v[i][j] + (1 - beta2) * grad * grad;
+                    
+                    double m_hat = meta_m[i][j] * correction1;
+                    double v_hat = meta_v[i][j] * correction2;
+                    
+                    model->meta_models[i].weights[j] *= (1 - lr * weight_decay);
+                    model->meta_models[i].weights[j] -= lr * m_hat / (sqrt(v_hat) + epsilon);
                 }
-                model->meta_models[i].bias -= lr * meta_b_grads[i] / batch_size;
-                model->meta_meta_model.weights[i] -= lr * meta_meta_w_grads[i] / batch_size;
+                
+                double grad = meta_b_grads[i] / batch_size;
+                meta_m_bias[i] = beta1 * meta_m_bias[i] + (1 - beta1) * grad;
+                meta_v_bias[i] = beta2 * meta_v_bias[i] + (1 - beta2) * grad * grad;
+                
+                double m_hat = meta_m_bias[i] * correction1;
+                double v_hat = meta_v_bias[i] * correction2;
+                
+                model->meta_models[i].bias -= lr * m_hat / (sqrt(v_hat) + epsilon);
+                
+                grad = meta_meta_w_grads[i] / batch_size;
+                meta_meta_m[i] = beta1 * meta_meta_m[i] + (1 - beta1) * grad;
+                meta_meta_v[i] = beta2 * meta_meta_v[i] + (1 - beta2) * grad * grad;
+                
+                m_hat = meta_meta_m[i] * correction1;
+                v_hat = meta_meta_v[i] * correction2;
+                
+                model->meta_meta_model.weights[i] *= (1 - lr * weight_decay);
+                model->meta_meta_model.weights[i] -= lr * m_hat / (sqrt(v_hat) + epsilon);
             }
-            model->meta_meta_model.bias -= lr * meta_meta_b_grad / batch_size;
+            
+            meta_meta_m_bias = beta1 * meta_meta_m_bias + (1 - beta1) * meta_meta_b_grad / batch_size;
+            meta_meta_v_bias = beta2 * meta_meta_v_bias + (1 - beta2) * (meta_meta_b_grad / batch_size) * (meta_meta_b_grad / batch_size);
+            
+            double m_hat = meta_meta_m_bias * correction1;
+            double v_hat = meta_meta_v_bias * correction2;
+            
+            model->meta_meta_model.bias -= lr * m_hat / (sqrt(v_hat) + epsilon);
         }
         
         if ((epoch + 1) % 1000 == 0) {
@@ -220,13 +316,33 @@ void train_deep_ensemble(DeepEnsembleModel* model, double** X, double* y, int sa
         }
     }
     
-    for (int i = 0; i < model->num_base; i++) free(base_w_grads[i]);
-    for (int i = 0; i < model->num_meta; i++) free(meta_w_grads[i]);
+    // Cleanup
+    for (int i = 0; i < model->num_base; i++) {
+        free(base_w_grads[i]);
+        free(base_m[i]);
+        free(base_v[i]);
+    }
+    for (int i = 0; i < model->num_meta; i++) {
+        free(meta_w_grads[i]);
+        free(meta_m[i]);
+        free(meta_v[i]);
+    }
+    
     free(base_w_grads);
     free(meta_w_grads);
     free(base_b_grads);
     free(meta_b_grads);
     free(meta_meta_w_grads);
+    free(base_m);
+    free(base_v);
+    free(base_m_bias);
+    free(base_v_bias);
+    free(meta_m);
+    free(meta_v);
+    free(meta_m_bias);
+    free(meta_v_bias);
+    free(meta_meta_m);
+    free(meta_meta_v);
     free(indices);
 }
 
