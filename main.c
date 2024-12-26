@@ -3,7 +3,7 @@
 #include <string.h>
 
 #define N_FEATURES 8
-#define MAX_LINE 1024
+#define MAX_LINE 32768
 
 void load_cal_housing(const char* filename, double** X, double* y) {
     FILE* file = fopen(filename, "r");
