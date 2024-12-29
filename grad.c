@@ -1,36 +1,32 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-// Forward declarations
-struct Tensor;
-struct Operator;
+#include <stdbool.h>
 
 typedef struct {
     int rows;
     int cols;
 } Shape;
 
-// Tensor structure
+struct Operator;
+
 typedef struct Tensor {
     float* data;
     float* grad;
     Shape shape;
-    int requires_grad;
-    struct Operator* grad_fn;  // Points to the operator that created this tensor
+    bool requires_grad;
+    struct Operator* grad_fn;
 } Tensor;
 
-// Operator structure
 typedef struct Operator {
     char* name;
-    Tensor* (*forward)(Tensor**, int);  // Takes array of input tensors and count
-    void (*backward)(Tensor*, Tensor**);  // Output grad and input tensors
+    Tensor* (*forward)(Tensor**);
+    void (*backward)(Tensor*, Tensor**);
     Tensor** inputs;
     int num_inputs;
 } Operator;
 
-// Utility functions
-Tensor* create_tensor(int rows, int cols, int requires_grad) {
+Tensor* create_tensor(int rows, int cols, bool requires_grad) {
     Tensor* t = (Tensor*)malloc(sizeof(Tensor));
     t->shape.rows = rows;
     t->shape.cols = cols;
@@ -61,8 +57,7 @@ void print_tensor(Tensor* t, const char* name) {
     printf("\n");
 }
 
-// Matrix multiplication forward
-Tensor* matmul_forward(Tensor** inputs, int num_inputs) {
+Tensor* matmul_forward(Tensor** inputs) {
     Tensor* a = inputs[0];
     Tensor* b = inputs[1];
     
@@ -85,12 +80,10 @@ Tensor* matmul_forward(Tensor** inputs, int num_inputs) {
     return out;
 }
 
-// Matrix multiplication backward
 void matmul_backward(Tensor* grad_output, Tensor** inputs) {
     Tensor* a = inputs[0];
     Tensor* b = inputs[1];
 
-    // Gradient for first input: grad_output @ b.T
     if (a->requires_grad) {
         for (int i = 0; i < a->shape.rows; i++) {
             for (int k = 0; k < a->shape.cols; k++) {
@@ -104,7 +97,6 @@ void matmul_backward(Tensor* grad_output, Tensor** inputs) {
         }
     }
 
-    // Gradient for second input: a.T @ grad_output
     if (b->requires_grad) {
         for (int k = 0; k < b->shape.rows; k++) {
             for (int j = 0; j < b->shape.cols; j++) {
@@ -119,8 +111,7 @@ void matmul_backward(Tensor* grad_output, Tensor** inputs) {
     }
 }
 
-// Addition forward
-Tensor* add_forward(Tensor** inputs, int num_inputs) {
+Tensor* add_forward(Tensor** inputs) {
     Tensor* a = inputs[0];
     Tensor* b = inputs[1];
     
@@ -137,7 +128,6 @@ Tensor* add_forward(Tensor** inputs, int num_inputs) {
     return out;
 }
 
-// Addition backward
 void add_backward(Tensor* grad_output, Tensor** inputs) {
     Tensor* a = inputs[0];
     Tensor* b = inputs[1];
@@ -155,9 +145,8 @@ void add_backward(Tensor* grad_output, Tensor** inputs) {
     }
 }
 
-// Create operator
 Operator* create_operator(const char* name, 
-                         Tensor* (*forward)(Tensor**, int),
+                         Tensor* (*forward)(Tensor**),
                          void (*backward)(Tensor*, Tensor**),
                          Tensor** inputs,
                          int num_inputs) {
@@ -171,12 +160,10 @@ Operator* create_operator(const char* name,
 }
 
 int main() {
-    // Create input tensors
-    Tensor* a = create_tensor(2, 3, 1);  // 2x3 matrix
-    Tensor* b = create_tensor(3, 2, 1);  // 3x2 matrix
-    Tensor* c = create_tensor(2, 2, 1);  // 2x2 matrix
+    Tensor* a = create_tensor(2, 3, true);
+    Tensor* b = create_tensor(3, 2, true);
+    Tensor* c = create_tensor(2, 2, true);
 
-    // Initialize some values
     float a_data[] = {1, 2, 3, 4, 5, 6};
     float b_data[] = {1, 2, 3, 4, 5, 6};
     float c_data[] = {1, 1, 1, 1};
@@ -185,42 +172,56 @@ int main() {
     memcpy(b->data, b_data, sizeof(float) * 6);
     memcpy(c->data, c_data, sizeof(float) * 4);
 
-    // Create operators
     Tensor* inputs1[] = {a, b};
     Operator* matmul_op = create_operator("matmul", matmul_forward, matmul_backward, inputs1, 2);
     
-    // Forward pass
-    Tensor* d = matmul_op->forward(matmul_op->inputs, 2);
+    Tensor* d = matmul_op->forward(matmul_op->inputs);
     d->grad_fn = matmul_op;
     
     Tensor* inputs2[] = {d, c};
     Operator* add_op = create_operator("add", add_forward, add_backward, inputs2, 2);
     
-    Tensor* output = add_op->forward(add_op->inputs, 2);
+    Tensor* output = add_op->forward(add_op->inputs);
     output->grad_fn = add_op;
 
-    // Print initial tensors and result
     print_tensor(a, "A");
     print_tensor(b, "B");
     print_tensor(c, "C");
     print_tensor(d, "D (A @ B)");
     print_tensor(output, "Output (D + C)");
 
-    // Backward pass
-    // Initialize output gradient with ones
     for (int i = 0; i < output->shape.rows * output->shape.cols; i++) {
         output->grad[i] = 1.0;
     }
 
-    // Backward pass through the graph
     add_op->backward(output, add_op->inputs);
     matmul_op->backward(d, matmul_op->inputs);
 
-    // Print gradients
     printf("After backward pass:\n");
     print_tensor(a, "A");
     print_tensor(b, "B");
     print_tensor(c, "C");
+
+    // Free memory
+    free(a->data);
+    free(a->grad);
+    free(a);
+    free(b->data);
+    free(b->grad);
+    free(b);
+    free(c->data);
+    free(c->grad);
+    free(c);
+    free(d->data);
+    free(d->grad);
+    free(d);
+    free(output->data);
+    free(output->grad);
+    free(output);
+    free(matmul_op->name);
+    free(matmul_op);
+    free(add_op->name);
+    free(add_op);
 
     return 0;
 }
