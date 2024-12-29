@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -O3 -flto -ffast-math -funroll-loops -Wall -Wextra
+CFLAGS = -O3 -march=native -flto -ffast-math -funroll-loops -Wall -Wextra
 LDFLAGS = -flto
 TARGET = grad.out
 
