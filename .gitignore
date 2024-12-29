@@ -1,3 +1,2 @@
 *.csv
-*.scaler
-__pycache__/
+*.out
