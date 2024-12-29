@@ -8,9 +8,13 @@ import os
 from datetime import datetime
 import tqdm
 import random
+from typing import Any
+from flax import linen as nn
 import optax
+from flax.training import train_state
+from flax.training import checkpoints
 
-# ============= PART 1: CORE MODEL COMPONENTS =============
+# ============= PART 1: DATASET =============
 
 class ControlDataset:
     def __init__(self, file_path, sequence_length=256, scale_data=True):
@@ -85,149 +89,177 @@ def get_batches(dataset, batch_size):
             
         yield jnp.stack(inputs), jnp.stack(targets), jnp.stack(conditions)
 
-def adaptive_rms_norm(x, condition, params):
-    condition_embedding = jnp.dot(condition, params['condition_projection'])
-    scale = jnp.dot(condition_embedding, params['scale_projection'])
-    scale = jax.nn.sigmoid(scale) * 2
-    
-    variance = jnp.mean(jnp.square(x), axis=-1, keepdims=True)
-    x_normalized = x * jax.lax.rsqrt(variance + 1e-5)
-    
-    weight = params['weight'][None, None, :]
-    
-    return x_normalized * weight * scale
+# ============= PART 2: MODEL =============
 
-def attention(params, x, condition, mask, batch_size, seq_len, num_heads, hidden_dim):
-    head_dim = hidden_dim // num_heads
-    def process_qkv(input_data, weight):
-        return (jnp.dot(input_data, weight)
-                .reshape((batch_size, seq_len, num_heads, head_dim))
-                .transpose(0, 2, 1, 3))
-    
-    q = process_qkv(x, params['q_linear'])
-    k = process_qkv(x, params['k_linear'])
-    v = process_qkv(x, params['v_linear'])
-    
-    scores = jnp.matmul(q, k.transpose(0, 1, 3, 2)) * (head_dim ** -0.5)
-    scores = jax.nn.softmax(scores + mask, axis=3)
-    
-    output = (jnp.matmul(scores, v)
-             .transpose(0, 2, 1, 3)
-             .reshape((batch_size, seq_len, hidden_dim)))
-    return jnp.dot(output, params['o_linear'])
+class AdaptiveRMSNorm(nn.Module):
+    hidden_dim: int
 
-def feed_forward(params, x):
-    x = jnp.dot(x, params['in_weight'])
-    x1, x2 = jnp.split(x, 2, axis=-1)
-    return jnp.dot(x1 * jax.nn.sigmoid(x2), params['out_weight'])
+    @nn.compact
+    def __call__(self, x, condition):
+        condition_projection = nn.Dense(self.hidden_dim)(condition)
+        scale = nn.Dense(1)(condition_projection)
+        scale = jax.nn.sigmoid(scale) * 2
 
-def transformer_block(params, x, condition, mask, batch_size, seq_len, num_heads, hidden_dim):
-    x = x + attention(params['attention'], 
-                     adaptive_rms_norm(x, condition, params['norm1']), 
-                     condition, mask, batch_size, seq_len, num_heads, hidden_dim)
-    x = x + feed_forward(params['feed_forward'], 
-                        adaptive_rms_norm(x, condition, params['norm2']))
-    return x
+        variance = jnp.mean(jnp.square(x), axis=-1, keepdims=True)
+        x_normalized = x * jax.lax.rsqrt(variance + 1e-5)
+        
+        weight = self.param('weight', 
+                          nn.initializers.ones, 
+                          (self.hidden_dim,))
+        
+        return x_normalized * weight * scale
 
-def forward(params, x, condition):
-    batch_size, seq_len = x.shape[:2]
-    x = jnp.dot(x, params['input_projection'])
-    x = x + params['positional_embedding'][:seq_len]
-    
-    mask = jnp.where(jnp.tril(jnp.ones((seq_len, seq_len))) == 0, -1e10, 0)[None, None, :, :]
-    
-    for block in params['transformer_blocks']:
-        x = transformer_block(block, x, condition, mask, batch_size, seq_len, 
-                            num_heads=8, hidden_dim=384)
-    
-    return jnp.dot(adaptive_rms_norm(x, condition, params['final_norm']), params['output_projection'])
+class TransformerBlock(nn.Module):
+    hidden_dim: int
+    num_heads: int
+    dropout_rate: float
 
-def init_params(feature_dim, condition_dim, seq_len, num_blocks=6, num_heads=8, hidden_dim=384, ff_dim=1536, dtype=jnp.float32):
-    rng_key = jax.random.PRNGKey(0)
-    keys = jax.random.split(rng_key, num_blocks * 8 + 7)
-    key_idx = 0
-    
-    def next_key():
-        nonlocal key_idx
-        key = keys[key_idx]
-        key_idx += 1
-        return key
-    
-    xavier_init = jax.nn.initializers.glorot_uniform(dtype=dtype)
-    kaiming_init = jax.nn.initializers.he_normal(dtype=dtype)
-    
-    def init_norm_params():
-        return {
-            'weight': jnp.ones((hidden_dim,), dtype=dtype),
-            'condition_projection': xavier_init(next_key(), (condition_dim, hidden_dim)),
-            'scale_projection': xavier_init(next_key(), (hidden_dim, 1))
-        }
-    
-    params = {
-        'input_projection': xavier_init(next_key(), (feature_dim, hidden_dim)),
-        'output_projection': xavier_init(next_key(), (hidden_dim, feature_dim)),
-        'positional_embedding': jax.random.normal(next_key(), (256, hidden_dim), dtype=dtype) * 0.02,
-        'final_norm': init_norm_params(),
-        'transformer_blocks': [{
-            'attention': {
-                'q_linear': xavier_init(next_key(), (hidden_dim, hidden_dim)),
-                'k_linear': xavier_init(next_key(), (hidden_dim, hidden_dim)),
-                'v_linear': xavier_init(next_key(), (hidden_dim, hidden_dim)),
-                'o_linear': xavier_init(next_key(), (hidden_dim, hidden_dim)),
-            },
-            'feed_forward': {
-                'in_weight': kaiming_init(next_key(), (hidden_dim, ff_dim)),
-                'out_weight': xavier_init(next_key(), (ff_dim // 2, hidden_dim)),
-            },
-            'norm1': init_norm_params(),
-            'norm2': init_norm_params()
-        } for _ in range(num_blocks)]
-    }
-    
-    return params
+    @nn.compact
+    def __call__(self, x, condition, training: bool = True):
+        # Attention with adaptive norm
+        norm1 = AdaptiveRMSNorm(self.hidden_dim)
+        normed_x = norm1(x, condition)
+        
+        # Updated attention call
+        attention = nn.MultiHeadDotProductAttention(
+            num_heads=self.num_heads,
+            dropout_rate=self.dropout_rate)
+        
+        # The new API uses inputs_q, inputs_kv
+        attention_output = attention(
+            inputs_q=normed_x,
+            inputs_kv=normed_x,
+            deterministic=not training)
+        x = x + attention_output
 
-# ============= PART 2: TRAINING INFRASTRUCTURE =============
+        # MLP with adaptive norm
+        norm2 = AdaptiveRMSNorm(self.hidden_dim)
+        normed_x = norm2(x, condition)
+        
+        dense1 = nn.Dense(self.hidden_dim * 4)
+        dense2 = nn.Dense(self.hidden_dim)
+        
+        mlp_output = dense1(normed_x)
+        mlp_output = nn.gelu(mlp_output)
+        mlp_output = nn.Dropout(
+            rate=self.dropout_rate)(mlp_output, deterministic=not training)
+        mlp_output = dense2(mlp_output)
+        
+        return x + mlp_output
 
-def train_step(params, opt_state, batch):
+class ControlTransformer(nn.Module):
+    num_layers: int
+    hidden_dim: int
+    num_heads: int
+    dropout_rate: float
+    feature_dim: int
+
+    @nn.compact
+    def __call__(self, x, condition, training: bool = True):
+        # Input projection
+        x = nn.Dense(self.hidden_dim)(x)
+
+        # Positional embedding
+        position = self.param('pos_embedding',
+                            nn.initializers.normal(stddev=0.02),
+                            (256, self.hidden_dim))
+        x = x + position[:x.shape[1]]
+
+        # Transformer blocks
+        for _ in range(self.num_layers):
+            x = TransformerBlock(
+                hidden_dim=self.hidden_dim,
+                num_heads=self.num_heads,
+                dropout_rate=self.dropout_rate)(x, condition, training)
+
+        # Output projection
+        x = AdaptiveRMSNorm(self.hidden_dim)(x, condition)
+        x = nn.Dense(self.feature_dim)(x)
+        return x
+
+# ============= PART 3: TRAINING =============
+
+class TrainState(train_state.TrainState):
+    dropout_rng: Any
+
+def create_train_state(rng, config):
+    """Creates initial `TrainState`."""
+    dropout_rng, param_rng = jax.random.split(rng)
+    
+    model = ControlTransformer(
+        num_layers=config['num_blocks'],
+        hidden_dim=config['hidden_dim'],
+        num_heads=config['num_heads'],
+        dropout_rate=config['dropout_rate'],
+        feature_dim=config['feature_dim'])
+    
+    # Create dummy inputs for initialization
+    dummy_input = jnp.ones((1, config['seq_len'], config['feature_dim']))
+    dummy_condition = jnp.ones((1, config['seq_len'], config['condition_dim']))
+    
+    variables = model.init(param_rng, dummy_input, dummy_condition, training=True)
+    
+    tx = optax.adam(config['learning_rate'])
+    
+    return TrainState.create(
+        apply_fn=model.apply,
+        params=variables['params'],
+        tx=tx,
+        dropout_rng=dropout_rng)
+
+@jax.jit
+def train_step(state, batch, dropout_rng):
+    """Train for a single step."""
     inputs, targets, conditions = batch
+    dropout_rng, new_dropout_rng = jax.random.split(dropout_rng)
+
+    def loss_fn(params):
+        predictions = state.apply_fn(
+            {'params': params},
+            inputs,
+            conditions,
+            training=True,
+            rngs={'dropout': dropout_rng})
+        loss = jnp.mean((predictions - targets) ** 2)
+        return loss, predictions
+
+    grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
+    (loss, predictions), grads = grad_fn(state.params)
     
-    def loss_fn(p):
-        pred = forward(p, inputs, conditions)
-        loss = jnp.mean((pred - targets) ** 2)
-        return loss, pred
-    
-    (loss, pred), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
-    updates, new_opt_state = optimizer.update(grads, opt_state)
-    new_params = optax.apply_updates(params, updates)
+    state = state.apply_gradients(grads=grads)
+    state = state.replace(dropout_rng=new_dropout_rng)
     
     metrics = {
         'loss': loss,
-        'mse': jnp.mean((pred - targets) ** 2, axis=(0, 1)),
-        'mae': jnp.mean(jnp.abs(pred - targets), axis=(0, 1))
+        'mse': jnp.mean((predictions - targets) ** 2, axis=(0, 1)),
+        'mae': jnp.mean(jnp.abs(predictions - targets), axis=(0, 1))
     }
     
-    return new_params, new_opt_state, metrics
+    return state, metrics
 
-def evaluate(params, dataset, batch_size):
-    metrics_list = []
-    for batch in get_batches(dataset, batch_size):
-        inputs, targets, conditions = batch
-        pred = forward(params, inputs, conditions)
-        metrics = {
-            'loss': jnp.mean((pred - targets) ** 2),
-            'mse': jnp.mean((pred - targets) ** 2, axis=(0, 1)),
-            'mae': jnp.mean(jnp.abs(pred - targets), axis=(0, 1))
-        }
-        metrics_list.append(metrics)
+@jax.jit
+def eval_step(state, batch):
+    """Evaluate for a single step."""
+    inputs, targets, conditions = batch
+    predictions = state.apply_fn(
+        {'params': state.params},
+        inputs,
+        conditions,
+        training=False)
     
-    return {k: np.mean([m[k] for m in metrics_list]) for k in metrics_list[0].keys()}
-
-def save_checkpoint(params, filename):
-    with open(filename, 'wb') as f:
-        pickle.dump(params, f)
-    print(f"Saved checkpoint to {filename}")
+    metrics = {
+        'loss': jnp.mean((predictions - targets) ** 2),
+        'mse': jnp.mean((predictions - targets) ** 2, axis=(0, 1)),
+        'mae': jnp.mean(jnp.abs(predictions - targets), axis=(0, 1))
+    }
+    
+    return metrics
 
 def train(config):
+    # Initialize random numbers
+    rng = jax.random.PRNGKey(config['seed'])
+    rng, init_rng = jax.random.split(rng)
+
     # Create datasets
     train_dataset, val_dataset = create_train_val_datasets(
         config['data_path'], 
@@ -235,63 +267,49 @@ def train(config):
         config['val_split']
     )
     
-    # Initialize model and optimizer
-    params = init_params(
-        feature_dim=train_dataset.feature_dim,
-        condition_dim=train_dataset.condition_dim,
-        seq_len=config['seq_len'],
-        num_blocks=config['num_blocks'],
-        num_heads=config['num_heads'],
-        hidden_dim=config['hidden_dim'],
-        ff_dim=config['ff_dim']
-    )
-    
-    global optimizer  # Make optimizer global so train_step can access it
-    optimizer = optax.adam(config['learning_rate'])
-    opt_state = optimizer.init(params)
-    
-    # JIT compile the train step
-    jitted_train_step = jax.jit(train_step)
-    
-    # Calculate total number of batches
-    total_batches = len(train_dataset) // config['batch_size']
-    
+    # Add feature dimensions to config
+    config['feature_dim'] = train_dataset.feature_dim
+    config['condition_dim'] = train_dataset.condition_dim
+
+    # Create train state
+    state = create_train_state(init_rng, config)
+
     # Training loop
     for epoch in range(config['num_epochs']):
         print(f"\nEpoch {epoch + 1}/{config['num_epochs']}")
-        train_metrics = []
         
-        # Create progress bar for batches
+        # Training
+        train_metrics = []
         progress_bar = tqdm.tqdm(
             get_batches(train_dataset, config['batch_size']),
-            total=total_batches,
-            desc=f"Training",
-            leave=True,
-            ncols=100
-        )
-        
+            total=len(train_dataset) // config['batch_size'],
+            desc="Training",
+            leave=True)
+
         for batch in progress_bar:
-            params, opt_state, metrics = jitted_train_step(params, opt_state, batch)
+            state, metrics = train_step(state, batch, state.dropout_rng)
             train_metrics.append(metrics)
-            
-            # Update progress bar with current loss
-            current_loss = metrics['loss'].item()  # Get the latest batch loss
-            progress_bar.set_postfix({
-                'loss': f"{current_loss:.4f}"
-            })
-        
+            progress_bar.set_postfix({'loss': f"{metrics['loss'].item():.4f}"})
+
         # Validation
-        val_metrics = evaluate(params, val_dataset, config['batch_size'])
-        
-        # Print epoch summary
-        mean_train_loss = np.mean([m['loss'] for m in train_metrics])
-        print(f"\nEpoch {epoch + 1} Summary:")
-        print(f"Train Loss: {mean_train_loss:.4f}")
-        print(f"Val Loss: {val_metrics['loss']:.4f}")
-        
+        val_metrics = []
+        for batch in get_batches(val_dataset, config['batch_size']):
+            metrics = eval_step(state, batch)
+            val_metrics.append(metrics)
+
+        # Print metrics
+        train_loss = np.mean([m['loss'] for m in train_metrics])
+        val_loss = np.mean([m['loss'] for m in val_metrics])
+        print(f"Train Loss: {train_loss:.4f}")
+        print(f"Val Loss: {val_loss:.4f}")
+
         # Save checkpoint
         if (epoch + 1) % config['save_every'] == 0:
-            save_checkpoint(params, f"checkpoint_epoch_{epoch+1}.pkl")
+            checkpoints.save_checkpoint(
+                ckpt_dir="checkpoints",
+                target=state,
+                step=epoch + 1,
+                overwrite=True)
 
 if __name__ == "__main__":
     config = {
@@ -305,10 +323,9 @@ if __name__ == "__main__":
         'ff_dim': 1536,
         'num_epochs': 50,
         'learning_rate': 1e-4,
+        'dropout_rate': 0.1,
         'save_every': 5,
         'seed': 42
     }
     
-    random.seed(config['seed'])
-    np.random.seed(config['seed'])
     train(config)
