@@ -36,10 +36,7 @@ Tensor* tensor_new(int ndims, int* dims, float* data, int requires_grad) {
     if (data) memcpy(t->data, data, t->size * sizeof(float));
     t->requires_grad = requires_grad;
     if (requires_grad) t->grad = calloc(t->size, sizeof(float));
-    
-    if (requires_grad || data) {
-        tape.ops[tape.len++] = t;
-    }
+    if (requires_grad || data) tape.ops[tape.len++] = t;
     return t;
 }
 
@@ -47,11 +44,9 @@ void tensor_print(Tensor* t, const char* name) {
     printf("%s: dims=[", name);
     for (int i = 0; i < t->ndims; i++) 
         printf("%d%s", t->dims[i], i < t->ndims-1 ? "," : "");
-    
     printf("], data=[");
     for (int i = 0; i < t->size; i++)
         printf("%.2f%s", t->data[i], i < t->size-1 ? "," : "");
-    
     if (t->grad) {
         printf("], grad=[");
         for (int i = 0; i < t->size; i++)
@@ -81,7 +76,7 @@ static Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
     if (op == ADD) {
         for (int i = 0; i < a->size; i++)
             result->data[i] = a->data[i] + b->data[i];
-    } else {  // MATMUL
+    } else {
         for (int i = 0; i < a->dims[0]; i++)
             for (int j = 0; j < b->dims[1]; j++) {
                 float sum = 0;
@@ -137,7 +132,6 @@ void backward() {
         if (!final->grad) final->grad = calloc(final->size, sizeof(float));
         for (int i = 0; i < final->size; i++)
             final->grad[i] = 1.0;
-        
         for (int i = tape.len - 1; i >= 0; i--)
             backward_op(tape.ops[i]);
     }
@@ -149,14 +143,40 @@ void zero_grad(Tensor* t) {
 
 void tape_clear() { tape.len = 0; }
 
-void assert_close(float a, float b, float tol) {
-    if (fabs(a - b) > tol) {
-        printf("Assertion failed: %f != %f (diff: %f)\n", a, b, fabs(a - b));
+void compare_with_pytorch(float* values, const char* pytorch_str, int expected_size, const char* name, float tol) {
+    char* str_copy = strdup(pytorch_str);
+    char* saveptr;
+    char* token = strtok_r(str_copy, " ", &saveptr);
+    
+    for (int i = 0; i < expected_size; i++) {
+        if (!token) {
+            printf("Error: Not enough values in PyTorch results for %s\n", name);
+            free(str_copy);
+            exit(1);
+        }
+        float pytorch_val = strtof(token, NULL);
+        float diff = fabs(values[i] - pytorch_val);
+        if (diff > tol) {
+            printf("Error: Mismatch in %s at index %d: got %f, expected %f (diff: %f)\n",
+                   name, i, values[i], pytorch_val, diff);
+            free(str_copy);
+            exit(1);
+        }
+        token = strtok_r(NULL, " ", &saveptr);
+    }
+    
+    if (token) {
+        printf("Error: Extra values in PyTorch results for %s\n", name);
+        free(str_copy);
         exit(1);
     }
+    
+    free(str_copy);
+    printf("✓ %s matches PyTorch\n", name);
 }
 
 int main() {
+    // Generate Python comparison script
     FILE* f = fopen("compare.py", "w");
     fprintf(f, "import torch\n\n");
     
@@ -184,6 +204,7 @@ int main() {
     
     fclose(f);
 
+    // Run Python script and capture output
     FILE* pipe = popen("python3 compare.py", "r");
     if (!pipe) {
         printf("Failed to run Python comparison\n");
@@ -208,12 +229,17 @@ int main() {
             strcpy(pytorch_results[result_idx++], buffer);
         }
     }
-    pclose(pipe);
+    
+    if (pclose(pipe) != 0) {
+        printf("Error: Python script execution failed\n");
+        return 1;
+    }
+    
     if (system("rm compare.py") != 0) {
         printf("Warning: Failed to remove temporary Python file\n");
     }
 
-    printf("Running tests and comparing with PyTorch...\n");
+    printf("Running tests and comparing with PyTorch...\n\n");
     float tol = 1e-5;
     
     // Test 1
@@ -234,40 +260,11 @@ int main() {
     
     backward();
     
-    printf("\nComparing Test 1 results with PyTorch...\n");
-    
-    char *saveptr;
-    char *token = strtok_r(pytorch_results[0], " ", &saveptr);
-    printf("Checking a.grad...\n");
-    for (int i = 0; i < a->size; i++) {
-        float pytorch_val = strtof(token, NULL);
-        assert_close(a->grad[i], pytorch_val, tol);
-        token = strtok_r(NULL, " ", &saveptr);
-    }
-    
-    token = strtok_r(pytorch_results[1], " ", &saveptr);
-    printf("Checking b.grad...\n");
-    for (int i = 0; i < b->size; i++) {
-        float pytorch_val = strtof(token, NULL);
-        assert_close(b->grad[i], pytorch_val, tol);
-        token = strtok_r(NULL, " ", &saveptr);
-    }
-    
-    token = strtok_r(pytorch_results[2], " ", &saveptr);
-    printf("Checking c values...\n");
-    for (int i = 0; i < c->size; i++) {
-        float pytorch_val = strtof(token, NULL);
-        assert_close(c->data[i], pytorch_val, tol);
-        token = strtok_r(NULL, " ", &saveptr);
-    }
-    
-    token = strtok_r(pytorch_results[3], " ", &saveptr);
-    printf("Checking d values...\n");
-    for (int i = 0; i < d->size; i++) {
-        float pytorch_val = strtof(token, NULL);
-        assert_close(d->data[i], pytorch_val, tol);
-        token = strtok_r(NULL, " ", &saveptr);
-    }
+    printf("\nComparing Test 1 results with PyTorch:\n");
+    compare_with_pytorch(a->grad, pytorch_results[0], a->size, "a.grad", tol);
+    compare_with_pytorch(b->grad, pytorch_results[1], b->size, "b.grad", tol);
+    compare_with_pytorch(c->data, pytorch_results[2], c->size, "c values", tol);
+    compare_with_pytorch(d->data, pytorch_results[3], d->size, "d values", tol);
 
     tape_clear();
     zero_grad(a); zero_grad(b);
@@ -290,31 +287,11 @@ int main() {
     
     backward();
     
-    printf("\nComparing Test 2 results with PyTorch...\n");
-    printf("Checking m1.grad...\n");
-    token = strtok_r(pytorch_results[4], " ", &saveptr);
-    for (int i = 0; i < m1->size; i++) {
-        float pytorch_val = strtof(token, NULL);
-        assert_close(m1->grad[i], pytorch_val, tol);
-        token = strtok_r(NULL, " ", &saveptr);
-    }
-    
-    printf("Checking m2.grad...\n");
-    token = strtok_r(pytorch_results[5], " ", &saveptr);
-    for (int i = 0; i < m2->size; i++) {
-        float pytorch_val = strtof(token, NULL);
-        assert_close(m2->grad[i], pytorch_val, tol);
-        token = strtok_r(NULL, " ", &saveptr);
-    }
-    
-    printf("Checking m3 values...\n");
-    token = strtok_r(pytorch_results[6], " ", &saveptr);
-    for (int i = 0; i < m3->size; i++) {
-        float pytorch_val = strtof(token, NULL);
-        assert_close(m3->data[i], pytorch_val, tol);
-        token = strtok_r(NULL, " ", &saveptr);
-    }
+    printf("\nComparing Test 2 results with PyTorch:\n");
+    compare_with_pytorch(m1->grad, pytorch_results[4], m1->size, "m1.grad", tol);
+    compare_with_pytorch(m2->grad, pytorch_results[5], m2->size, "m2.grad", tol);
+    compare_with_pytorch(m3->data, pytorch_results[6], m3->size, "m3 values", tol);
 
-    printf("\nAll tests passed! Results match PyTorch within tolerance of %f\n", tol);
+    printf("\nAll tests passed successfully!\n");
     return 0;
 }
