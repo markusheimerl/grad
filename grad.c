@@ -2,6 +2,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define MAX_DIMS 8
+#define MIN(a,b) ((a) < (b) ? (a) : (b))
+#define MAX(a,b) ((a) > (b) ? (a) : (b))
+
 typedef enum { ADD, MATMUL, NONE } OpType;
 
 typedef struct Tensor {
@@ -68,6 +72,45 @@ void tensor_free(Tensor* t) {
     free(t);
 }
 
+static int compatible_shapes(const Tensor* a, const Tensor* b, OpType op) {
+    if (op == ADD) {
+        if (a->ndims != b->ndims) return 0;
+        for (int i = 0; i < a->ndims; i++) {
+            if (a->dims[i] != b->dims[i]) return 0;
+        }
+        return 1;
+    } else if (op == MATMUL) {
+        if (a->ndims < 2 || b->ndims < 2) return 0;
+        if (a->dims[a->ndims-1] != b->dims[b->ndims-2]) return 0;
+        
+        int batch_dims = MIN(a->ndims-2, b->ndims-2);
+        for (int i = 0; i < batch_dims; i++) {
+            if (a->dims[i] != b->dims[i] && 
+                a->dims[i] != 1 && b->dims[i] != 1) return 0;
+        }
+        return 1;
+    }
+    return 0;
+}
+
+static void get_output_dims(const Tensor* a, const Tensor* b, 
+                          OpType op, int* out_dims, int* out_ndims) {
+    if (op == ADD) {
+        *out_ndims = a->ndims;
+        memcpy(out_dims, a->dims, a->ndims * sizeof(int));
+    } else if (op == MATMUL) {
+        *out_ndims = MAX(a->ndims, b->ndims);
+        
+        int batch_dims = *out_ndims - 2;
+        for (int i = 0; i < batch_dims; i++) {
+            out_dims[i] = MAX(a->dims[i], b->dims[i]);
+        }
+        
+        out_dims[*out_ndims-2] = a->dims[a->ndims-2];
+        out_dims[*out_ndims-1] = b->dims[b->ndims-1];
+    }
+}
+
 static void matmul_forward(const float* __restrict__ a, 
                           const float* __restrict__ b, 
                           float* __restrict__ out,
@@ -83,21 +126,35 @@ static void matmul_forward(const float* __restrict__ a,
     }
 }
 
-static Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
-    if (!a || !b || a->ndims != b->ndims) return NULL;
-    
-    int out_dims[2];
-    if (op == MATMUL) {
-        if (a->dims[1] != b->dims[0]) return NULL;
-        out_dims[0] = a->dims[0];
-        out_dims[1] = b->dims[1];
-    } else {
-        if (a->dims[0] != b->dims[0] || a->dims[1] != b->dims[1]) return NULL;
-        out_dims[0] = a->dims[0];
-        out_dims[1] = a->dims[1];
+static void generalized_matmul(const Tensor* a, const Tensor* b, Tensor* out) {
+    int batch_size = 1;
+    int batch_dims = out->ndims - 2;
+    for (int i = 0; i < batch_dims; i++) {
+        batch_size *= out->dims[i];
     }
     
-    Tensor* result = tensor_new(2, out_dims, NULL, 1);
+    int m = a->dims[a->ndims-2];
+    int n = a->dims[a->ndims-1];
+    int p = b->dims[b->ndims-1];
+    
+    for (int batch = 0; batch < batch_size; batch++) {
+        int batch_offset = batch * m * p;
+        const float* a_batch = &a->data[batch * m * n];
+        const float* b_batch = &b->data[batch * n * p];
+        float* out_batch = &out->data[batch_offset];
+        
+        matmul_forward(a_batch, b_batch, out_batch, m, n, p);
+    }
+}
+
+static Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
+    if (!compatible_shapes(a, b, op)) return NULL;
+    
+    int out_dims[MAX_DIMS];
+    int out_ndims;
+    get_output_dims(a, b, op, out_dims, &out_ndims);
+    
+    Tensor* result = tensor_new(out_ndims, out_dims, NULL, 1);
     if (!result) return NULL;
     
     result->op = op;
@@ -105,12 +162,11 @@ static Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
     result->children[1] = b;
     
     if (op == ADD) {
-        for (int i = 0; i < a->size; i++) {
+        for (int i = 0; i < result->size; i++) {
             result->data[i] = a->data[i] + b->data[i];
         }
-    } else {
-        matmul_forward(a->data, b->data, result->data, 
-                      a->dims[0], a->dims[1], b->dims[1]);
+    } else if (op == MATMUL) {
+        generalized_matmul(a, b, result);
     }
     
     return result;
@@ -137,28 +193,44 @@ static void backward_op(Tensor* t) {
             }
         }
     } else if (t->op == MATMUL) {
-        const int m = a->dims[0], n = a->dims[1], p = b->dims[1];
-        
-        if (a->requires_grad) {
-            for (int i = 0; i < m; i++) {
-                for (int k = 0; k < n; k++) {
-                    float sum = 0;
-                    for (int j = 0; j < p; j++) {
-                        sum += t->grad[i * p + j] * b->data[k * p + j];
-                    }
-                    a->grad[i * n + k] += sum;
-                }
-            }
+        int batch_size = 1;
+        int batch_dims = t->ndims - 2;
+        for (int i = 0; i < batch_dims; i++) {
+            batch_size *= t->dims[i];
         }
         
-        if (b->requires_grad) {
-            for (int k = 0; k < n; k++) {
-                for (int j = 0; j < p; j++) {
-                    float sum = 0;
-                    for (int i = 0; i < m; i++) {
-                        sum += t->grad[i * p + j] * a->data[i * n + k];
+        int m = a->dims[a->ndims-2];
+        int n = a->dims[a->ndims-1];
+        int p = b->dims[b->ndims-1];
+        
+        for (int batch = 0; batch < batch_size; batch++) {
+            int a_offset = batch * m * n;
+            int b_offset = batch * n * p;
+            int t_offset = batch * m * p;
+            
+            if (a->requires_grad) {
+                for (int i = 0; i < m; i++) {
+                    for (int k = 0; k < n; k++) {
+                        float sum = 0;
+                        for (int j = 0; j < p; j++) {
+                            sum += t->grad[t_offset + i * p + j] * 
+                                  b->data[b_offset + k * p + j];
+                        }
+                        a->grad[a_offset + i * n + k] += sum;
                     }
-                    b->grad[k * p + j] += sum;
+                }
+            }
+            
+            if (b->requires_grad) {
+                for (int k = 0; k < n; k++) {
+                    for (int j = 0; j < p; j++) {
+                        float sum = 0;
+                        for (int i = 0; i < m; i++) {
+                            sum += t->grad[t_offset + i * p + j] * 
+                                  a->data[a_offset + i * n + k];
+                        }
+                        b->grad[b_offset + k * p + j] += sum;
+                    }
                 }
             }
         }
@@ -183,18 +255,27 @@ void tape_clear() {
 }
 
 void print_tensor(Tensor* t, const char* name) {
-    printf("%s:\n", name);
-    for (int i = 0; i < t->dims[0]; i++) {
-        for (int j = 0; j < t->dims[1]; j++) {
-            printf("%f ", t->data[i * t->dims[1] + j]);
+    printf("%s (dims:", name);
+    for (int i = 0; i < t->ndims; i++) {
+        printf(" %d", t->dims[i]);
+    }
+    printf("):\n");
+    
+    // For simplicity, we'll just print the first two dimensions fully
+    int rows = t->dims[0];
+    int cols = t->dims[1];
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) {
+            printf("%f ", t->data[i * cols + j]);
         }
         printf("\n");
     }
+    
     if (t->grad) {
         printf("Gradients:\n");
-        for (int i = 0; i < t->dims[0]; i++) {
-            for (int j = 0; j < t->dims[1]; j++) {
-                printf("%f ", t->grad[i * t->dims[1] + j]);
+        for (int i = 0; i < rows; i++) {
+            for (int j = 0; j < cols; j++) {
+                printf("%f ", t->grad[i * cols + j]);
             }
             printf("\n");
         }
@@ -203,21 +284,22 @@ void print_tensor(Tensor* t, const char* name) {
 }
 
 int main() {
-    int dims[] = {2, 2};
-    float w1_data[] = {1.0f, 0.5f, 0.5f, 1.0f};
-    float w2_data[] = {0.5f, 1.0f, 1.0f, 0.5f};
-    float x_data[] = {1.0f, 2.0f, 0.5f, 1.5f};
+    // Example with 3D tensors (batch_size=2, rows=2, cols=2)
+    int dims[] = {2, 2, 2};
+    float w1_data[] = {1.0f, 0.5f, 0.5f, 1.0f, 0.8f, 0.2f, 0.3f, 0.7f};
+    float w2_data[] = {0.5f, 1.0f, 1.0f, 0.5f, 0.4f, 0.6f, 0.9f, 0.1f};
+    float x_data[] = {1.0f, 2.0f, 0.5f, 1.5f, 0.7f, 1.3f, 1.8f, 0.4f};
     
-    Tensor* w1 = tensor_new(2, dims, w1_data, 1);
-    Tensor* w2 = tensor_new(2, dims, w2_data, 1);
-    Tensor* x = tensor_new(2, dims, x_data, 1);
+    Tensor* w1 = tensor_new(3, dims, w1_data, 1);
+    Tensor* w2 = tensor_new(3, dims, w2_data, 1);
+    Tensor* x = tensor_new(3, dims, x_data, 1);
     
     Tensor* h = tensor_matmul(x, w1);
     Tensor* y = tensor_matmul(h, w2);
     
     backward();
     
-    printf("Neural network computation example:\n\n");
+    printf("Neural network computation example with batched 3D tensors:\n\n");
     print_tensor(x, "Input (x)");
     print_tensor(w1, "First layer weights (w1)");
     print_tensor(w2, "Second layer weights (w2)");
