@@ -176,11 +176,10 @@ void compare_with_pytorch(float* values, const char* pytorch_str, int expected_s
 }
 
 int main() {
-    // Generate Python comparison script
     FILE* f = fopen("compare.py", "w");
     fprintf(f, "import torch\n\n");
     
-    // Test 1
+    // Test 1: Basic Addition and MatMul
     fprintf(f, "a = torch.tensor([[1., 2.], [3., 4.]], requires_grad=True)\n");
     fprintf(f, "b = torch.tensor([[5., 6.], [7., 8.]], requires_grad=True)\n");
     fprintf(f, "c = a + b\n");
@@ -192,8 +191,8 @@ int main() {
     fprintf(f, "print(' '.join(map(str, c.detach().numpy().flatten())))\n");
     fprintf(f, "print(' '.join(map(str, d.detach().numpy().flatten())))\n");
 
-    // Test 2
-    fprintf(f, "m1 = torch.tensor([[1., 2., 3.], [4., 5., 6.]], requires_grad=True)\n");
+    // Test 2: Different Shaped MatMul
+    fprintf(f, "\nm1 = torch.tensor([[1., 2., 3.], [4., 5., 6.]], requires_grad=True)\n");
     fprintf(f, "m2 = torch.tensor([[7., 8.], [9., 10.], [11., 12.]], requires_grad=True)\n");
     fprintf(f, "m3 = m1 @ m2\n");
     fprintf(f, "m3.backward(torch.ones_like(m3))\n");
@@ -201,10 +200,21 @@ int main() {
     fprintf(f, "print(' '.join(map(str, m1.grad.numpy().flatten())))\n");
     fprintf(f, "print(' '.join(map(str, m2.grad.numpy().flatten())))\n");
     fprintf(f, "print(' '.join(map(str, m3.detach().numpy().flatten())))\n");
+
+    // Test 3: Complex Graph
+    fprintf(f, "\nx1 = torch.tensor([[1., 2.], [3., 4.]], requires_grad=True)\n");
+    fprintf(f, "x2 = torch.tensor([[5., 6.], [7., 8.]], requires_grad=True)\n");
+    fprintf(f, "x3 = torch.tensor([[9., 10.], [11., 12.]], requires_grad=True)\n");
+    fprintf(f, "y = (x1 + x2) @ x3\n");
+    fprintf(f, "y.backward(torch.ones_like(y))\n");
+    fprintf(f, "print('TEST3_RESULTS')\n");
+    fprintf(f, "print(' '.join(map(str, y.detach().numpy().flatten())))\n");
+    fprintf(f, "print(' '.join(map(str, x1.grad.numpy().flatten())))\n");
+    fprintf(f, "print(' '.join(map(str, x2.grad.numpy().flatten())))\n");
+    fprintf(f, "print(' '.join(map(str, x3.grad.numpy().flatten())))\n");
     
     fclose(f);
 
-    // Run Python script and capture output
     FILE* pipe = popen("python3 compare.py", "r");
     if (!pipe) {
         printf("Failed to run Python comparison\n");
@@ -212,37 +222,35 @@ int main() {
     }
 
     char buffer[1024];
-    char pytorch_results[8][1024];
+    char pytorch_results[15][1024];
     int result_idx = -1;
+    int current_section = 0;
     
     while (fgets(buffer, sizeof(buffer), pipe)) {
         buffer[strcspn(buffer, "\n")] = 0;
-        if (strcmp(buffer, "TEST1_RESULTS") == 0) {
+        
+        if (strstr(buffer, "_RESULTS")) {
+            if (strstr(buffer, "TEST1")) current_section = 0;
+            else if (strstr(buffer, "TEST2")) current_section = 4;
+            else if (strstr(buffer, "TEST3")) current_section = 7;
             result_idx = 0;
             continue;
         }
-        if (strcmp(buffer, "TEST2_RESULTS") == 0) {
-            result_idx = 4;
-            continue;
-        }
-        if (result_idx >= 0 && result_idx < 8) {
-            strcpy(pytorch_results[result_idx++], buffer);
+        
+        if (result_idx >= 0) {
+            strcpy(pytorch_results[current_section + result_idx], buffer);
+            result_idx++;
         }
     }
     
-    if (pclose(pipe) != 0) {
-        printf("Error: Python script execution failed\n");
-        return 1;
-    }
-    
-    if (system("rm compare.py") != 0) {
-        printf("Warning: Failed to remove temporary Python file\n");
-    }
+    pclose(pipe);
+    remove("compare.py");
 
-    printf("Running tests and comparing with PyTorch...\n\n");
+    printf("Running comprehensive tests...\n\n");
     float tol = 1e-5;
     
-    // Test 1
+    // Test 1: Basic Addition and MatMul
+    printf("=== Test 1: Basic Addition and MatMul ===\n");
     int dims[] = {2, 2};
     float data1[] = {1, 2, 3, 4};
     float data2[] = {5, 6, 7, 8};
@@ -252,7 +260,6 @@ int main() {
     Tensor *c = tensor_add(a, b);
     Tensor *d = tensor_matmul(c, b);
     
-    printf("Test 1 forward pass:\n");
     tensor_print(a, "a");
     tensor_print(b, "b");
     tensor_print(c, "c");
@@ -260,17 +267,15 @@ int main() {
     
     backward();
     
-    printf("\nComparing Test 1 results with PyTorch:\n");
     compare_with_pytorch(a->grad, pytorch_results[0], a->size, "a.grad", tol);
     compare_with_pytorch(b->grad, pytorch_results[1], b->size, "b.grad", tol);
     compare_with_pytorch(c->data, pytorch_results[2], c->size, "c values", tol);
     compare_with_pytorch(d->data, pytorch_results[3], d->size, "d values", tol);
 
     tape_clear();
-    zero_grad(a); zero_grad(b);
     
-    // Test 2
-    printf("\nTest 2:\n");
+    // Test 2: Different Shaped MatMul
+    printf("\n=== Test 2: Different Shaped MatMul ===\n");
     int dims2[] = {2, 3};
     int dims3[] = {3, 2};
     float data3[] = {1, 2, 3, 4, 5, 6};
@@ -280,18 +285,40 @@ int main() {
     Tensor *m2 = tensor_new(2, dims3, data4, 1);
     Tensor *m3 = tensor_matmul(m1, m2);
     
-    printf("Test 2 forward pass:\n");
     tensor_print(m1, "m1");
     tensor_print(m2, "m2");
     tensor_print(m3, "m3");
     
     backward();
     
-    printf("\nComparing Test 2 results with PyTorch:\n");
     compare_with_pytorch(m1->grad, pytorch_results[4], m1->size, "m1.grad", tol);
     compare_with_pytorch(m2->grad, pytorch_results[5], m2->size, "m2.grad", tol);
     compare_with_pytorch(m3->data, pytorch_results[6], m3->size, "m3 values", tol);
 
-    printf("\nAll tests passed successfully!\n");
+    tape_clear();
+    
+    // Test 3: Complex Graph
+    printf("\n=== Test 3: Complex Graph ===\n");
+    float data5[] = {9, 10, 11, 12};
+    Tensor *x1 = tensor_new(2, dims, data1, 1);
+    Tensor *x2 = tensor_new(2, dims, data2, 1);
+    Tensor *x3 = tensor_new(2, dims, data5, 1);
+    Tensor *sum = tensor_add(x1, x2);
+    Tensor *y = tensor_matmul(sum, x3);
+    
+    tensor_print(x1, "x1");
+    tensor_print(x2, "x2");
+    tensor_print(x3, "x3");
+    tensor_print(sum, "sum");
+    tensor_print(y, "y");
+    
+    backward();
+    
+    compare_with_pytorch(y->data, pytorch_results[7], y->size, "y values", tol);
+    compare_with_pytorch(x1->grad, pytorch_results[8], x1->size, "x1.grad", tol);
+    compare_with_pytorch(x2->grad, pytorch_results[9], x2->size, "x2.grad", tol);
+    compare_with_pytorch(x3->grad, pytorch_results[10], x3->size, "x3.grad", tol);
+
+    printf("\nAll tests completed successfully!\n");
     return 0;
 }
