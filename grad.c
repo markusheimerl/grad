@@ -22,65 +22,78 @@ typedef struct {
 
 static Tape tape = {0};
 
-// Optimized helper functions
 static inline int calc_size(const int* dims, int ndims) {
     int size = 1;
     for (int i = 0; i < ndims; i++) size *= dims[i];
     return size;
 }
 
-// Optimized tensor creation
 Tensor* tensor_new(int ndims, int* dims, float* data, int requires_grad) {
     Tensor* t = calloc(1, sizeof(Tensor));
-    assert(t != NULL);
+    if (!t) return NULL;
     
     t->ndims = ndims;
-    t->dims = memcpy(malloc(ndims * sizeof(int)), dims, ndims * sizeof(int));
-    t->size = calc_size(dims, ndims);
+    t->dims = malloc(ndims * sizeof(int));
+    if (!t->dims) { free(t); return NULL; }
+    memcpy(t->dims, dims, ndims * sizeof(int));
     
+    t->size = calc_size(dims, ndims);
     t->data = malloc(t->size * sizeof(float));
-    if (data) memcpy(t->data, data, t->size * sizeof(float));
+    if (!t->data) { free(t->dims); free(t); return NULL; }
+    
+    if (data) {
+        memcpy(t->data, data, t->size * sizeof(float));
+    } else {
+        memset(t->data, 0, t->size * sizeof(float));
+    }
     
     t->requires_grad = requires_grad;
     if (requires_grad) {
         t->grad = calloc(t->size, sizeof(float));
-        assert(t->grad != NULL);
+        if (!t->grad) {
+            free(t->data);
+            free(t->dims);
+            free(t);
+            return NULL;
+        }
     }
     
     if (requires_grad || data) tape.ops[tape.len++] = t;
     return t;
 }
 
-// Optimized matrix multiplication
-static void matmul_forward(const float* a, const float* b, float* out,
-                          int m, int n, int p) {
+static void matmul_forward(const float* __restrict__ a, 
+                          const float* __restrict__ b, 
+                          float* __restrict__ out,
+                          const int m, const int n, const int p) {
+    memset(out, 0, m * p * sizeof(float));
     for (int i = 0; i < m; i++) {
-        for (int j = 0; j < p; j++) {
-            float sum = 0;
-            for (int k = 0; k < n; k++) {
-                sum += a[i * n + k] * b[k * p + j];
+        for (int k = 0; k < n; k++) {
+            const float aik = a[i * n + k];
+            for (int j = 0; j < p; j++) {
+                out[i * p + j] += aik * b[k * p + j];
             }
-            out[i * p + j] = sum;
         }
     }
 }
 
-// Optimized tensor operations
 static Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
-    assert(a->ndims == b->ndims);
+    if (!a || !b || a->ndims != b->ndims) return NULL;
     
     int out_dims[2];
     if (op == MATMUL) {
-        assert(a->dims[1] == b->dims[0]);
+        if (a->dims[1] != b->dims[0]) return NULL;
         out_dims[0] = a->dims[0];
         out_dims[1] = b->dims[1];
     } else {
-        assert(a->dims[0] == b->dims[0] && a->dims[1] == b->dims[1]);
+        if (a->dims[0] != b->dims[0] || a->dims[1] != b->dims[1]) return NULL;
         out_dims[0] = a->dims[0];
         out_dims[1] = a->dims[1];
     }
     
     Tensor* result = tensor_new(2, out_dims, NULL, 1);
+    if (!result) return NULL;
+    
     result->op = op;
     result->children[0] = a;
     result->children[1] = b;
@@ -100,7 +113,6 @@ static Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
 #define tensor_add(a, b) tensor_op(a, b, ADD)
 #define tensor_matmul(a, b) tensor_op(a, b, MATMUL)
 
-// Optimized backward pass
 static void backward_op(Tensor* t) {
     if (!t || t->op == NONE) return;
     
@@ -151,10 +163,12 @@ void backward() {
     if (tape.len > 0) {
         Tensor* final = tape.ops[tape.len - 1];
         if (!final->grad) final->grad = calloc(final->size, sizeof(float));
-        for (int i = 0; i < final->size; i++)
-            final->grad[i] = 1.0;
-        for (int i = tape.len - 1; i >= 0; i--)
+        for (int i = 0; i < final->size; i++) {
+            final->grad[i] = 1.0f;
+        }
+        for (int i = tape.len - 1; i >= 0; i--) {
             backward_op(tape.ops[i]);
+        }
     }
 }
 
@@ -164,7 +178,8 @@ void zero_grad(Tensor* t) {
 
 void tape_clear() { tape.len = 0; }
 
-void compare_with_pytorch(float* values, const char* pytorch_str, int expected_size, const char* name, float tol) {
+static void compare_with_pytorch(float* values, const char* pytorch_str, 
+                               int expected_size, const char* name, float tol) {
     char* str_copy = strdup(pytorch_str);
     char* saveptr;
     char* token = strtok_r(str_copy, " ", &saveptr);
