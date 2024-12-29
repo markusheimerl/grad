@@ -110,24 +110,24 @@ static void backward_op(Tensor* t) {
             for (int i = 0; i < b->size; i++)
                 b->grad[i] += t->grad[i];
     } else if (t->op == MATMUL) {
-        // grad_A = grad_output × B^T
-        if (a->requires_grad)
+        if (a->requires_grad) {
             for (int i = 0; i < a->dims[0]; i++)
-                for (int j = 0; j < a->dims[1]; j++) {
+                for (int k = 0; k < a->dims[1]; k++) {
                     float sum = 0;
-                    for (int k = 0; k < b->dims[1]; k++)
-                        sum += t->grad[i * b->dims[1] + k] * b->data[j * b->dims[1] + k];
-                    a->grad[i * a->dims[1] + j] += sum;
+                    for (int j = 0; j < b->dims[1]; j++)
+                        sum += t->grad[i * b->dims[1] + j] * b->data[k * b->dims[1] + j];
+                    a->grad[i * a->dims[1] + k] += sum;
                 }
-        // grad_B = A^T × grad_output
-        if (b->requires_grad)
-            for (int i = 0; i < b->dims[0]; i++)
+        }
+        if (b->requires_grad) {
+            for (int k = 0; k < b->dims[0]; k++)
                 for (int j = 0; j < b->dims[1]; j++) {
                     float sum = 0;
-                    for (int k = 0; k < a->dims[0]; k++)
-                        sum += a->data[k * a->dims[1] + i] * t->grad[k * b->dims[1] + j];
-                    b->grad[i * b->dims[1] + j] += sum;
+                    for (int i = 0; i < a->dims[0]; i++)
+                        sum += t->grad[i * b->dims[1] + j] * a->data[i * a->dims[1] + k];
+                    b->grad[k * b->dims[1] + j] += sum;
                 }
+        }
     }
 }
 
@@ -135,7 +135,8 @@ void backward() {
     if (tape.len > 0) {
         Tensor* final = tape.ops[tape.len - 1];
         if (!final->grad) final->grad = calloc(final->size, sizeof(float));
-        final->grad[0] = 1.0;
+        for (int i = 0; i < final->size; i++)
+            final->grad[i] = 1.0;
         
         for (int i = tape.len - 1; i >= 0; i--)
             backward_op(tape.ops[i]);
