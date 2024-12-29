@@ -10,19 +10,30 @@ def feed_forward(params, x):
     return x
 
 def attention(params, x, mask, batch_size, seq_len, num_heads, hidden_dim):
-    """Multi-head attention mechanism"""
-    # Linear transformations
-    q = jax.numpy.dot(x, params['q_linear']).reshape(batch_size, seq_len, num_heads, (hidden_dim // num_heads)).transpose(0, 2, 1, 3)
-    k = jax.numpy.dot(x, params['k_linear']).reshape(batch_size, seq_len, num_heads, (hidden_dim // num_heads)).transpose(0, 2, 1, 3)
-    v = jax.numpy.dot(x, params['v_linear']).reshape(batch_size, seq_len, num_heads, (hidden_dim // num_heads)).transpose(0, 2, 1, 3)
+    """Multi-head attention mechanism with static shapes"""
+    head_dim = hidden_dim // num_heads  # This will be 48 with hidden_dim=384 and num_heads=8
+    
+    # Linear transformations with static reshaping
+    q = jax.numpy.dot(x, params['q_linear'])
+    q = q.reshape((32, 256, 8, 48))  # batch_size, seq_len, num_heads, head_dim
+    q = q.transpose(0, 2, 1, 3)
+    
+    k = jax.numpy.dot(x, params['k_linear'])
+    k = k.reshape((32, 256, 8, 48))
+    k = k.transpose(0, 2, 1, 3)
+    
+    v = jax.numpy.dot(x, params['v_linear'])
+    v = v.reshape((32, 256, 8, 48))
+    v = v.transpose(0, 2, 1, 3)
     
     # Compute attention scores
-    scores = jax.numpy.matmul(q, k.transpose(0, 1, 3, 2)) * ((hidden_dim // num_heads) ** -0.5)
+    scores = jax.numpy.matmul(q, k.transpose(0, 1, 3, 2)) * (48 ** -0.5)  # Scale by sqrt(head_dim)
     scores = jax.nn.softmax(scores + mask, axis=3)
     
     # Compute output
     output = jax.numpy.matmul(scores, v)
-    output = output.transpose(0, 2, 1, 3).reshape(batch_size, seq_len, hidden_dim)
+    output = output.transpose(0, 2, 1, 3)
+    output = output.reshape((32, 256, 384))  # batch_size, seq_len, hidden_dim
     output = jax.numpy.dot(output, params['o_linear'])
     return output
 
@@ -42,8 +53,8 @@ def control_model(params, inputs, mask, batch_size, seq_len, num_heads, hidden_d
     # Project input features to hidden dimension
     x = jax.numpy.dot(inputs, params['input_projection'])
     
-    # Add positional embeddings
-    x = x + params['positional_embedding'][:seq_len]
+    # Add positional embeddings (using the full embedding matrix)
+    x = x + params['positional_embedding']
     
     # Apply transformer blocks
     for block_params in params['transformer_blocks']:
@@ -53,8 +64,8 @@ def control_model(params, inputs, mask, batch_size, seq_len, num_heads, hidden_d
     x = jax.numpy.dot(simple_rms_norm(x), params['output_projection'])
     return x
 
-def init_params(feature_dim, seq_len, num_blocks=8, num_heads=8, hidden_dim=512, ff_dim=2048, dtype=jnp.float32, rng_key=jax.random.key(0)):
-    """Initialize model parameters"""
+def init_params(feature_dim, seq_len, num_blocks=6, num_heads=8, hidden_dim=384, ff_dim=1536, dtype=jnp.float32, rng_key=jax.random.key(0)):
+    """Initialize model parameters with static shapes"""
     xavier_uniform_init = jax.nn.initializers.glorot_uniform(dtype=dtype)
     kaiming_normal_init = jax.nn.initializers.he_normal(dtype=dtype)
     
@@ -62,20 +73,16 @@ def init_params(feature_dim, seq_len, num_blocks=8, num_heads=8, hidden_dim=512,
     rng_keys = jax.random.split(rng_key, num_blocks * 6 + 4)
     key_idx = 0
     
+    head_dim = hidden_dim // num_heads  # Should be 48
+    
     learnable_params = {
-        # Input and output projections
         'input_projection': xavier_uniform_init(rng_keys[key_idx], (feature_dim, hidden_dim)),
         'output_projection': xavier_uniform_init(rng_keys[key_idx + 1], (hidden_dim, feature_dim)),
-        
-        # Positional embedding
-        'positional_embedding': jax.random.normal(rng_keys[key_idx + 2], (seq_len, hidden_dim)) * 0.02,
-        
-        # Transformer blocks
+        'positional_embedding': jax.random.normal(rng_keys[key_idx + 2], (256, hidden_dim)) * 0.02,
         'transformer_blocks': []
     }
     key_idx += 3
     
-    # Initialize transformer blocks
     for _ in range(num_blocks):
         block_params = {
             'attention': {
@@ -92,10 +99,10 @@ def init_params(feature_dim, seq_len, num_blocks=8, num_heads=8, hidden_dim=512,
         learnable_params['transformer_blocks'].append(block_params)
         key_idx += 6
     
-    # Create causal attention mask
-    mask = jnp.tril(jnp.ones((seq_len, seq_len))) * -1e10
+    # Create causal attention mask with static shape
+    mask = jnp.tril(jnp.ones((256, 256))) * -1e10
     mask = jnp.where(mask == 0, 0, mask)
-    mask = jnp.broadcast_to(mask[None, None, :, :], (batch_size, num_heads, seq_len, seq_len))
+    mask = mask[None, None, :, :]
     
     static_config = {
         "mask": mask,
@@ -132,36 +139,3 @@ def create_model(feature_dim, seq_len=256, batch_size=32, num_blocks=8, num_head
             'ff_dim': ff_dim,
         }
     }
-
-if __name__ == "__main__":
-    # Example usage
-    feature_dim = 10  # Number of control features
-    seq_len = 256
-    batch_size = 32
-    
-    # Create model
-    model = create_model(
-        feature_dim=feature_dim,
-        seq_len=seq_len,
-        batch_size=batch_size,
-        num_blocks=8,
-        num_heads=8,
-        hidden_dim=512,
-        ff_dim=2048
-    )
-    
-    # Create dummy input
-    dummy_input = jnp.zeros((batch_size, seq_len, feature_dim))
-    
-    # Test forward pass
-    output = control_model(
-        model['learnable_params'],
-        dummy_input,
-        model['static_config']['mask'],
-        batch_size,
-        seq_len,
-        model['static_config']['num_heads'],
-        model['static_config']['hidden_dim']
-    )
-    
-    print(f"Model output shape: {output.shape}")
