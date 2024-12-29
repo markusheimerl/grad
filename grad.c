@@ -1,197 +1,272 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdbool.h>
+#include <assert.h>
 
-// Graph tracking structure
-typedef struct Tape {
-    struct Node** nodes;
-    int num_nodes, capacity;
-    struct Tape* parent;
-} Tape;
+#define MAX_DIMS 8
+#define MAX_CHILDREN 2
+#define MAX_TAPE_LENGTH 1000
 
-static Tape* current_tape = NULL;
+typedef enum {
+    ADD,
+    MATMUL,
+    NONE
+} OpType;
 
-// Core structures
-typedef struct {
+typedef struct Tensor {
     float* data;
-    int rows, cols;
-    bool requires_grad;
-    struct Node* grad;
+    float* grad;
+    int* dims;
+    int ndims;
+    int requires_grad;
+    int num_children;
+    struct Tensor* children[MAX_CHILDREN];
+    OpType op;
+    int size;
+    int tape_idx;  // Position in tape
 } Tensor;
 
-typedef struct Node {
-    Tensor* tensor;
-    struct Node** inputs;
-    int num_inputs;
-    void (*backward)(struct Node*);
-    Tape* tape;
-} Node;
+// Global tape for automatic differentiation
+typedef struct {
+    Tensor* operations[MAX_TAPE_LENGTH];
+    int length;
+} Tape;
 
-// Tape management
-Tape* create_tape(void) {
-    Tape* tape = malloc(sizeof(Tape));
-    *tape = (Tape){
-        .nodes = malloc(sizeof(Node*) * 16),
-        .num_nodes = 0,
-        .capacity = 16,
-        .parent = current_tape
-    };
-    return tape;
+Tape tape = {.length = 0};
+
+// Helper functions
+void tape_push(Tensor* t) {
+    if (t->requires_grad || (t->children[0] && t->children[0]->requires_grad) || 
+        (t->children[1] && t->children[1]->requires_grad)) {
+        t->tape_idx = tape.length;
+        tape.operations[tape.length++] = t;
+    }
 }
 
-void start_recording(void) {
-    current_tape = create_tape();
+void tape_clear() {
+    tape.length = 0;
 }
 
-Tape* stop_recording(void) {
-    Tape* tape = current_tape;
-    current_tape = tape->parent;
-    return tape;
+int compute_size(int* dims, int ndims) {
+    int size = 1;
+    for (int i = 0; i < ndims; i++) size *= dims[i];
+    return size;
 }
 
-// Core functions
-Tensor* tensor(int rows, int cols, bool requires_grad) {
-    Tensor* t = malloc(sizeof(Tensor));
-    *t = (Tensor){
-        .data = calloc(rows * cols, sizeof(float)),
-        .rows = rows,
-        .cols = cols,
-        .requires_grad = requires_grad,
-        .grad = NULL
-    };
+Tensor* tensor_create(int ndims, int* dims, float* data, int requires_grad) {
+    Tensor* t = (Tensor*)malloc(sizeof(Tensor));
+    t->ndims = ndims;
+    t->dims = (int*)malloc(ndims * sizeof(int));
+    memcpy(t->dims, dims, ndims * sizeof(int));
+    
+    t->size = compute_size(dims, ndims);
+    t->data = (float*)malloc(t->size * sizeof(float));
+    if (data) memcpy(t->data, data, t->size * sizeof(float));
+    
+    t->requires_grad = requires_grad;
+    if (requires_grad) {
+        t->grad = (float*)calloc(t->size, sizeof(float));
+    } else {
+        t->grad = NULL;
+    }
+    
+    t->num_children = 0;
+    t->op = NONE;
+    t->tape_idx = -1;
+    
+    if (requires_grad) {
+        tape_push(t);
+    }
+    
     return t;
 }
 
-Node* node(Tensor* t, Node** inputs, int num_inputs, void (*backward)(Node*)) {
-    Node* n = malloc(sizeof(Node));
-    *n = (Node){t, inputs, num_inputs, backward, current_tape};
-    
-    if (current_tape) {
-        if (current_tape->num_nodes >= current_tape->capacity) {
-            current_tape->capacity *= 2;
-            current_tape->nodes = realloc(current_tape->nodes, 
-                                        current_tape->capacity * sizeof(Node*));
+void tensor_print(Tensor* t, const char* name) {
+    printf("%s: dims=[", name);
+    for (int i = 0; i < t->ndims; i++) {
+        printf("%d%s", t->dims[i], i < t->ndims - 1 ? "," : "");
+    }
+    printf("], data=[");
+    for (int i = 0; i < t->size; i++) {
+        printf("%.2f%s", t->data[i], i < t->size - 1 ? "," : "");
+    }
+    printf("]");
+    if (t->grad) {
+        printf(", grad=[");
+        for (int i = 0; i < t->size; i++) {
+            printf("%.2f%s", t->grad[i], i < t->size - 1 ? "," : "");
         }
-        current_tape->nodes[current_tape->num_nodes++] = n;
-    }
-    return n;
-}
-
-// Matrix multiplication
-void matmul_backward(Node* n) {
-    Tensor *grad = n->tensor->grad->tensor,
-           *a = n->inputs[0]->tensor,
-           *b = n->inputs[1]->tensor;
-
-    if (a->requires_grad) {
-        Tensor* a_grad = tensor(a->rows, a->cols, false);
-        for (int i = 0; i < a->rows; i++)
-            for (int k = 0; k < a->cols; k++)
-                for (int j = 0; j < b->cols; j++)
-                    a_grad->data[i * a->cols + k] += 
-                        grad->data[i * grad->rows + j] * b->data[k * b->cols + j];
-        n->inputs[0]->tensor->grad = node(a_grad, NULL, 0, NULL);
-    }
-
-    if (b->requires_grad) {
-        Tensor* b_grad = tensor(b->rows, b->cols, false);
-        for (int k = 0; k < b->rows; k++)
-            for (int j = 0; j < b->cols; j++)
-                for (int i = 0; i < a->rows; i++)
-                    b_grad->data[k * b->cols + j] += 
-                        a->data[i * a->cols + k] * grad->data[i * grad->rows + j];
-        n->inputs[1]->tensor->grad = node(b_grad, NULL, 0, NULL);
-    }
-}
-
-Node* matmul(Node* a, Node* b) {
-    Tensor* out = tensor(a->tensor->rows, b->tensor->cols, true);
-    for (int i = 0; i < a->tensor->rows; i++)
-        for (int j = 0; j < b->tensor->cols; j++)
-            for (int k = 0; k < a->tensor->cols; k++)
-                out->data[i * out->cols + j] += 
-                    a->tensor->data[i * a->tensor->cols + k] * 
-                    b->tensor->data[k * b->tensor->cols + j];
-
-    Node** inputs = malloc(2 * sizeof(Node*));
-    inputs[0] = a; inputs[1] = b;
-    return node(out, inputs, 2, matmul_backward);
-}
-
-// Backward pass
-void backward(Node* n) {
-    if (!n->tensor->requires_grad) return;
-    
-    if (!n->tensor->grad) {
-        Tensor* grad = tensor(n->tensor->rows, n->tensor->cols, false);
-        for (int i = 0; i < grad->rows * grad->cols; i++) 
-            grad->data[i] = 1.0;
-        n->tensor->grad = node(grad, NULL, 0, NULL);
-    }
-    
-    for (int i = n->tape->num_nodes - 1; i >= 0; i--) {
-        Node* current = n->tape->nodes[i];
-        if (current->backward) current->backward(current);
-    }
-}
-
-// Higher-order gradients
-Node* grad(Node* output, Node* input, int order) {
-    Node* result = output;
-    for (int i = 0; i < order; i++) {
-        start_recording();
-        backward(result);
-        result = input->tensor->grad;
-        stop_recording();
-    }
-    return result;
-}
-
-// Utility function
-void print_tensor(Tensor* t, const char* name) {
-    printf("%s (%dx%d):\n", name, t->rows, t->cols);
-    for (int i = 0; i < t->rows; i++) {
-        for (int j = 0; j < t->cols; j++)
-            printf("%.2f ", t->data[i * t->cols + j]);
-        printf("\n");
+        printf("]");
     }
     printf("\n");
 }
 
-int main() {
-    // Create tensors
-    Tensor *a_tensor = tensor(2, 3, true),
-           *b_tensor = tensor(3, 2, true);
-    
-    float a_data[] = {1, 2, 3, 4, 5, 6};
-    float b_data[] = {1, 2, 3, 4, 5, 6};
-    memcpy(a_tensor->data, a_data, sizeof(a_data));
-    memcpy(b_tensor->data, b_data, sizeof(b_data));
-    
-    Node *a = node(a_tensor, NULL, 0, NULL),
-         *b = node(b_tensor, NULL, 0, NULL);
-    
-    // Forward and backward passes
-    start_recording();
-    Node* c = matmul(a, b);
-    
-    print_tensor(a->tensor, "A");
-    print_tensor(b->tensor, "B");
-    print_tensor(c->tensor, "C (A @ B)");
-    
-    backward(c);
-    
-    print_tensor(a->tensor->grad->tensor, "dC/dA");
-    print_tensor(b->tensor->grad->tensor, "dC/dB");
-    
-    // Second-order gradients
-    Node* grad_a = grad(c, a, 2);
-    if (grad_a) {
-        printf("Second-order gradient:\n");
-        print_tensor(grad_a->tensor, "d²C/dA²");
+void zero_grad(Tensor* t) {
+    if (t->grad) {
+        memset(t->grad, 0, t->size * sizeof(float));
+    }
+}
+
+Tensor* tensor_add(Tensor* a, Tensor* b) {
+    assert(a->ndims == b->ndims);
+    for (int i = 0; i < a->ndims; i++) {
+        assert(a->dims[i] == b->dims[i]);
     }
     
-    stop_recording();
+    Tensor* result = tensor_create(a->ndims, a->dims, NULL, 
+                                 a->requires_grad || b->requires_grad);
+    
+    for (int i = 0; i < a->size; i++) {
+        result->data[i] = a->data[i] + b->data[i];
+    }
+    
+    result->op = ADD;
+    result->num_children = 2;
+    result->children[0] = a;
+    result->children[1] = b;
+    
+    tape_push(result);
+    return result;
+}
+
+Tensor* tensor_matmul(Tensor* a, Tensor* b) {
+    assert(a->ndims == 2 && b->ndims == 2);
+    assert(a->dims[1] == b->dims[0]);
+    
+    int out_dims[] = {a->dims[0], b->dims[1]};
+    Tensor* result = tensor_create(2, out_dims, NULL, 
+                                 a->requires_grad || b->requires_grad);
+    
+    for (int i = 0; i < a->dims[0]; i++) {
+        for (int j = 0; j < b->dims[1]; j++) {
+            float sum = 0;
+            for (int k = 0; k < a->dims[1]; k++) {
+                sum += a->data[i * a->dims[1] + k] * b->data[k * b->dims[1] + j];
+            }
+            result->data[i * b->dims[1] + j] = sum;
+        }
+    }
+    
+    result->op = MATMUL;
+    result->num_children = 2;
+    result->children[0] = a;
+    result->children[1] = b;
+    
+    tape_push(result);
+    return result;
+}
+
+void backward_add(Tensor* t) {
+    Tensor *a = t->children[0], *b = t->children[1];
+    
+    if (a->requires_grad) {
+        for (int i = 0; i < a->size; i++) {
+            a->grad[i] += t->grad[i];
+        }
+    }
+    
+    if (b->requires_grad) {
+        for (int i = 0; i < b->size; i++) {
+            b->grad[i] += t->grad[i];
+        }
+    }
+}
+
+void backward_matmul(Tensor* t) {
+    Tensor *a = t->children[0], *b = t->children[1];
+    
+    if (a->requires_grad) {
+        for (int i = 0; i < a->dims[0]; i++) {
+            for (int j = 0; j < a->dims[1]; j++) {
+                float sum = 0;
+                for (int k = 0; k < b->dims[1]; k++) {
+                    sum += t->grad[i * b->dims[1] + k] * b->data[j * b->dims[1] + k];
+                }
+                a->grad[i * a->dims[1] + j] += sum;
+            }
+        }
+    }
+    
+    if (b->requires_grad) {
+        for (int i = 0; i < b->dims[0]; i++) {
+            for (int j = 0; j < b->dims[1]; j++) {
+                float sum = 0;
+                for (int k = 0; k < a->dims[0]; k++) {
+                    sum += t->grad[k * b->dims[1] + j] * a->data[k * a->dims[1] + i];
+                }
+                b->grad[i * b->dims[1] + j] += sum;
+            }
+        }
+    }
+}
+
+void backward() {
+    // Initialize gradient of final tensor to 1
+    if (tape.length > 0) {
+        Tensor* final_tensor = tape.operations[tape.length - 1];
+        if (final_tensor->grad == NULL) {
+            final_tensor->grad = (float*)calloc(final_tensor->size, sizeof(float));
+        }
+        final_tensor->grad[0] = 1.0;
+        
+        // Backward pass through the tape
+        for (int i = tape.length - 1; i >= 0; i--) {
+            Tensor* t = tape.operations[i];
+            switch (t->op) {
+                case ADD:
+                    backward_add(t);
+                    break;
+                case MATMUL:
+                    backward_matmul(t);
+                    break;
+                case NONE:
+                    break;
+            }
+        }
+    }
+}
+
+int main() {
+    // Example of dynamic computation graph
+    float data1[] = {1, 2, 3, 4};
+    int dims1[] = {2, 2};
+    Tensor* a = tensor_create(2, dims1, data1, 1);
+    
+    float data2[] = {5, 6, 7, 8};
+    Tensor* b = tensor_create(2, dims1, data2, 1);
+    
+    // Forward pass
+    Tensor* c = tensor_add(a, b);
+    Tensor* d = tensor_matmul(c, b);
+    
+    printf("Forward pass results:\n");
+    tensor_print(a, "a");
+    tensor_print(b, "b");
+    tensor_print(c, "c = a + b");
+    tensor_print(d, "d = c @ b");
+    
+    // Backward pass
+    printf("\nBackward pass results:\n");
+    backward();
+    
+    tensor_print(a, "a");
+    tensor_print(b, "b");
+    tensor_print(c, "c");
+    tensor_print(d, "d");
+    
+    // Clear tape and gradients for new computation
+    tape_clear();
+    zero_grad(a);
+    zero_grad(b);
+    
+    // New computation
+    printf("\nNew computation after tape clear:\n");
+    Tensor* e = tensor_matmul(a, b);
+    backward();
+    
+    tensor_print(a, "a");
+    tensor_print(b, "b");
+    tensor_print(e, "e = a @ b");
+    
     return 0;
 }
