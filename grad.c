@@ -3,9 +3,7 @@
 #include <string.h>
 #include <stdbool.h>
 
-typedef struct {
-    int rows, cols;
-} Shape;
+typedef struct { int rows, cols; } Shape;
 
 typedef struct Node Node;
 typedef struct {
@@ -39,15 +37,11 @@ struct Node {
 static Tape* current_tape = NULL;
 
 void free_tensor(Tensor* t) {
-    if (!t) return;
-    free(t->data);
-    free(t);
+    if (t) { free(t->data); free(t); }
 }
 
 void free_node(Node* node) {
-    if (!node) return;
-    free(node->inputs);
-    free(node);
+    if (node) { free(node->inputs); free(node); }
 }
 
 void free_tape(Tape* tape) {
@@ -85,7 +79,7 @@ Node* create_node(Tensor* tensor, Operator* op, Node** inputs, int num_inputs) {
     node->inputs = num_inputs ? malloc(num_inputs * sizeof(Node*)) : NULL;
     if (num_inputs) memcpy(node->inputs, inputs, num_inputs * sizeof(Node*));
     node->num_inputs = num_inputs;
-    node->is_leaf = (op == NULL);
+    node->is_leaf = !op;
     node->tape = current_tape;
     
     if (current_tape) {
@@ -107,10 +101,7 @@ Tape* create_tape(void) {
     return tape;
 }
 
-void start_recording(void) {
-    current_tape = create_tape();
-}
-
+void start_recording(void) { current_tape = create_tape(); }
 Tape* stop_recording(void) {
     Tape* tape = current_tape;
     current_tape = tape->parent_tape;
@@ -127,11 +118,11 @@ void zero_grad(Node* node) {
 Tensor* matmul_forward(Node* node) {
     Tensor *a = node->inputs[0]->tensor, *b = node->inputs[1]->tensor;
     if (a->shape.cols != b->shape.rows) return NULL;
-
+    
     Tensor* out = create_tensor(a->shape.rows, b->shape.cols, true);
     for (int i = 0; i < a->shape.rows; i++)
         for (int j = 0; j < b->shape.cols; j++) {
-            float sum = 0.0;
+            float sum = 0;
             for (int k = 0; k < a->shape.cols; k++)
                 sum += a->data[i * a->shape.cols + k] * b->data[k * b->shape.cols + j];
             out->data[i * out->shape.cols + j] = sum;
@@ -146,14 +137,14 @@ void matmul_backward(Node* node) {
 
     if (a->requires_grad) {
         if (!node->inputs[0]->tensor->grad_node) {
-            Tensor* grad = create_tensor(a->shape.rows, a->shape.cols, false);
-            node->inputs[0]->tensor->grad_node = create_node(grad, NULL, NULL, 0);
+            node->inputs[0]->tensor->grad_node = create_node(
+                create_tensor(a->shape.rows, a->shape.cols, false), NULL, NULL, 0);
         }
         
         Tensor* a_grad = node->inputs[0]->tensor->grad_node->tensor;
         for (int i = 0; i < a->shape.rows; i++)
             for (int k = 0; k < a->shape.cols; k++) {
-                float sum = 0.0;
+                float sum = 0;
                 for (int j = 0; j < b->shape.cols; j++)
                     sum += grad_output->data[i * grad_output->shape.cols + j] * 
                           b->data[k * b->shape.cols + j];
@@ -163,14 +154,14 @@ void matmul_backward(Node* node) {
 
     if (b->requires_grad) {
         if (!node->inputs[1]->tensor->grad_node) {
-            Tensor* grad = create_tensor(b->shape.rows, b->shape.cols, false);
-            node->inputs[1]->tensor->grad_node = create_node(grad, NULL, NULL, 0);
+            node->inputs[1]->tensor->grad_node = create_node(
+                create_tensor(b->shape.rows, b->shape.cols, false), NULL, NULL, 0);
         }
         
         Tensor* b_grad = node->inputs[1]->tensor->grad_node->tensor;
         for (int k = 0; k < b->shape.rows; k++)
             for (int j = 0; j < b->shape.cols; j++) {
-                float sum = 0.0;
+                float sum = 0;
                 for (int i = 0; i < a->shape.rows; i++)
                     sum += a->data[i * a->shape.cols + k] * 
                           grad_output->data[i * grad_output->shape.cols + j];
@@ -198,17 +189,13 @@ void backward_pass(Node* node) {
     
     if (!node->tensor->grad_node) {
         Tensor* grad = create_tensor(node->tensor->shape.rows, node->tensor->shape.cols, false);
-        for (int i = 0; i < grad->shape.rows * grad->shape.cols; i++) {
-            grad->data[i] = 1.0;
-        }
+        for (int i = 0; i < grad->shape.rows * grad->shape.cols; i++) grad->data[i] = 1.0;
         node->tensor->grad_node = create_node(grad, NULL, NULL, 0);
     }
     
     for (int i = node->tape->num_nodes - 1; i >= 0; i--) {
         Node* current = node->tape->nodes[i];
-        if (current->op && current->op->backward) {
-            current->op->backward(current);
-        }
+        if (current->op && current->op->backward) current->op->backward(current);
     }
 }
 
@@ -221,49 +208,33 @@ Node* grad(Node* output, Node* input, int order) {
         start_recording();
         backward_pass(result);
         result = input->tensor->grad_node;
-        
-        if (last_tape) {
-            free_tape(last_tape);
-        }
+        if (last_tape) free_tape(last_tape);
         last_tape = stop_recording();
-        if (i == order - 1) {
-            final_tape = last_tape;  // Save the last tape
-        }
+        if (i == order - 1) final_tape = last_tape;
     }
     
-    // Create a new node that will persist after tape cleanup
     if (result) {
         Tensor* persistent_tensor = create_tensor(result->tensor->shape.rows, 
-                                                result->tensor->shape.cols, 
-                                                false);
-        memcpy(persistent_tensor->data, 
-               result->tensor->data, 
+                                                result->tensor->shape.cols, false);
+        memcpy(persistent_tensor->data, result->tensor->data, 
                result->tensor->shape.rows * result->tensor->shape.cols * sizeof(float));
         Node* persistent_node = create_node(persistent_tensor, NULL, NULL, 0);
-        
-        // Cleanup the final tape
         free_tape(final_tape);
-        
         return persistent_node;
     }
     
-    if (final_tape) {
-        free_tape(final_tape);
-    }
+    if (final_tape) free_tape(final_tape);
     return NULL;
 }
 
 void print_tensor(Tensor* t, const char* name) {
     printf("%s (%dx%d):\n", name, t->shape.rows, t->shape.cols);
     for (int i = 0; i < t->shape.rows; i++) {
-        for (int j = 0; j < t->shape.cols; j++)
-            printf("%.2f ", t->data[i * t->shape.cols + j]);
+        for (int j = 0; j < t->shape.cols; j++) printf("%.2f ", t->data[i * t->shape.cols + j]);
         printf("\n");
     }
     printf("\n");
 }
-
-
 
 int main() {
     Operator* matmul = create_operator("matmul", matmul_forward, matmul_backward);
@@ -280,15 +251,13 @@ int main() {
          *b = create_node(b_tensor, NULL, NULL, 0);
     
     start_recording();
-    Node* inputs[] = {a, b};
-    Node* c = apply_operator(matmul, inputs, 2);
+    Node* c = apply_operator(matmul, (Node*[]){a, b}, 2);
     
     print_tensor(a->tensor, "A");
     print_tensor(b->tensor, "B");
     print_tensor(c->tensor, "C (A @ B)");
     
     backward_pass(c);
-    
     printf("First-order gradients:\n");
     print_tensor(a->tensor->grad_node->tensor, "dC/dA");
     print_tensor(b->tensor->grad_node->tensor, "dC/dB");
@@ -299,7 +268,7 @@ int main() {
     zero_grad(b);
     
     start_recording();
-    Node* c2 = apply_operator(matmul, inputs, 2);
+    Node* c2 = apply_operator(matmul, (Node*[]){a, b}, 2);
     backward_pass(c2);
     
     printf("Gradients after second backward pass:\n");
@@ -312,13 +281,10 @@ int main() {
     if (grad_a) {
         printf("Second-order gradient:\n");
         print_tensor(grad_a->tensor, "d²C/dA²");
-        
-        // Cleanup grad_a
         free_tensor(grad_a->tensor);
         free_node(grad_a);
     }
     
-    // Cleanup
     free_tape(first_tape);
     free_tape(second_tape);
     
@@ -333,7 +299,6 @@ int main() {
     
     free(matmul->name);
     free(matmul);
-    
     free_tensor(a_tensor);
     free_tensor(b_tensor);
     free_node(a);
