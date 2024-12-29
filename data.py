@@ -119,20 +119,3 @@ def create_train_val_datasets(file_path, sequence_length=256, val_split=0.1, sca
     print(f"Validation sequences: {len(val_dataset)}")
     
     return train_dataset, val_dataset
-
-if __name__ == "__main__":
-    # Example usage
-    dataset = ControlDataset("2024-12-29_6-25-1_control_data.csv", sequence_length=256)
-    
-    # Get a sample batch
-    inputs, labels = dataset[0]
-    print("\nSample batch shapes:")
-    print(f"Inputs shape: {inputs.shape}")
-    print(f"Labels shape: {labels.shape}")
-    
-    # Create train/val split
-    train_dataset, val_dataset = create_train_val_datasets(
-        "2024-12-29_6-25-1_control_data.csv",
-        sequence_length=256,
-        val_split=0.1
-    )
