@@ -1,6 +1,3 @@
-#ifndef __GRAD_H__
-#define __GRAD_H__
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -147,9 +144,6 @@ void zero_grad(Tensor* t) {
 }
 
 void tape_clear() { tape.len = 0; }
-
-
-#endif // __GRAD_H__
 
 int main() {
     int dims[] = {2, 2};
