@@ -259,13 +259,13 @@ int main() {
     Tensor *b = tensor_new(2, dims, data2, 1);
     Tensor *c = tensor_add(a, b);
     Tensor *d = tensor_matmul(c, b);
-    
+
+    backward();
+
     tensor_print(a, "a");
     tensor_print(b, "b");
     tensor_print(c, "c");
     tensor_print(d, "d");
-    
-    backward();
     
     compare_with_pytorch(a->grad, pytorch_results[0], a->size, "a.grad", tol);
     compare_with_pytorch(b->grad, pytorch_results[1], b->size, "b.grad", tol);
@@ -285,11 +285,11 @@ int main() {
     Tensor *m2 = tensor_new(2, dims3, data4, 1);
     Tensor *m3 = tensor_matmul(m1, m2);
     
+    backward();
+
     tensor_print(m1, "m1");
     tensor_print(m2, "m2");
     tensor_print(m3, "m3");
-    
-    backward();
     
     compare_with_pytorch(m1->grad, pytorch_results[4], m1->size, "m1.grad", tol);
     compare_with_pytorch(m2->grad, pytorch_results[5], m2->size, "m2.grad", tol);
@@ -306,13 +306,13 @@ int main() {
     Tensor *sum = tensor_add(x1, x2);
     Tensor *y = tensor_matmul(sum, x3);
     
+    backward();
+
     tensor_print(x1, "x1");
     tensor_print(x2, "x2");
     tensor_print(x3, "x3");
     tensor_print(sum, "sum");
     tensor_print(y, "y");
-    
-    backward();
     
     compare_with_pytorch(y->data, pytorch_results[7], y->size, "y values", tol);
     compare_with_pytorch(x1->grad, pytorch_results[8], x1->size, "x1.grad", tol);
