@@ -60,6 +60,14 @@ Tensor* tensor_new(int ndims, int* dims, float* data, int requires_grad) {
     return t;
 }
 
+void tensor_free(Tensor* t) {
+    if (!t) return;
+    free(t->data);
+    free(t->grad);
+    free(t->dims);
+    free(t);
+}
+
 static void matmul_forward(const float* __restrict__ a, 
                           const float* __restrict__ b, 
                           float* __restrict__ out,
@@ -170,6 +178,10 @@ void backward() {
     }
 }
 
+void tape_clear() {
+    tape.len = 0;
+}
+
 void print_tensor(Tensor* t, const char* name) {
     printf("%s:\n", name);
     for (int i = 0; i < t->dims[0]; i++) {
@@ -191,25 +203,20 @@ void print_tensor(Tensor* t, const char* name) {
 }
 
 int main() {
-    // Example: Neural network-like computation
     int dims[] = {2, 2};
     float w1_data[] = {1.0f, 0.5f, 0.5f, 1.0f};
     float w2_data[] = {0.5f, 1.0f, 1.0f, 0.5f};
     float x_data[] = {1.0f, 2.0f, 0.5f, 1.5f};
     
-    // Create tensors
-    Tensor* w1 = tensor_new(2, dims, w1_data, 1);  // First weight matrix
-    Tensor* w2 = tensor_new(2, dims, w2_data, 1);  // Second weight matrix
-    Tensor* x = tensor_new(2, dims, x_data, 1);    // Input matrix
+    Tensor* w1 = tensor_new(2, dims, w1_data, 1);
+    Tensor* w2 = tensor_new(2, dims, w2_data, 1);
+    Tensor* x = tensor_new(2, dims, x_data, 1);
     
-    // Forward pass: x -> w1 -> w2
-    Tensor* h = tensor_matmul(x, w1);    // First layer
-    Tensor* y = tensor_matmul(h, w2);    // Second layer
+    Tensor* h = tensor_matmul(x, w1);
+    Tensor* y = tensor_matmul(h, w2);
     
-    // Compute gradients
     backward();
     
-    // Print results
     printf("Neural network computation example:\n\n");
     print_tensor(x, "Input (x)");
     print_tensor(w1, "First layer weights (w1)");
@@ -217,5 +224,12 @@ int main() {
     print_tensor(h, "Hidden layer (h)");
     print_tensor(y, "Output (y)");
     
+    tensor_free(y);
+    tensor_free(h);
+    tensor_free(w2);
+    tensor_free(w1);
+    tensor_free(x);
+    
+    tape_clear();
     return 0;
 }
