@@ -7,8 +7,8 @@ ml frameworks are computational graphs of tensor and operator nodes with
 subgraph matching to fused kernels
 
 todo:
-1. Reshape
-2. Permute 
-3. Slice/Index
-4. Gather
-5. Concatenation
+1. Reshape - done
+2. Slice/Index 
+3. Concatenation
+4. Permute
+5. Gather
