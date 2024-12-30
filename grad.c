@@ -22,26 +22,20 @@ typedef struct {
 
 static struct { TapeEntry entries[1000]; int len; } tape;
 
-static float sigmoid(float x) { 
-    x = fmaxf(fminf(x, 88.0f), -88.0f);  // Prevent overflow
-    return 1.0f / (1.0f + expf(-x)); 
-}
+static float sigmoid(float x) { return 1.0f / (1.0f + expf(-fmaxf(fminf(x, 88.0f), -88.0f))); }
 static float d_sigmoid(float x) { float s = sigmoid(x); return s * (1 - s); }
 static float relu(float x) { return x > 0 ? x : 0; }
 static float d_relu(float x) { return x > 0 ? 1 : 0; }
 
 Tensor* tensor_new(int ndims, int* dims, float* data, int requires_grad) {
-    int size = 1;
-    for (int i = 0; i < ndims; i++) size *= dims[i];
-    
     Tensor* t = calloc(1, sizeof(Tensor));
     t->ndims = ndims;
-    t->size = size;
     t->dims = memcpy(malloc(ndims * sizeof(int)), dims, ndims * sizeof(int));
-    t->data = malloc(size * sizeof(float));
-    if (data) memcpy(t->data, data, size * sizeof(float));
-    else memset(t->data, 0, size * sizeof(float));
-    if ((t->requires_grad = requires_grad)) t->grad = calloc(size, sizeof(float));
+    t->size = 1;
+    for (int i = 0; i < ndims; i++) t->size *= dims[i];
+    t->data = malloc(t->size * sizeof(float));
+    if (data) memcpy(t->data, data, t->size * sizeof(float));
+    if ((t->requires_grad = requires_grad)) t->grad = calloc(t->size, sizeof(float));
     return t;
 }
 
@@ -51,8 +45,7 @@ Tensor* tensor_reshape(Tensor* t, int new_ndims, int* new_dims) {
     if (new_size != t->size) return NULL;
     
     Tensor* result = tensor_new(new_ndims, new_dims, t->data, t->requires_grad);
-    if (result->requires_grad) 
-        tape.entries[tape.len++] = (TapeEntry){RESHAPE, result, t, NULL};
+    if (result->requires_grad) tape.entries[tape.len++] = (TapeEntry){RESHAPE, result, t, NULL};
     return result;
 }
 
@@ -61,8 +54,7 @@ static Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
         Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
         for (int i = 0; i < result->size; i++)
             result->data[i] = op == RELU ? relu(a->data[i]) : sigmoid(a->data[i]);
-        if (result->requires_grad) 
-            tape.entries[tape.len++] = (TapeEntry){op, result, a, NULL};
+        if (result->requires_grad) tape.entries[tape.len++] = (TapeEntry){op, result, a, NULL};
         return result;
     }
 
@@ -78,8 +70,7 @@ static Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
     Tensor* result = tensor_new(out_ndims, out_dims, NULL, a->requires_grad || b->requires_grad);
     
     if (op == ADD) {
-        for (int i = 0; i < result->size; i++) 
-            result->data[i] = a->data[i] + b->data[i];
+        for (int i = 0; i < result->size; i++) result->data[i] = a->data[i] + b->data[i];
     } else {
         int batch_size = result->size / (result->dims[out_ndims-2] * result->dims[out_ndims-1]);
         int m = a->dims[a->ndims-2], n = a->dims[a->ndims-1], p = b->dims[b->ndims-1];
@@ -98,8 +89,7 @@ static Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
         }
     }
     
-    if (result->requires_grad) 
-        tape.entries[tape.len++] = (TapeEntry){op, result, a, b};
+    if (result->requires_grad) tape.entries[tape.len++] = (TapeEntry){op, result, a, b};
     return result;
 }
 
@@ -125,23 +115,19 @@ void backward() {
         switch (e->op) {
             case RESHAPE:
                 if (a->requires_grad)
-                    for (int j = 0; j < t->size; j++) 
-                        a->grad[j] += t->grad[j];
+                    for (int j = 0; j < t->size; j++) a->grad[j] += t->grad[j];
                 break;
             case RELU:
             case SIGMOID:
                 if (a->requires_grad)
                     for (int j = 0; j < t->size; j++)
-                        a->grad[j] += t->grad[j] * (e->op == RELU ? 
-                            d_relu(a->data[j]) : d_sigmoid(a->data[j]));
+                        a->grad[j] += t->grad[j] * (e->op == RELU ? d_relu(a->data[j]) : d_sigmoid(a->data[j]));
                 break;
             case ADD:
                 if (a->requires_grad)
-                    for (int j = 0; j < t->size; j++) 
-                        a->grad[j] += t->grad[j];
+                    for (int j = 0; j < t->size; j++) a->grad[j] += t->grad[j];
                 if (b && b->requires_grad)
-                    for (int j = 0; j < t->size; j++) 
-                        b->grad[j] += t->grad[j];
+                    for (int j = 0; j < t->size; j++) b->grad[j] += t->grad[j];
                 break;
             case MATMUL: {
                 int m = a->dims[a->ndims-2], n = a->dims[a->ndims-1], p = b->dims[b->ndims-1];
@@ -155,22 +141,16 @@ void backward() {
                     if (a->requires_grad) {
                         float *a_grad = a->grad + batch * m * n;
                         for (int i = 0; i < m; i++)
-                            for (int k = 0; k < n; k++) {
-                                float sum = 0;
+                            for (int k = 0; k < n; k++)
                                 for (int j = 0; j < p; j++)
-                                    sum += t_grad[i * p + j] * b_data[k * p + j];
-                                a_grad[i * n + k] += sum;
-                            }
+                                    a_grad[i * n + k] += t_grad[i * p + j] * b_data[k * p + j];
                     }
                     if (b->requires_grad) {
                         float *b_grad = b->grad + batch * n * p;
                         for (int k = 0; k < n; k++)
-                            for (int j = 0; j < p; j++) {
-                                float sum = 0;
+                            for (int j = 0; j < p; j++)
                                 for (int i = 0; i < m; i++)
-                                    sum += t_grad[i * p + j] * a_data[i * n + k];
-                                b_grad[k * p + j] += sum;
-                            }
+                                    b_grad[k * p + j] += t_grad[i * p + j] * a_data[i * n + k];
                     }
                 }
                 break;
@@ -185,7 +165,6 @@ void tensor_free(Tensor* t) {
 }
 
 int main() {
-    // Initialize input tensor
     int input_dims[] = {2, 3, 4, 4};
     float *input_data = malloc(96 * sizeof(float));
     for (int b = 0; b < 2; b++)
@@ -202,7 +181,6 @@ int main() {
     }
     printf("\n");
 
-    // Create weights
     int w1_dims[] = {48, 64}, w2_dims[] = {64, 32};
     float *w1_data = malloc(48 * 64 * sizeof(float));
     float *w2_data = malloc(64 * 32 * sizeof(float));
@@ -212,7 +190,6 @@ int main() {
     Tensor *w1 = tensor_new(2, w1_dims, w1_data, 1);
     Tensor *w2 = tensor_new(2, w2_dims, w2_data, 1);
 
-    // Forward pass
     int reshaped_dims[] = {2, 48};
     Tensor *x_reshaped = tensor_reshape(x, 2, reshaped_dims);
     printf("Reshaped input dimensions: [%d, %d]\n", x_reshaped->dims[0], x_reshaped->dims[1]);
@@ -227,7 +204,6 @@ int main() {
     for (int i = 0; i < 8; i++) printf("%.3f ", output->data[i]);
     printf("...\n\n");
 
-    // Backward pass
     backward();
     
     float w1_grad_mean = 0, w2_grad_mean = 0, w1_grad_max = 0, w2_grad_max = 0;
@@ -243,7 +219,6 @@ int main() {
     printf("W1 gradients - Mean: %.6f, Max: %.6f\n", w1_grad_mean/w1->size, w1_grad_max);
     printf("W2 gradients - Mean: %.6f, Max: %.6f\n", w2_grad_mean/w2->size, w2_grad_max);
 
-    // Cleanup
     tensor_free(output); tensor_free(w2); tensor_free(h1);
     tensor_free(x_reshaped); tensor_free(w1); tensor_free(x);
     free(input_data); free(w1_data); free(w2_data);
