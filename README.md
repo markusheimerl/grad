@@ -8,6 +8,6 @@ subgraph matching to fused kernels
 
 todo:
 1. Reshape - done
-2. Slice 
+2. Slice - done
 3. Permute
 4. Gather
