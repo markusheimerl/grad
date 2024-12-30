@@ -10,4 +10,4 @@ todo:
 1. Reshape - done
 2. Slice - done
 3. Permute - done
-4. Gather
+4. Gather - done
