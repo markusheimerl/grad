@@ -18,13 +18,11 @@ typedef struct {
 typedef struct {
     OpType op;
     Tensor *result, *input1, *input2;
-    int *slice_start, *slice_end;
-    int *permutation;
+    int *slice_start, *slice_end, *permutation;
 } TapeEntry;
 
 static struct { TapeEntry entries[1000]; int len; } tape;
 
-// Core helper functions
 static float sigmoid(float x) { return 1.0f / (1.0f + expf(-fmaxf(fminf(x, 88.0f), -88.0f))); }
 static float d_sigmoid(float x) { float s = sigmoid(x); return s * (1 - s); }
 static float relu(float x) { return x > 0 ? x : 0; }
@@ -46,7 +44,6 @@ static void index_to_coords(int index, int* coords, const int* dims, int ndims) 
     }
 }
 
-// Tensor operations
 Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_grad) {
     Tensor* t = calloc(1, sizeof(Tensor));
     t->ndims = ndims;
@@ -63,96 +60,13 @@ Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_g
     return t;
 }
 
-Tensor* tensor_permute(Tensor* t, const int* permutation) {
-    // Validate permutation
-    int* used = calloc(t->ndims, sizeof(int));
-    for (int i = 0; i < t->ndims; i++) {
-        if (permutation[i] < 0 || permutation[i] >= t->ndims || used[permutation[i]]) {
-            free(used);
-            return NULL;
-        }
-        used[permutation[i]] = 1;
-    }
-    free(used);
-
-    // Create new tensor with permuted dimensions
-    int new_dims[MAX_DIMS];
-    for (int i = 0; i < t->ndims; i++) {
-        new_dims[i] = t->dims[permutation[i]];
-    }
-    Tensor* result = tensor_new(t->ndims, new_dims, NULL, t->requires_grad);
-
-    // Permute the data
-    int old_coords[MAX_DIMS], new_coords[MAX_DIMS];
-    for (int i = 0; i < t->size; i++) {
-        // Convert linear index to coordinates in result tensor
-        index_to_coords(i, new_coords, result->dims, result->ndims);
-        
-        // Map coordinates through inverse permutation
-        for (int j = 0; j < t->ndims; j++) {
-            old_coords[permutation[j]] = new_coords[j];
-        }
-        
-        // Get data from original tensor
-        int old_idx = coords_to_index(old_coords, t->dims, t->ndims);
-        result->data[i] = t->data[old_idx];
-    }
-
-    if (result->requires_grad) {
-        int* perm_copy = malloc(t->ndims * sizeof(int));
-        memcpy(perm_copy, permutation, t->ndims * sizeof(int));
-        tape.entries[tape.len++] = (TapeEntry){PERMUTE, result, t, NULL, NULL, NULL, perm_copy};
-    }
-    return result;
-}
-
-Tensor* tensor_slice(Tensor* t, const int* start, const int* end) {
-    int new_dims[MAX_DIMS];
-    for (int i = 0; i < t->ndims; i++) {
-        new_dims[i] = end[i] - start[i];
-        if (start[i] < 0 || end[i] > t->dims[i] || start[i] >= end[i]) return NULL;
-    }
-    
-    Tensor* result = tensor_new(t->ndims, new_dims, NULL, t->requires_grad);
-    
-    int coords[MAX_DIMS], src_coords[MAX_DIMS];
-    for (int i = 0; i < result->size; i++) {
-        index_to_coords(i, coords, result->dims, result->ndims);
-        for (int j = 0; j < t->ndims; j++) src_coords[j] = coords[j] + start[j];
-        result->data[i] = t->data[coords_to_index(src_coords, t->dims, t->ndims)];
-    }
-    
-    if (result->requires_grad) {
-        int* slice_start = malloc(t->ndims * sizeof(int));
-        int* slice_end = malloc(t->ndims * sizeof(int));
-        memcpy(slice_start, start, t->ndims * sizeof(int));
-        memcpy(slice_end, end, t->ndims * sizeof(int));
-        tape.entries[tape.len++] = (TapeEntry){SLICE, result, t, NULL, slice_start, slice_end, NULL};
-    }
-    return result;
-}
-
-Tensor* tensor_reshape(Tensor* t, int new_ndims, const int* new_dims) {
-    int new_size = 1;
-    for (int i = 0; i < new_ndims; i++) new_size *= new_dims[i];
-    if (new_size != t->size) return NULL;
-    
-    Tensor* result = tensor_new(new_ndims, new_dims, t->data, t->requires_grad);
-    if (result->requires_grad) {
-        tape.entries[tape.len++] = (TapeEntry){RESHAPE, result, t, NULL, NULL, NULL, NULL};
-    }
-    return result;
-}
-
 Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
     if (op == RELU || op == SIGMOID) {
         Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
-        for (int i = 0; i < result->size; i++) {
+        for (int i = 0; i < result->size; i++)
             result->data[i] = op == RELU ? relu(a->data[i]) : sigmoid(a->data[i]);
-        }
-        if (result->requires_grad) {
+        if (result->requires_grad)
             tape.entries[tape.len++] = (TapeEntry){op, result, a, NULL, NULL, NULL, NULL};
-        }
         return result;
     }
 
@@ -187,9 +101,8 @@ Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
         }
     }
     
-    if (result->requires_grad) {
+    if (result->requires_grad)
         tape.entries[tape.len++] = (TapeEntry){op, result, a, b, NULL, NULL, NULL};
-    }
     return result;
 }
 
@@ -197,6 +110,64 @@ Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
 #define tensor_matmul(a, b) tensor_op(a, b, MATMUL)
 #define tensor_relu(a) tensor_op(a, NULL, RELU)
 #define tensor_sigmoid(a) tensor_op(a, NULL, SIGMOID)
+
+Tensor* tensor_slice(Tensor* t, const int* start, const int* end) {
+    int new_dims[MAX_DIMS];
+    for (int i = 0; i < t->ndims; i++) {
+        new_dims[i] = end[i] - start[i];
+        if (start[i] < 0 || end[i] > t->dims[i] || start[i] >= end[i]) return NULL;
+    }
+    
+    Tensor* result = tensor_new(t->ndims, new_dims, NULL, t->requires_grad);
+    
+    int coords[MAX_DIMS], src_coords[MAX_DIMS];
+    for (int i = 0; i < result->size; i++) {
+        index_to_coords(i, coords, result->dims, result->ndims);
+        for (int j = 0; j < t->ndims; j++) src_coords[j] = coords[j] + start[j];
+        result->data[i] = t->data[coords_to_index(src_coords, t->dims, t->ndims)];
+    }
+    
+    if (result->requires_grad) {
+        int* slice_start = malloc(t->ndims * sizeof(int));
+        int* slice_end = malloc(t->ndims * sizeof(int));
+        memcpy(slice_start, start, t->ndims * sizeof(int));
+        memcpy(slice_end, end, t->ndims * sizeof(int));
+        tape.entries[tape.len++] = (TapeEntry){SLICE, result, t, NULL, slice_start, slice_end, NULL};
+    }
+    return result;
+}
+
+Tensor* tensor_reshape(Tensor* t, int new_ndims, const int* new_dims) {
+    int new_size = 1;
+    for (int i = 0; i < new_ndims; i++) new_size *= new_dims[i];
+    if (new_size != t->size) return NULL;
+    
+    Tensor* result = tensor_new(new_ndims, new_dims, t->data, t->requires_grad);
+    if (result->requires_grad)
+        tape.entries[tape.len++] = (TapeEntry){RESHAPE, result, t, NULL, NULL, NULL, NULL};
+    return result;
+}
+
+Tensor* tensor_permute(Tensor* t, const int* permutation) {
+    int new_dims[MAX_DIMS];
+    for (int i = 0; i < t->ndims; i++) new_dims[i] = t->dims[permutation[i]];
+    
+    Tensor* result = tensor_new(t->ndims, new_dims, NULL, t->requires_grad);
+    
+    int coords[MAX_DIMS], new_coords[MAX_DIMS];
+    for (int i = 0; i < t->size; i++) {
+        index_to_coords(i, new_coords, result->dims, result->ndims);
+        for (int j = 0; j < t->ndims; j++) coords[permutation[j]] = new_coords[j];
+        result->data[i] = t->data[coords_to_index(coords, t->dims, t->ndims)];
+    }
+    
+    if (result->requires_grad) {
+        int* perm_copy = malloc(t->ndims * sizeof(int));
+        memcpy(perm_copy, permutation, t->ndims * sizeof(int));
+        tape.entries[tape.len++] = (TapeEntry){PERMUTE, result, t, NULL, NULL, NULL, perm_copy};
+    }
+    return result;
+}
 
 void backward() {
     if (!tape.len) return;
@@ -216,18 +187,13 @@ void backward() {
             case PERMUTE: {
                 if (a->requires_grad) {
                     int inverse_perm[MAX_DIMS];
-                    for (int j = 0; j < t->ndims; j++) {
-                        inverse_perm[e->permutation[j]] = j;
-                    }
+                    for (int j = 0; j < t->ndims; j++) inverse_perm[e->permutation[j]] = j;
                     
                     int old_coords[MAX_DIMS], new_coords[MAX_DIMS];
                     for (int j = 0; j < t->size; j++) {
                         index_to_coords(j, old_coords, t->dims, t->ndims);
-                        for (int k = 0; k < t->ndims; k++) {
-                            new_coords[inverse_perm[k]] = old_coords[k];
-                        }
-                        int new_idx = coords_to_index(new_coords, a->dims, a->ndims);
-                        a->grad[new_idx] += t->grad[j];
+                        for (int k = 0; k < t->ndims; k++) new_coords[inverse_perm[k]] = old_coords[k];
+                        a->grad[coords_to_index(new_coords, a->dims, a->ndims)] += t->grad[j];
                     }
                 }
                 break;
