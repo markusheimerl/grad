@@ -12,7 +12,8 @@
 
 typedef enum { 
     ADD, MATMUL, RELU, SIGMOID, RESHAPE, SLICE, 
-    PERMUTE, GATHER, HADAMARD, POW, EXP, REDUCE_SUM 
+    PERMUTE, GATHER, HADAMARD, POW, EXP, REDUCE_SUM,
+    REDUCE_MAX
 } OpType;
 
 typedef struct {
@@ -77,6 +78,61 @@ static void record_operation(OpType op, Tensor* result, Tensor* input1, Tensor* 
             .aux_data1 = aux1, .aux_data2 = aux2, .aux_data3 = aux3, .aux_int = aux_int
         };
     }
+}
+
+Tensor* tensor_reduce_max(Tensor* t, const int* axes, int num_axes) {
+    if (!t || !axes || num_axes <= 0 || num_axes > t->ndims) return NULL;
+    
+    int reduce_dims[MAX_DIMS] = {0}, new_dims[MAX_DIMS];
+    int new_ndims = 0;
+    
+    // Mark dimensions to reduce and build new shape
+    for (int i = 0; i < num_axes; i++) {
+        if (axes[i] < 0 || axes[i] >= t->ndims) return NULL;
+        reduce_dims[axes[i]] = 1;
+    }
+    
+    for (int i = 0; i < t->ndims; i++) {
+        if (!reduce_dims[i]) new_dims[new_ndims++] = t->dims[i];
+    }
+    
+    Tensor* result = tensor_new(new_ndims, new_dims, NULL, t->requires_grad);
+    
+    // Initialize result with negative infinity
+    for (int i = 0; i < result->size; i++) {
+        result->data[i] = -INFINITY;
+    }
+    
+    // Store indices of maximum values for backprop
+    int* max_indices = NULL;
+    if (result->requires_grad) {
+        max_indices = malloc(result->size * sizeof(int));
+    }
+    
+    int coords[MAX_DIMS], result_coords[MAX_DIMS];
+    for (int i = 0; i < t->size; i++) {
+        index_to_coords(i, coords, t->dims, t->ndims);
+        
+        // Map to result coordinates
+        int idx = 0;
+        for (int j = 0; j < t->ndims; j++) {
+            if (!reduce_dims[j]) result_coords[idx++] = coords[j];
+        }
+        
+        int result_idx = coords_to_index(result_coords, result->dims, new_ndims);
+        if (t->data[i] > result->data[result_idx]) {
+            result->data[result_idx] = t->data[i];
+            if (max_indices) max_indices[result_idx] = i;
+        }
+    }
+    
+    if (result->requires_grad) {
+        record_operation(REDUCE_MAX, result, t, NULL, 
+                        (int*)max_indices,  // Store max indices
+                        NULL, NULL, num_axes);
+    }
+    
+    return result;
 }
 
 Tensor* tensor_reduce_sum(Tensor* t, const int* axes, int num_axes) {
@@ -278,6 +334,16 @@ void backward() {
         if (b && b->requires_grad && !b->grad) b->grad = calloc(b->size, sizeof(float));
         
         switch (e->op) {
+            case REDUCE_MAX: {
+                if (a->requires_grad) {
+                    int* max_indices = e->aux_data1;
+                    // Only propagate gradients through the maximum elements
+                    for (int i = 0; i < t->size; i++) {
+                        a->grad[max_indices[i]] += t->grad[i];
+                    }
+                }
+                break;
+            }
             case REDUCE_SUM: {
                 if (a->requires_grad) {
                     int* axes = e->aux_data1;
