@@ -1,13 +1,16 @@
 # grad
-A differentiation library
+A differentiation library for efficient tensor operations
 
-train on github runners!!! Upload artifacts as release of package of repo
+ToDo:
+- Training support on GitHub runners
+- Artifact generation and package releases
 
-ml frameworks are computational graphs of tensor and operator nodes with
-subgraph matching to fused kernels
-
-todo:
-1. Reshape - done
-2. Slice - done
-3. Permute - done
-4. Gather - done
+Done:
+- ✓ MatMul
+- ✓ Add
+- ✓ Relu
+- ✓ Sigmoid
+- ✓ Reshape
+- ✓ Slice
+- ✓ Permute
+- ✓ Gather
