@@ -176,34 +176,44 @@ void print_tensor(Tensor* t, const char* name) {
 }
 
 int main() {
-    int dims[] = {2, 2, 2};
-    float w1_data[] = {1.0f, 0.5f, 0.5f, 1.0f, 0.8f, 0.2f, 0.3f, 0.7f};
-    float w2_data[] = {0.5f, 1.0f, 1.0f, 0.5f, 0.4f, 0.6f, 0.9f, 0.1f};
-    float x_data[] = {1.0f, 2.0f, 0.5f, 1.5f, 0.7f, 1.3f, 1.8f, 0.4f};
+    int dims[] = {2, 3, 4, 4};  // [batch, channels, height, width]
+    float *w1_data = malloc(96 * sizeof(float));
+    float *w2_data = malloc(96 * sizeof(float));
+    float *x_data = malloc(96 * sizeof(float));
     
-    Tensor *w1 = tensor_new(3, dims, w1_data, 1);
-    Tensor *w2 = tensor_new(3, dims, w2_data, 1);
-    Tensor *x = tensor_new(3, dims, x_data, 1);
+    // Initialize data
+    for (int i = 0; i < 96; i++) {
+        w1_data[i] = (float)rand() / RAND_MAX * 0.2f;
+        w2_data[i] = (float)rand() / RAND_MAX * 0.2f;
+        x_data[i] = (float)rand() / RAND_MAX;
+    }
     
-    Tensor *h1 = tensor_matmul(x, w1);
-    Tensor *h1_act = tensor_relu(h1);
-    Tensor *h2 = tensor_matmul(h1_act, w2);
-    Tensor *y = tensor_sigmoid(h2);
+    // Create tensors and build network
+    Tensor *w1 = tensor_new(4, dims, w1_data, 1);
+    Tensor *w2 = tensor_new(4, dims, w2_data, 1);
+    Tensor *x = tensor_new(4, dims, x_data, 1);
+    
+    Tensor *y = tensor_sigmoid(
+        tensor_matmul(
+            tensor_relu(
+                tensor_matmul(x, w1)
+            ), w2)
+        );
     
     backward();
     
-    printf("Neural network computation with ReLU and Sigmoid activations:\n\n");
-    print_tensor(x, "Input (x)");
-    print_tensor(w1, "First layer weights (w1)");
-    print_tensor(h1, "Pre-activation hidden layer (h1)");
-    print_tensor(h1_act, "ReLU activation (h1_act)");
-    print_tensor(w2, "Second layer weights (w2)");
-    print_tensor(h2, "Pre-activation output (h2)");
-    print_tensor(y, "Sigmoid output (y)");
+    // Print results
+    printf("4D Network [%d, %d, %d, %d] - First 4 elements:\n", 
+           dims[0], dims[1], dims[2], dims[3]);
+    printf("Output: %.4f %.4f %.4f %.4f\n", 
+           y->data[0], y->data[1], y->data[2], y->data[3]);
+    printf("Gradients: %.4f %.4f %.4f %.4f\n", 
+           w1->grad[0], w1->grad[1], w1->grad[2], w1->grad[3]);
     
-    tensor_free(y); tensor_free(h2); tensor_free(h1_act);
-    tensor_free(h1); tensor_free(w2); tensor_free(w1); tensor_free(x);
-    
+    // Cleanup
+    tensor_free(y);
+    free(w1_data); free(w2_data); free(x_data);
+    tensor_free(w1); tensor_free(w2); tensor_free(x);
     tape.len = 0;
     return 0;
 }
