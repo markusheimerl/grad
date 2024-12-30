@@ -10,7 +10,10 @@
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 #define MAX(a,b) ((a) > (b) ? (a) : (b))
 
-typedef enum { ADD, MATMUL, RELU, SIGMOID, RESHAPE, SLICE, PERMUTE, GATHER, HADAMARD, POW, EXP, REDUCE_SUM } OpType;
+typedef enum { 
+    ADD, MATMUL, RELU, SIGMOID, RESHAPE, SLICE, 
+    PERMUTE, GATHER, HADAMARD, POW, EXP, REDUCE_SUM 
+} OpType;
 
 typedef struct {
     float *data, *grad;
@@ -27,11 +30,12 @@ typedef struct {
 
 static struct { TapeEntry entries[1000]; int len; } tape;
 
+// Helper functions
 static float sigmoid(float x) { return 1.0f / (1.0f + expf(-fmaxf(fminf(x, 88.0f), -88.0f))); }
 static float d_sigmoid(float x) { float s = sigmoid(x); return s * (1 - s); }
 static float relu(float x) { return x > 0 ? x : 0; }
 static float d_relu(float x) { return x > 0 ? 1 : 0; }
-static float safe_exp(float x) {return expf(fmaxf(fminf(x, 88.0f), -88.0f));}
+static float safe_exp(float x) { return expf(fmaxf(fminf(x, 88.0f), -88.0f)); }
 
 static int coords_to_index(const int* coords, const int* dims, int ndims) {
     int index = 0, stride = 1;
@@ -69,14 +73,8 @@ static void record_operation(OpType op, Tensor* result, Tensor* input1, Tensor* 
                            int* aux1, int* aux2, int* aux3, int aux_int) {
     if (result->requires_grad) {
         tape.entries[tape.len++] = (TapeEntry){
-            .op = op,
-            .result = result,
-            .input1 = input1,
-            .input2 = input2,
-            .aux_data1 = aux1,
-            .aux_data2 = aux2,
-            .aux_data3 = aux3,
-            .aux_int = aux_int
+            .op = op, .result = result, .input1 = input1, .input2 = input2,
+            .aux_data1 = aux1, .aux_data2 = aux2, .aux_data3 = aux3, .aux_int = aux_int
         };
     }
 }
@@ -84,55 +82,34 @@ static void record_operation(OpType op, Tensor* result, Tensor* input1, Tensor* 
 Tensor* tensor_reduce_sum(Tensor* t, const int* axes, int num_axes) {
     if (!t || !axes || num_axes <= 0 || num_axes > t->ndims) return NULL;
     
-    // Create a boolean array to mark which dimensions to reduce
-    int reduce_dims[MAX_DIMS] = {0};
+    int reduce_dims[MAX_DIMS] = {0}, new_dims[MAX_DIMS];
+    int new_ndims = 0;
+    
     for (int i = 0; i < num_axes; i++) {
         if (axes[i] < 0 || axes[i] >= t->ndims) return NULL;
         reduce_dims[axes[i]] = 1;
     }
     
-    // Calculate new dimensions
-    int new_ndims = t->ndims - num_axes;
-    int new_dims[MAX_DIMS];
-    int new_dim_idx = 0;
-    
     for (int i = 0; i < t->ndims; i++) {
-        if (!reduce_dims[i]) {
-            new_dims[new_dim_idx++] = t->dims[i];
-        }
+        if (!reduce_dims[i]) new_dims[new_ndims++] = t->dims[i];
     }
     
-    // Create result tensor
     Tensor* result = tensor_new(new_ndims, new_dims, NULL, t->requires_grad);
+    memset(result->data, 0, result->size * sizeof(float));
     
-    // Initialize result data to zero
-    for (int i = 0; i < result->size; i++) {
-        result->data[i] = 0.0f;
-    }
-    
-    // Perform reduction
-    int coords[MAX_DIMS];
-    int new_coords[MAX_DIMS];
-    
+    int coords[MAX_DIMS], result_coords[MAX_DIMS];
     for (int i = 0; i < t->size; i++) {
-        // Convert linear index to coordinates
         index_to_coords(i, coords, t->dims, t->ndims);
         
-        // Map to new coordinates (excluding reduced dimensions)
-        new_dim_idx = 0;
+        int idx = 0;
         for (int j = 0; j < t->ndims; j++) {
-            if (!reduce_dims[j]) {
-                new_coords[new_dim_idx++] = coords[j];
-            }
+            if (!reduce_dims[j]) result_coords[idx++] = coords[j];
         }
         
-        // Calculate index in result tensor
-        int result_idx = coords_to_index(new_coords, new_dims, new_ndims);
-        result->data[result_idx] += t->data[i];
+        result->data[coords_to_index(result_coords, result->dims, new_ndims)] += t->data[i];
     }
     
     if (result->requires_grad) {
-        // Store reduction information for backward pass
         int* axes_copy = malloc(num_axes * sizeof(int));
         memcpy(axes_copy, axes, num_axes * sizeof(int));
         record_operation(REDUCE_SUM, result, t, NULL, axes_copy, NULL, NULL, num_axes);
@@ -155,10 +132,7 @@ Tensor* tensor_gather(Tensor* t, int axis, const int* indices, int num_indices) 
         index_to_coords(i, coords, result->dims, result->ndims);
         int original_coord = coords[axis];
         coords[axis] = indices[original_coord];
-        int src_idx = coords_to_index(coords, t->dims, t->ndims);
-        coords[axis] = original_coord;
-        int dst_idx = coords_to_index(coords, result->dims, result->ndims);
-        result->data[dst_idx] = t->data[src_idx];
+        result->data[i] = t->data[coords_to_index(coords, t->dims, t->ndims)];
     }
     
     if (result->requires_grad) {
@@ -166,23 +140,20 @@ Tensor* tensor_gather(Tensor* t, int axis, const int* indices, int num_indices) 
         memcpy(indices_copy, indices, num_indices * sizeof(int));
         record_operation(GATHER, result, t, NULL, indices_copy, NULL, NULL, axis);
     }
-    
     return result;
 }
 
 Tensor* tensor_pow(Tensor* t, float exponent) {
     Tensor* result = tensor_new(t->ndims, t->dims, NULL, t->requires_grad);
     
-    for (int i = 0; i < t->size; i++) {
+    for (int i = 0; i < t->size; i++)
         result->data[i] = powf(t->data[i], exponent);
-    }
     
     if (result->requires_grad) {
         float* exp_ptr = malloc(sizeof(float));
         *exp_ptr = exponent;
         record_operation(POW, result, t, NULL, (int*)exp_ptr, NULL, NULL, 0);
     }
-    
     return result;
 }
 
@@ -203,8 +174,8 @@ Tensor* tensor_slice(Tensor* t, const int* start, const int* end) {
     }
     
     if (result->requires_grad) {
-        int* slice_start = malloc(t->ndims * sizeof(int));
-        int* slice_end = malloc(t->ndims * sizeof(int));
+        int *slice_start = malloc(t->ndims * sizeof(int));
+        int *slice_end = malloc(t->ndims * sizeof(int));
         memcpy(slice_start, start, t->ndims * sizeof(int));
         memcpy(slice_end, end, t->ndims * sizeof(int));
         record_operation(SLICE, result, t, NULL, slice_start, slice_end, NULL, 0);
@@ -249,8 +220,7 @@ Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
         Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
         for (int i = 0; i < result->size; i++)
             result->data[i] = op == RELU ? relu(a->data[i]) : 
-                             op == SIGMOID ? sigmoid(a->data[i]) :
-                             safe_exp(a->data[i]);
+                             op == SIGMOID ? sigmoid(a->data[i]) : safe_exp(a->data[i]);
         if (result->requires_grad)
             record_operation(op, result, a, NULL, NULL, NULL, NULL, 0);
         return result;
@@ -267,10 +237,9 @@ Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
 
     Tensor* result = tensor_new(out_ndims, out_dims, NULL, a->requires_grad || b->requires_grad);
     
-    if (op == ADD) {
-        for (int i = 0; i < result->size; i++) result->data[i] = a->data[i] + b->data[i];
-    } else if (op == HADAMARD) {
-        for (int i = 0; i < result->size; i++) result->data[i] = a->data[i] * b->data[i];
+    if (op == ADD || op == HADAMARD) {
+        for (int i = 0; i < result->size; i++)
+            result->data[i] = op == ADD ? a->data[i] + b->data[i] : a->data[i] * b->data[i];
     } else {  // MATMUL
         int batch_size = result->size / (result->dims[out_ndims-2] * result->dims[out_ndims-1]);
         int m = a->dims[a->ndims-2], n = a->dims[a->ndims-1], p = b->dims[b->ndims-1];
@@ -309,42 +278,31 @@ void backward() {
         if (b && b->requires_grad && !b->grad) b->grad = calloc(b->size, sizeof(float));
         
         switch (e->op) {
-            case REDUCE_SUM:
+            case REDUCE_SUM: {
                 if (a->requires_grad) {
                     int* axes = e->aux_data1;
                     int num_axes = e->aux_int;
-                    
-                    // For each gradient in the result tensor, distribute it to all corresponding
-                    // positions in the input tensor's gradient
-                    int coords[MAX_DIMS];
-                    int result_coords[MAX_DIMS];
+                    int coords[MAX_DIMS], result_coords[MAX_DIMS];
                     
                     for (int i = 0; i < t->size; i++) {
                         index_to_coords(i, result_coords, t->dims, t->ndims);
-                        
-                        // Expand result coordinates to original dimensions
                         int idx = 0;
                         for (int j = 0; j < a->ndims; j++) {
                             int is_reduced_dim = 0;
                             for (int k = 0; k < num_axes; k++) {
                                 if (j == axes[k]) {
                                     is_reduced_dim = 1;
-                                    coords[j] = 0;  // Start with 0 for reduced dimensions
+                                    coords[j] = 0;
                                     break;
                                 }
                             }
-                            if (!is_reduced_dim) {
-                                coords[j] = result_coords[idx++];
-                            }
+                            if (!is_reduced_dim) coords[j] = result_coords[idx++];
                         }
                         
-                        // Iterate over all combinations of reduced dimensions
                         int done = 0;
                         while (!done) {
                             int input_idx = coords_to_index(coords, a->dims, a->ndims);
                             a->grad[input_idx] += t->grad[i];
-                            
-                            // Increment reduced dimensions
                             done = 1;
                             for (int k = 0; k < num_axes; k++) {
                                 int dim = axes[k];
@@ -359,6 +317,7 @@ void backward() {
                     }
                 }
                 break;
+            }
             case RESHAPE:
                 if (a->requires_grad)
                     for (int j = 0; j < t->size; j++) a->grad[j] += t->grad[j];
@@ -391,10 +350,10 @@ void backward() {
                 break;
             }
             case EXP:
-            if (a->requires_grad)
-                for (int j = 0; j < t->size; j++)
-                    a->grad[j] += t->grad[j] * t->data[j];
-            break;
+                if (a->requires_grad)
+                    for (int j = 0; j < t->size; j++)
+                        a->grad[j] += t->grad[j] * t->data[j];
+                break;
             case POW:
                 if (a->requires_grad) {
                     float exponent = *(float*)e->aux_data1;

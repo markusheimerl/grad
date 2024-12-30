@@ -502,11 +502,9 @@ int main() {
         int axes[] = {1};
         Tensor* sum = tensor_reduce_sum(t, axes, 1);
 
-        // Result will have shape [2, 4]
         printf("Original shape: %dx%dx%d\n", t->dims[0], t->dims[1], t->dims[2]);
         printf("Result shape: %dx%d\n", sum->dims[0], sum->dims[1]);
 
-        // Print original tensor
         printf("\nOriginal tensor:\n");
         for (int i = 0; i < dims[0]; i++) {
             printf("Slice %d:\n", i);
@@ -519,7 +517,6 @@ int main() {
             printf("\n");
         }
 
-        // Print result
         printf("Sum result:\n");
         for (int i = 0; i < sum->dims[0]; i++) {
             for (int j = 0; j < sum->dims[1]; j++) {
