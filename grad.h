@@ -10,7 +10,7 @@
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 #define MAX(a,b) ((a) > (b) ? (a) : (b))
 
-typedef enum { ADD, MATMUL, RELU, SIGMOID, RESHAPE, SLICE, PERMUTE, GATHER, HADAMARD, POW } OpType;
+typedef enum { ADD, MATMUL, RELU, SIGMOID, RESHAPE, SLICE, PERMUTE, GATHER, HADAMARD, POW, EXP} OpType;
 
 typedef struct {
     float *data, *grad;
@@ -31,6 +31,7 @@ static float sigmoid(float x) { return 1.0f / (1.0f + expf(-fmaxf(fminf(x, 88.0f
 static float d_sigmoid(float x) { float s = sigmoid(x); return s * (1 - s); }
 static float relu(float x) { return x > 0 ? x : 0; }
 static float d_relu(float x) { return x > 0 ? 1 : 0; }
+static float safe_exp(float x) {return expf(fmaxf(fminf(x, 88.0f), -88.0f));}
 
 static int coords_to_index(const int* coords, const int* dims, int ndims) {
     int index = 0, stride = 1;
@@ -184,10 +185,12 @@ Tensor* tensor_permute(Tensor* t, const int* permutation) {
 }
 
 Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
-    if (op == RELU || op == SIGMOID) {
+    if (op == RELU || op == SIGMOID || op == EXP) {
         Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
         for (int i = 0; i < result->size; i++)
-            result->data[i] = op == RELU ? relu(a->data[i]) : sigmoid(a->data[i]);
+            result->data[i] = op == RELU ? relu(a->data[i]) : 
+                             op == SIGMOID ? sigmoid(a->data[i]) :
+                             safe_exp(a->data[i]);
         if (result->requires_grad)
             record_operation(op, result, a, NULL, NULL, NULL, NULL, 0);
         return result;
@@ -277,6 +280,11 @@ void backward() {
                 }
                 break;
             }
+            case EXP:
+            if (a->requires_grad)
+                for (int j = 0; j < t->size; j++)
+                    a->grad[j] += t->grad[j] * t->data[j];
+            break;
             case POW:
                 if (a->requires_grad) {
                     float exponent = *(float*)e->aux_data1;
@@ -368,5 +376,6 @@ void tensor_free(Tensor* t) {
 #define tensor_relu(a) tensor_op(a, NULL, RELU)
 #define tensor_sigmoid(a) tensor_op(a, NULL, SIGMOID)
 #define tensor_hadamard(a, b) tensor_op(a, b, HADAMARD)
+#define tensor_exp(a) tensor_op(a, NULL, EXP)
 
 #endif // __GRAD_H__

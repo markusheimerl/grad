@@ -443,5 +443,45 @@ int main() {
         tensor_free(t);
     }
 
+    // Test 9: Exponential operation
+    printf("\nTest 9: Exponential operation\n");
+    {
+        int dims[] = {2, 3};
+        float data[] = {0, 0.5, 1, -1, -0.5, 0.1};
+        
+        Tensor* t = tensor_new(2, dims, data, 1);
+        Tensor* result = tensor_exp(t);
+        
+        printf("Original tensor:\n");
+        for (int i = 0; i < dims[0]; i++) {
+            for (int j = 0; j < dims[1]; j++) {
+                printf("%6.2f ", t->data[i * dims[1] + j]);
+            }
+            printf("\n");
+        }
+        
+        printf("\nExponential result:\n");
+        for (int i = 0; i < dims[0]; i++) {
+            for (int j = 0; j < dims[1]; j++) {
+                printf("%6.2f ", result->data[i * dims[1] + j]);
+            }
+            printf("\n");
+        }
+        
+        backward();
+        
+        printf("\nGradients (should be equal to the exponential result):\n");
+        for (int i = 0; i < dims[0]; i++) {
+            for (int j = 0; j < dims[1]; j++) {
+                printf("%6.2f ", t->grad[i * dims[1] + j]);
+            }
+            printf("\n");
+        }
+        
+        cleanup_tape();
+        tensor_free(result);
+        tensor_free(t);
+    }
+
     return 0;
 }
