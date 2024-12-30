@@ -1,6 +1,6 @@
 CC = gcc
-CFLAGS = -O3 -march=native -flto -ffast-math -funroll-loops -Wall -Wextra
-LDFLAGS = -flto
+CFLAGS = -O3 -march=native -ffast-math -funroll-loops -Wall -Wextra
+LDFLAGS = -flto -lm
 TARGET = grad.out
 
 .PHONY: all clean run debug

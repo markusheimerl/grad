@@ -1,12 +1,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #define MAX_DIMS 8
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 #define MAX(a,b) ((a) > (b) ? (a) : (b))
 
-typedef enum { ADD, MATMUL } OpType;
+typedef enum { ADD, MATMUL, RELU, SIGMOID } OpType;
 
 typedef struct {
     float *data, *grad;
@@ -20,6 +21,23 @@ typedef struct {
 } TapeEntry;
 
 static struct { TapeEntry entries[1000]; int len; } tape = {0};
+
+static float sigmoid(float x) {
+    return 1.0f / (1.0f + expf(-x));
+}
+
+static float sigmoid_derivative(float x) {
+    float s = sigmoid(x);
+    return s * (1 - s);
+}
+
+static float relu(float x) {
+    return x > 0 ? x : 0;
+}
+
+static float relu_derivative(float x) {
+    return x > 0 ? 1 : 0;
+}
 
 static inline int calc_size(const int* dims, int ndims) {
     int size = 1;
@@ -99,7 +117,27 @@ static void matmul_forward(const float* a, const float* b, float* out, int m, in
         }
 }
 
+static Tensor* tensor_unary_op(Tensor* a, OpType op) {
+    Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
+    if (!result) return NULL;
+    
+    for (int i = 0; i < result->size; i++) {
+        if (op == RELU)
+            result->data[i] = relu(a->data[i]);
+        else if (op == SIGMOID)
+            result->data[i] = sigmoid(a->data[i]);
+    }
+    
+    if (result->requires_grad)
+        tape.entries[tape.len++] = (TapeEntry){op, result, a, NULL};
+    
+    return result;
+}
+
 static Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
+    if (op == RELU || op == SIGMOID)
+        return tensor_unary_op(a, op);
+        
     if (!compatible_shapes(a, b, op)) return NULL;
     
     int out_dims[MAX_DIMS], out_ndims;
@@ -128,11 +166,23 @@ static Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
 
 #define tensor_add(a, b) tensor_op(a, b, ADD)
 #define tensor_matmul(a, b) tensor_op(a, b, MATMUL)
+#define tensor_relu(a) tensor_op(a, NULL, RELU)
+#define tensor_sigmoid(a) tensor_op(a, NULL, SIGMOID)
 
 static void backward_op(TapeEntry* entry) {
     Tensor *t = entry->result, *a = entry->input1, *b = entry->input2;
     
-    if (entry->op == ADD) {
+    if (entry->op == RELU) {
+        if (a->requires_grad)
+            for (int i = 0; i < a->size; i++)
+                a->grad[i] += t->grad[i] * relu_derivative(a->data[i]);
+    }
+    else if (entry->op == SIGMOID) {
+        if (a->requires_grad)
+            for (int i = 0; i < a->size; i++)
+                a->grad[i] += t->grad[i] * sigmoid_derivative(a->data[i]);
+    }
+    else if (entry->op == ADD) {
         if (a->requires_grad)
             for (int i = 0; i < a->size; i++) 
                 a->grad[i] += t->grad[i];
@@ -212,19 +262,32 @@ int main() {
     Tensor *w1 = tensor_new(3, dims, w1_data, 1);
     Tensor *w2 = tensor_new(3, dims, w2_data, 1);
     Tensor *x = tensor_new(3, dims, x_data, 1);
-    Tensor *h = tensor_matmul(x, w1);
-    Tensor *y = tensor_matmul(h, w2);
+    
+    // Forward pass with activations
+    Tensor *h1 = tensor_matmul(x, w1);
+    Tensor *h1_act = tensor_relu(h1);
+    Tensor *h2 = tensor_matmul(h1_act, w2);
+    Tensor *y = tensor_sigmoid(h2);
     
     backward();
     
-    printf("Neural network computation example with batched 3D tensors:\n\n");
+    printf("Neural network computation with ReLU and Sigmoid activations:\n\n");
     print_tensor(x, "Input (x)");
     print_tensor(w1, "First layer weights (w1)");
+    print_tensor(h1, "Pre-activation hidden layer (h1)");
+    print_tensor(h1_act, "ReLU activation (h1_act)");
     print_tensor(w2, "Second layer weights (w2)");
-    print_tensor(h, "Hidden layer (h)");
-    print_tensor(y, "Output (y)");
+    print_tensor(h2, "Pre-activation output (h2)");
+    print_tensor(y, "Sigmoid output (y)");
     
-    tensor_free(y); tensor_free(h); tensor_free(w2); tensor_free(w1); tensor_free(x);
+    tensor_free(y);
+    tensor_free(h2);
+    tensor_free(h1_act);
+    tensor_free(h1);
+    tensor_free(w2);
+    tensor_free(w1);
+    tensor_free(x);
+    
     tape.len = 0;
     return 0;
 }
