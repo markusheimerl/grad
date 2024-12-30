@@ -10,7 +10,7 @@
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 #define MAX(a,b) ((a) > (b) ? (a) : (b))
 
-typedef enum { ADD, MATMUL, RELU, SIGMOID, RESHAPE, SLICE, PERMUTE, GATHER } OpType;
+typedef enum { ADD, MATMUL, RELU, SIGMOID, RESHAPE, SLICE, PERMUTE, GATHER, HADAMARD } OpType;
 
 typedef struct {
     float *data, *grad;
@@ -113,7 +113,7 @@ Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
     }
 
     int out_dims[MAX_DIMS], out_ndims = op == ADD ? a->ndims : MAX(a->ndims, b->ndims);
-    if (op == ADD) {
+    if (op == ADD || op == HADAMARD) {
         memcpy(out_dims, a->dims, a->ndims * sizeof(int));
     } else {
         for (int i = 0; i < out_ndims - 2; i++) out_dims[i] = MAX(a->dims[i], b->dims[i]);
@@ -125,6 +125,8 @@ Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
     
     if (op == ADD) {
         for (int i = 0; i < result->size; i++) result->data[i] = a->data[i] + b->data[i];
+    } else if (op == HADAMARD) {
+        for (int i = 0; i < result->size; i++) result->data[i] = a->data[i] * b->data[i];
     } else {
         int batch_size = result->size / (result->dims[out_ndims-2] * result->dims[out_ndims-1]);
         int m = a->dims[a->ndims-2], n = a->dims[a->ndims-1], p = b->dims[b->ndims-1];
@@ -152,6 +154,7 @@ Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
 #define tensor_matmul(a, b) tensor_op(a, b, MATMUL)
 #define tensor_relu(a) tensor_op(a, NULL, RELU)
 #define tensor_sigmoid(a) tensor_op(a, NULL, SIGMOID)
+#define tensor_hadamard(a, b) tensor_op(a, b, HADAMARD)
 
 Tensor* tensor_slice(Tensor* t, const int* start, const int* end) {
     int new_dims[MAX_DIMS];
@@ -226,6 +229,14 @@ void backward() {
         if (b && b->requires_grad && !b->grad) b->grad = calloc(b->size, sizeof(float));
         
         switch (e->op) {
+            case HADAMARD:
+                if (a->requires_grad)
+                    for (int j = 0; j < t->size; j++) 
+                        a->grad[j] += t->grad[j] * b->data[j];
+                if (b->requires_grad)
+                    for (int j = 0; j < t->size; j++) 
+                        b->grad[j] += t->grad[j] * a->data[j];
+                break;
             case GATHER: {
                 if (a->requires_grad) {
                     int axis = e->axis;

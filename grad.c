@@ -341,5 +341,65 @@ int main() {
         tensor_free(t);
     }
 
+    // Test 7: Hadamard multiplication
+    printf("\nTest 7: Hadamard multiplication\n");
+    {
+        int dims[] = {2, 3};
+        float data1[] = {1, 2, 3, 4, 5, 6};
+        float data2[] = {2, 3, 4, 5, 6, 7};
+        
+        Tensor* t1 = tensor_new(2, dims, data1, 1);
+        Tensor* t2 = tensor_new(2, dims, data2, 1);
+        
+        Tensor* result = tensor_hadamard(t1, t2);
+        
+        printf("Matrix 1:\n");
+        for (int i = 0; i < dims[0]; i++) {
+            for (int j = 0; j < dims[1]; j++) {
+                printf("%2.0f ", t1->data[i * dims[1] + j]);
+            }
+            printf("\n");
+        }
+        
+        printf("\nMatrix 2:\n");
+        for (int i = 0; i < dims[0]; i++) {
+            for (int j = 0; j < dims[1]; j++) {
+                printf("%2.0f ", t2->data[i * dims[1] + j]);
+            }
+            printf("\n");
+        }
+        
+        printf("\nHadamard product:\n");
+        for (int i = 0; i < dims[0]; i++) {
+            for (int j = 0; j < dims[1]; j++) {
+                printf("%2.0f ", result->data[i * dims[1] + j]);
+            }
+            printf("\n");
+        }
+        
+        backward();
+        
+        printf("\nGradients for Matrix 1:\n");
+        for (int i = 0; i < dims[0]; i++) {
+            for (int j = 0; j < dims[1]; j++) {
+                printf("%.1f ", t1->grad[i * dims[1] + j]);
+            }
+            printf("\n");
+        }
+        
+        printf("\nGradients for Matrix 2:\n");
+        for (int i = 0; i < dims[0]; i++) {
+            for (int j = 0; j < dims[1]; j++) {
+                printf("%.1f ", t2->grad[i * dims[1] + j]);
+            }
+            printf("\n");
+        }
+        
+        cleanup_tape();
+        tensor_free(result);
+        tensor_free(t1);
+        tensor_free(t2);
+    }
+
     return 0;
 }
