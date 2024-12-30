@@ -7,7 +7,7 @@
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 #define MAX(a,b) ((a) > (b) ? (a) : (b))
 
-typedef enum { ADD, MATMUL, RELU, SIGMOID, RESHAPE, SLICE, PERMUTE } OpType;
+typedef enum { ADD, MATMUL, RELU, SIGMOID, RESHAPE, SLICE, PERMUTE, GATHER } OpType;
 
 typedef struct {
     float *data, *grad;
@@ -19,6 +19,7 @@ typedef struct {
     OpType op;
     Tensor *result, *input1, *input2;
     int *slice_start, *slice_end, *permutation;
+    int axis;  // Added for gather operation
 } TapeEntry;
 
 static struct { TapeEntry entries[1000]; int len; } tape;
@@ -60,13 +61,51 @@ Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_g
     return t;
 }
 
+Tensor* tensor_gather(Tensor* t, int axis, const int* indices, int num_indices) {
+    if (axis < 0 || axis >= t->ndims) return NULL;
+    
+    int new_dims[MAX_DIMS];
+    memcpy(new_dims, t->dims, t->ndims * sizeof(int));
+    new_dims[axis] = num_indices;
+    
+    Tensor* result = tensor_new(t->ndims, new_dims, NULL, t->requires_grad);
+    
+    int coords[MAX_DIMS];
+    for (int i = 0; i < result->size; i++) {
+        index_to_coords(i, coords, result->dims, result->ndims);
+        int original_coord = coords[axis];
+        coords[axis] = indices[original_coord];
+        int src_idx = coords_to_index(coords, t->dims, t->ndims);
+        coords[axis] = original_coord;
+        int dst_idx = coords_to_index(coords, result->dims, result->ndims);
+        result->data[dst_idx] = t->data[src_idx];
+    }
+    
+    if (result->requires_grad) {
+        int* indices_copy = malloc(num_indices * sizeof(int));
+        memcpy(indices_copy, indices, num_indices * sizeof(int));
+        tape.entries[tape.len++] = (TapeEntry){
+            .op = GATHER,
+            .result = result,
+            .input1 = t,
+            .input2 = NULL,
+            .slice_start = indices_copy,
+            .slice_end = NULL,
+            .permutation = NULL,
+            .axis = axis
+        };
+    }
+    
+    return result;
+}
+
 Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
     if (op == RELU || op == SIGMOID) {
         Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
         for (int i = 0; i < result->size; i++)
             result->data[i] = op == RELU ? relu(a->data[i]) : sigmoid(a->data[i]);
         if (result->requires_grad)
-            tape.entries[tape.len++] = (TapeEntry){op, result, a, NULL, NULL, NULL, NULL};
+            tape.entries[tape.len++] = (TapeEntry){op, result, a, NULL, NULL, NULL, NULL, 0};
         return result;
     }
 
@@ -102,7 +141,7 @@ Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
     }
     
     if (result->requires_grad)
-        tape.entries[tape.len++] = (TapeEntry){op, result, a, b, NULL, NULL, NULL};
+        tape.entries[tape.len++] = (TapeEntry){op, result, a, b, NULL, NULL, NULL, 0};
     return result;
 }
 
@@ -132,7 +171,7 @@ Tensor* tensor_slice(Tensor* t, const int* start, const int* end) {
         int* slice_end = malloc(t->ndims * sizeof(int));
         memcpy(slice_start, start, t->ndims * sizeof(int));
         memcpy(slice_end, end, t->ndims * sizeof(int));
-        tape.entries[tape.len++] = (TapeEntry){SLICE, result, t, NULL, slice_start, slice_end, NULL};
+        tape.entries[tape.len++] = (TapeEntry){SLICE, result, t, NULL, slice_start, slice_end, NULL, 0};
     }
     return result;
 }
@@ -144,7 +183,7 @@ Tensor* tensor_reshape(Tensor* t, int new_ndims, const int* new_dims) {
     
     Tensor* result = tensor_new(new_ndims, new_dims, t->data, t->requires_grad);
     if (result->requires_grad)
-        tape.entries[tape.len++] = (TapeEntry){RESHAPE, result, t, NULL, NULL, NULL, NULL};
+        tape.entries[tape.len++] = (TapeEntry){RESHAPE, result, t, NULL, NULL, NULL, NULL, 0};
     return result;
 }
 
@@ -164,7 +203,7 @@ Tensor* tensor_permute(Tensor* t, const int* permutation) {
     if (result->requires_grad) {
         int* perm_copy = malloc(t->ndims * sizeof(int));
         memcpy(perm_copy, permutation, t->ndims * sizeof(int));
-        tape.entries[tape.len++] = (TapeEntry){PERMUTE, result, t, NULL, NULL, NULL, perm_copy};
+        tape.entries[tape.len++] = (TapeEntry){PERMUTE, result, t, NULL, NULL, NULL, perm_copy, 0};
     }
     return result;
 }
@@ -184,6 +223,22 @@ void backward() {
         if (b && b->requires_grad && !b->grad) b->grad = calloc(b->size, sizeof(float));
         
         switch (e->op) {
+            case GATHER: {
+                if (a->requires_grad) {
+                    int axis = e->axis;
+                    int* indices = e->slice_start;
+                    
+                    int coords[MAX_DIMS];
+                    for (int j = 0; j < t->size; j++) {
+                        index_to_coords(j, coords, t->dims, t->ndims);
+                        int original_coord = coords[axis];
+                        coords[axis] = indices[original_coord];
+                        int src_idx = coords_to_index(coords, a->dims, a->ndims);
+                        a->grad[src_idx] += t->grad[j];
+                    }
+                }
+                break;
+            }
             case PERMUTE: {
                 if (a->requires_grad) {
                     int inverse_perm[MAX_DIMS];
@@ -257,9 +312,9 @@ void backward() {
 
 void cleanup_tape() {
     for (int i = 0; i < tape.len; i++) {
-        free(tape.entries[i].slice_start);
-        free(tape.entries[i].slice_end);
-        free(tape.entries[i].permutation);
+        if (tape.entries[i].slice_start) free(tape.entries[i].slice_start);
+        if (tape.entries[i].slice_end) free(tape.entries[i].slice_end);
+        if (tape.entries[i].permutation) free(tape.entries[i].permutation);
     }
     tape.len = 0;
 }
@@ -312,7 +367,6 @@ int main() {
 
         backward();
         cleanup_tape();
-
         tensor_free(sliced);
         tensor_free(t);
         free(data);
@@ -390,7 +444,6 @@ int main() {
 
         backward();
         cleanup_tape();
-
         tensor_free(activated);
         tensor_free(sliced);
         tensor_free(t);
@@ -411,10 +464,8 @@ int main() {
         int start[] = {0, 1, 0};
         int end[] = {1, 3, 2};
         Tensor* sliced = tensor_slice(input, start, end);
-
         int reshape_dims[] = {2, 2};
         Tensor* reshaped = tensor_reshape(sliced, 2, reshape_dims);
-
         Tensor* matmul_result = tensor_matmul(reshaped, weights);
         Tensor* relu_result = tensor_relu(matmul_result);
         Tensor* final_result = tensor_sigmoid(relu_result);
@@ -470,23 +521,6 @@ int main() {
         }
 
         backward();
-
-        printf("\nGradients in weight matrix:\n");
-        for (int i = 0; i < 2; i++) {
-            for (int j = 0; j < 2; j++) {
-                printf("%.4f ", weights->grad[i * 2 + j]);
-            }
-            printf("\n");
-        }
-
-        printf("\nGradients in input tensor (first slice, non-zero elements):\n");
-        for (int i = 1; i < 3; i++) {
-            for (int j = 0; j < 2; j++) {
-                printf("%.4f ", input->grad[i * 3 + j]);
-            }
-            printf("\n");
-        }
-
         cleanup_tape();
         tensor_free(final_result);
         tensor_free(relu_result);
@@ -501,13 +535,11 @@ int main() {
     // Test 5: Permute operation
     printf("\nTest 5: Permute operation\n");
     {
-        // First, test with a simple 2x3x4 tensor
         int dims[] = {2, 3, 4};
         float* data = malloc(24 * sizeof(float));
         for (int i = 0; i < 24; i++) data[i] = i;
         Tensor* t = tensor_new(3, dims, data, 1);
 
-        // Permute from (2,3,4) to (4,2,3)
         int permutation[] = {2, 0, 1};
         Tensor* permuted = tensor_permute(t, permutation);
 
@@ -538,7 +570,6 @@ int main() {
             printf("\n");
         }
 
-        // Test gradient flow
         Tensor* activated = tensor_relu(permuted);
         backward();
 
@@ -547,7 +578,7 @@ int main() {
             printf("Slice %d:\n", i);
             for (int j = 0; j < t->dims[1]; j++) {
                 for (int k = 0; k < t->dims[2]; k++) {
-                    printf("%2.1f ", t->grad[i * t->dims[1] * t->dims[2] + j * t->dims[2] + k]);
+                    printf("%.1f ", t->grad[i * t->dims[1] * t->dims[2] + j * t->dims[2] + k]);
                 }
                 printf("\n");
             }
@@ -560,7 +591,7 @@ int main() {
         tensor_free(t);
         free(data);
 
-        // Add a simple 2D example
+        // Simple 2D permute test
         printf("\nSimple 2D permute test:\n");
         int dims2d[] = {2, 3};
         float data2d[] = {1, 2, 3, 4, 5, 6};
@@ -585,8 +616,56 @@ int main() {
             printf("\n");
         }
 
+        cleanup_tape();
         tensor_free(permuted2d);
         tensor_free(t2d);
+    }
+
+    // Test 6: Gather operation
+    printf("\nTest 6: Gather operation\n");
+    {
+        int dims[] = {3, 4};
+        float data[] = {
+            1, 2, 3, 4,
+            5, 6, 7, 8,
+            9, 10, 11, 12
+        };
+        Tensor* t = tensor_new(2, dims, data, 1);
+        
+        int indices[] = {2, 1, 0};  // Reverse the rows
+        Tensor* gathered = tensor_gather(t, 0, indices, 3);
+        
+        printf("Original tensor:\n");
+        for (int i = 0; i < dims[0]; i++) {
+            for (int j = 0; j < dims[1]; j++) {
+                printf("%2.0f ", t->data[i * dims[1] + j]);
+            }
+            printf("\n");
+        }
+        
+        printf("\nGathered tensor (reversed rows):\n");
+        for (int i = 0; i < gathered->dims[0]; i++) {
+            for (int j = 0; j < gathered->dims[1]; j++) {
+                printf("%2.0f ", gathered->data[i * gathered->dims[1] + j]);
+            }
+            printf("\n");
+        }
+        
+        Tensor* activated = tensor_relu(gathered);
+        backward();
+        
+        printf("\nGradients in original tensor:\n");
+        for (int i = 0; i < dims[0]; i++) {
+            for (int j = 0; j < dims[1]; j++) {
+                printf("%.1f ", t->grad[i * dims[1] + j]);
+            }
+            printf("\n");
+        }
+        
+        cleanup_tape();
+        tensor_free(activated);
+        tensor_free(gathered);
+        tensor_free(t);
     }
 
     return 0;
