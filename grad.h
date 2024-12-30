@@ -10,7 +10,7 @@
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 #define MAX(a,b) ((a) > (b) ? (a) : (b))
 
-typedef enum { ADD, MATMUL, RELU, SIGMOID, RESHAPE, SLICE, PERMUTE, GATHER, HADAMARD, POW, EXP} OpType;
+typedef enum { ADD, MATMUL, RELU, SIGMOID, RESHAPE, SLICE, PERMUTE, GATHER, HADAMARD, POW, EXP, REDUCE_SUM } OpType;
 
 typedef struct {
     float *data, *grad;
@@ -79,6 +79,66 @@ static void record_operation(OpType op, Tensor* result, Tensor* input1, Tensor* 
             .aux_int = aux_int
         };
     }
+}
+
+Tensor* tensor_reduce_sum(Tensor* t, const int* axes, int num_axes) {
+    if (!t || !axes || num_axes <= 0 || num_axes > t->ndims) return NULL;
+    
+    // Create a boolean array to mark which dimensions to reduce
+    int reduce_dims[MAX_DIMS] = {0};
+    for (int i = 0; i < num_axes; i++) {
+        if (axes[i] < 0 || axes[i] >= t->ndims) return NULL;
+        reduce_dims[axes[i]] = 1;
+    }
+    
+    // Calculate new dimensions
+    int new_ndims = t->ndims - num_axes;
+    int new_dims[MAX_DIMS];
+    int new_dim_idx = 0;
+    
+    for (int i = 0; i < t->ndims; i++) {
+        if (!reduce_dims[i]) {
+            new_dims[new_dim_idx++] = t->dims[i];
+        }
+    }
+    
+    // Create result tensor
+    Tensor* result = tensor_new(new_ndims, new_dims, NULL, t->requires_grad);
+    
+    // Initialize result data to zero
+    for (int i = 0; i < result->size; i++) {
+        result->data[i] = 0.0f;
+    }
+    
+    // Perform reduction
+    int coords[MAX_DIMS];
+    int new_coords[MAX_DIMS];
+    
+    for (int i = 0; i < t->size; i++) {
+        // Convert linear index to coordinates
+        index_to_coords(i, coords, t->dims, t->ndims);
+        
+        // Map to new coordinates (excluding reduced dimensions)
+        new_dim_idx = 0;
+        for (int j = 0; j < t->ndims; j++) {
+            if (!reduce_dims[j]) {
+                new_coords[new_dim_idx++] = coords[j];
+            }
+        }
+        
+        // Calculate index in result tensor
+        int result_idx = coords_to_index(new_coords, new_dims, new_ndims);
+        result->data[result_idx] += t->data[i];
+    }
+    
+    if (result->requires_grad) {
+        // Store reduction information for backward pass
+        int* axes_copy = malloc(num_axes * sizeof(int));
+        memcpy(axes_copy, axes, num_axes * sizeof(int));
+        record_operation(REDUCE_SUM, result, t, NULL, axes_copy, NULL, NULL, num_axes);
+    }
+    
+    return result;
 }
 
 Tensor* tensor_gather(Tensor* t, int axis, const int* indices, int num_indices) {
@@ -249,6 +309,56 @@ void backward() {
         if (b && b->requires_grad && !b->grad) b->grad = calloc(b->size, sizeof(float));
         
         switch (e->op) {
+            case REDUCE_SUM:
+                if (a->requires_grad) {
+                    int* axes = e->aux_data1;
+                    int num_axes = e->aux_int;
+                    
+                    // For each gradient in the result tensor, distribute it to all corresponding
+                    // positions in the input tensor's gradient
+                    int coords[MAX_DIMS];
+                    int result_coords[MAX_DIMS];
+                    
+                    for (int i = 0; i < t->size; i++) {
+                        index_to_coords(i, result_coords, t->dims, t->ndims);
+                        
+                        // Expand result coordinates to original dimensions
+                        int idx = 0;
+                        for (int j = 0; j < a->ndims; j++) {
+                            int is_reduced_dim = 0;
+                            for (int k = 0; k < num_axes; k++) {
+                                if (j == axes[k]) {
+                                    is_reduced_dim = 1;
+                                    coords[j] = 0;  // Start with 0 for reduced dimensions
+                                    break;
+                                }
+                            }
+                            if (!is_reduced_dim) {
+                                coords[j] = result_coords[idx++];
+                            }
+                        }
+                        
+                        // Iterate over all combinations of reduced dimensions
+                        int done = 0;
+                        while (!done) {
+                            int input_idx = coords_to_index(coords, a->dims, a->ndims);
+                            a->grad[input_idx] += t->grad[i];
+                            
+                            // Increment reduced dimensions
+                            done = 1;
+                            for (int k = 0; k < num_axes; k++) {
+                                int dim = axes[k];
+                                coords[dim]++;
+                                if (coords[dim] < a->dims[dim]) {
+                                    done = 0;
+                                    break;
+                                }
+                                coords[dim] = 0;
+                            }
+                        }
+                    }
+                }
+                break;
             case RESHAPE:
                 if (a->requires_grad)
                     for (int j = 0; j < t->size; j++) a->grad[j] += t->grad[j];

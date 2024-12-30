@@ -483,5 +483,56 @@ int main() {
         tensor_free(t);
     }
 
+    // Test 10: Reduce sum operation
+    printf("\nTest 10: Reduce sum operation\n");
+    {
+        int dims[] = {2, 3, 4};
+        float data[] = {
+            1, 2, 3, 4,
+            5, 6, 7, 8,
+            9, 10, 11, 12,
+            
+            13, 14, 15, 16,
+            17, 18, 19, 20,
+            21, 22, 23, 24
+        };
+        Tensor* t = tensor_new(3, dims, data, 1);
+
+        // Reduce along axis 1 (middle dimension)
+        int axes[] = {1};
+        Tensor* sum = tensor_reduce_sum(t, axes, 1);
+
+        // Result will have shape [2, 4]
+        printf("Original shape: %dx%dx%d\n", t->dims[0], t->dims[1], t->dims[2]);
+        printf("Result shape: %dx%d\n", sum->dims[0], sum->dims[1]);
+
+        // Print original tensor
+        printf("\nOriginal tensor:\n");
+        for (int i = 0; i < dims[0]; i++) {
+            printf("Slice %d:\n", i);
+            for (int j = 0; j < dims[1]; j++) {
+                for (int k = 0; k < dims[2]; k++) {
+                    printf("%2.0f ", t->data[i * dims[1] * dims[2] + j * dims[2] + k]);
+                }
+                printf("\n");
+            }
+            printf("\n");
+        }
+
+        // Print result
+        printf("Sum result:\n");
+        for (int i = 0; i < sum->dims[0]; i++) {
+            for (int j = 0; j < sum->dims[1]; j++) {
+                printf("%2.0f ", sum->data[i * sum->dims[1] + j]);
+            }
+            printf("\n");
+        }
+
+        backward();
+        cleanup_tape();
+        tensor_free(sum);
+        tensor_free(t);
+    }
+
     return 0;
 }
