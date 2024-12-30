@@ -165,6 +165,7 @@ void tensor_free(Tensor* t) {
 }
 
 int main() {
+    // Initialize input tensor
     int input_dims[] = {2, 3, 4, 4};
     float *input_data = malloc(96 * sizeof(float));
     for (int b = 0; b < 2; b++)
@@ -173,14 +174,8 @@ int main() {
                 for (int w = 0; w < 4; w++)
                     input_data[b*48 + c*16 + h*4 + w] = (float)(h + w)/8.0f + (float)c/3.0f + (float)b*0.1f;
     
+    // Create tensors
     Tensor *x = tensor_new(4, input_dims, input_data, 1);
-    printf("Input tensor (first batch, first channel):\n");
-    for (int h = 0; h < 4; h++) {
-        for (int w = 0; w < 4; w++) printf("%.3f ", x->data[h*4 + w]);
-        printf("\n");
-    }
-    printf("\n");
-
     int w1_dims[] = {48, 64}, w2_dims[] = {64, 32};
     float *w1_data = malloc(48 * 64 * sizeof(float));
     float *w2_data = malloc(64 * 32 * sizeof(float));
@@ -190,22 +185,29 @@ int main() {
     Tensor *w1 = tensor_new(2, w1_dims, w1_data, 1);
     Tensor *w2 = tensor_new(2, w2_dims, w2_data, 1);
 
+    // Forward pass
+    printf("Input tensor (first batch, first channel):\n");
+    for (int h = 0; h < 4; h++) {
+        for (int w = 0; w < 4; w++) printf("%.3f ", x->data[h*4 + w]);
+        printf("\n");
+    }
+    printf("\n");
+
     int reshaped_dims[] = {2, 48};
     Tensor *x_reshaped = tensor_reshape(x, 2, reshaped_dims);
-    printf("Reshaped input dimensions: [%d, %d]\n", x_reshaped->dims[0], x_reshaped->dims[1]);
-
     Tensor *h1 = tensor_relu(tensor_matmul(x_reshaped, w1));
-    printf("First hidden layer dimensions: [%d, %d]\n", h1->dims[0], h1->dims[1]);
-
     Tensor *output = tensor_sigmoid(tensor_matmul(h1, w2));
-    printf("Output dimensions: [%d, %d]\n\n", output->dims[0], output->dims[1]);
 
+    // Print dimensions and results
+    printf("Reshaped input dimensions: [%d, %d]\n", x_reshaped->dims[0], x_reshaped->dims[1]);
+    printf("First hidden layer dimensions: [%d, %d]\n", h1->dims[0], h1->dims[1]);
+    printf("Output dimensions: [%d, %d]\n\n", output->dims[0], output->dims[1]);
     printf("Output sample (first batch):\n");
     for (int i = 0; i < 8; i++) printf("%.3f ", output->data[i]);
     printf("...\n\n");
 
+    // Backward pass and gradient statistics
     backward();
-    
     float w1_grad_mean = 0, w2_grad_mean = 0, w1_grad_max = 0, w2_grad_max = 0;
     for (int i = 0; i < w1->size; i++) {
         w1_grad_mean += fabsf(w1->grad[i]);
@@ -219,6 +221,7 @@ int main() {
     printf("W1 gradients - Mean: %.6f, Max: %.6f\n", w1_grad_mean/w1->size, w1_grad_max);
     printf("W2 gradients - Mean: %.6f, Max: %.6f\n", w2_grad_mean/w2->size, w2_grad_max);
 
+    // Cleanup
     tensor_free(output); tensor_free(w2); tensor_free(h1);
     tensor_free(x_reshaped); tensor_free(w1); tensor_free(x);
     free(input_data); free(w1_data); free(w2_data);
