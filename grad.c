@@ -8,17 +8,15 @@
 
 typedef enum { ADD, MATMUL } OpType;
 
-typedef struct Tensor {
+typedef struct {
     float *data, *grad;
     int *dims, ndims, size;
     int requires_grad;
 } Tensor;
 
-typedef struct TapeEntry {
+typedef struct {
     OpType op;
-    Tensor *result;
-    Tensor *input1;
-    Tensor *input2;
+    Tensor *result, *input1, *input2;
 } TapeEntry;
 
 static struct { TapeEntry entries[1000]; int len; } tape = {0};
@@ -34,27 +32,24 @@ Tensor* tensor_new(int ndims, int* dims, float* data, int requires_grad) {
     if (!t) return NULL;
     
     t->ndims = ndims;
-    t->dims = malloc(ndims * sizeof(int));
     t->size = calc_size(dims, ndims);
+    t->dims = malloc(ndims * sizeof(int));
     t->data = malloc(t->size * sizeof(float));
     
-    if (!t->dims || !t->data) { 
-        free(t->dims); free(t->data); free(t); 
-        return NULL; 
+    if (!t->dims || !t->data) {
+        free(t->dims); free(t->data); free(t);
+        return NULL;
     }
     
     memcpy(t->dims, dims, ndims * sizeof(int));
     if (data) memcpy(t->data, data, t->size * sizeof(float));
     
-    t->requires_grad = requires_grad;
-    if (requires_grad) {
-        t->grad = calloc(t->size, sizeof(float));
-        if (!t->grad) {
+    if ((t->requires_grad = requires_grad)) {
+        if (!(t->grad = calloc(t->size, sizeof(float)))) {
             free(t->data); free(t->dims); free(t);
             return NULL;
         }
     }
-    
     return t;
 }
 
@@ -70,11 +65,12 @@ static int compatible_shapes(const Tensor* a, const Tensor* b, OpType op) {
         return 1;
     }
     if (op == MATMUL) {
-        if (a->ndims < 2 || b->ndims < 2) return 0;
-        if (a->dims[a->ndims-1] != b->dims[b->ndims-2]) return 0;
+        if (a->ndims < 2 || b->ndims < 2 || a->dims[a->ndims-1] != b->dims[b->ndims-2]) 
+            return 0;
         int batch_dims = MIN(a->ndims-2, b->ndims-2);
         for (int i = 0; i < batch_dims; i++)
-            if (a->dims[i] != b->dims[i] && a->dims[i] != 1 && b->dims[i] != 1) return 0;
+            if (a->dims[i] != b->dims[i] && a->dims[i] != 1 && b->dims[i] != 1) 
+                return 0;
         return 1;
     }
     return 0;
@@ -109,36 +105,23 @@ static Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
     int out_dims[MAX_DIMS], out_ndims;
     get_output_dims(a, b, op, out_dims, &out_ndims);
     
-    Tensor* result = tensor_new(out_ndims, out_dims, NULL, 
-                               a->requires_grad || b->requires_grad);
+    Tensor* result = tensor_new(out_ndims, out_dims, NULL, a->requires_grad || b->requires_grad);
     if (!result) return NULL;
     
     if (op == ADD) {
         for (int i = 0; i < result->size; i++)
             result->data[i] = a->data[i] + b->data[i];
     } else if (op == MATMUL) {
-        int batch_size = 1;
-        for (int i = 0; i < out_ndims - 2; i++) batch_size *= out_dims[i];
-        
-        int m = a->dims[a->ndims-2];
-        int n = a->dims[a->ndims-1];
-        int p = b->dims[b->ndims-1];
+        int batch_size = calc_size(out_dims, out_ndims - 2);
+        int m = a->dims[a->ndims-2], n = a->dims[a->ndims-1], p = b->dims[b->ndims-1];
         
         for (int batch = 0; batch < batch_size; batch++)
-            matmul_forward(&a->data[batch * m * n], 
-                         &b->data[batch * n * p], 
-                         &result->data[batch * m * p], m, n, p);
+            matmul_forward(&a->data[batch * m * n], &b->data[batch * n * p], 
+                          &result->data[batch * m * p], m, n, p);
     }
 
-    // Record operation in tape
-    if (result->requires_grad) {
-        tape.entries[tape.len++] = (TapeEntry){
-            .op = op,
-            .result = result,
-            .input1 = a,
-            .input2 = b
-        };
-    }
+    if (result->requires_grad)
+        tape.entries[tape.len++] = (TapeEntry){op, result, a, b};
     
     return result;
 }
@@ -147,9 +130,7 @@ static Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
 #define tensor_matmul(a, b) tensor_op(a, b, MATMUL)
 
 static void backward_op(TapeEntry* entry) {
-    Tensor *t = entry->result;
-    Tensor *a = entry->input1;
-    Tensor *b = entry->input2;
+    Tensor *t = entry->result, *a = entry->input1, *b = entry->input2;
     
     if (entry->op == ADD) {
         if (a->requires_grad)
@@ -159,40 +140,29 @@ static void backward_op(TapeEntry* entry) {
             for (int i = 0; i < b->size; i++) 
                 b->grad[i] += t->grad[i];
     } else if (entry->op == MATMUL) {
-        int batch_size = 1;
-        for (int i = 0; i < t->ndims - 2; i++) 
-            batch_size *= t->dims[i];
-        
-        int m = a->dims[a->ndims-2];
-        int n = a->dims[a->ndims-1];
-        int p = b->dims[b->ndims-1];
+        int batch_size = calc_size(t->dims, t->ndims - 2);
+        int m = a->dims[a->ndims-2], n = a->dims[a->ndims-1], p = b->dims[b->ndims-1];
         
         for (int batch = 0; batch < batch_size; batch++) {
-            int a_off = batch * m * n;
-            int b_off = batch * n * p;
-            int t_off = batch * m * p;
+            int a_off = batch * m * n, b_off = batch * n * p, t_off = batch * m * p;
             
-            if (a->requires_grad) {
+            if (a->requires_grad)
                 for (int i = 0; i < m; i++)
                     for (int k = 0; k < n; k++) {
                         float sum = 0;
                         for (int j = 0; j < p; j++)
-                            sum += t->grad[t_off + i * p + j] * 
-                                  b->data[b_off + k * p + j];
+                            sum += t->grad[t_off + i * p + j] * b->data[b_off + k * p + j];
                         a->grad[a_off + i * n + k] += sum;
                     }
-            }
             
-            if (b->requires_grad) {
+            if (b->requires_grad)
                 for (int k = 0; k < n; k++)
                     for (int j = 0; j < p; j++) {
                         float sum = 0;
                         for (int i = 0; i < m; i++)
-                            sum += t->grad[t_off + i * p + j] * 
-                                  a->data[a_off + i * n + k];
+                            sum += t->grad[t_off + i * p + j] * a->data[a_off + i * n + k];
                         b->grad[b_off + k * p + j] += sum;
                     }
-            }
         }
     }
 }
@@ -254,8 +224,7 @@ int main() {
     print_tensor(h, "Hidden layer (h)");
     print_tensor(y, "Output (y)");
     
-    tensor_free(y); tensor_free(h); 
-    tensor_free(w2); tensor_free(w1); tensor_free(x);
+    tensor_free(y); tensor_free(h); tensor_free(w2); tensor_free(w1); tensor_free(x);
     tape.len = 0;
     return 0;
 }
