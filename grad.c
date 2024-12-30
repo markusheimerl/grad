@@ -18,12 +18,12 @@ typedef struct {
 typedef struct {
     OpType op;
     Tensor *result, *input1, *input2;
-    int *slice_start;
-    int *slice_end;
+    int *slice_start, *slice_end;
 } TapeEntry;
 
 static struct { TapeEntry entries[1000]; int len; } tape;
 
+// Core helper functions
 static float sigmoid(float x) { return 1.0f / (1.0f + expf(-fmaxf(fminf(x, 88.0f), -88.0f))); }
 static float d_sigmoid(float x) { float s = sigmoid(x); return s * (1 - s); }
 static float relu(float x) { return x > 0 ? x : 0; }
@@ -45,6 +45,7 @@ static void index_to_coords(int index, int* coords, const int* dims, int ndims) 
     }
 }
 
+// Tensor operations
 Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_grad) {
     Tensor* t = calloc(1, sizeof(Tensor));
     t->ndims = ndims;
@@ -57,17 +58,15 @@ Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_g
     t->data = malloc(t->size * sizeof(float));
     if (data) memcpy(t->data, data, t->size * sizeof(float));
     
-    if ((t->requires_grad = requires_grad)) {
-        t->grad = calloc(t->size, sizeof(float));
-    }
+    if ((t->requires_grad = requires_grad)) t->grad = calloc(t->size, sizeof(float));
     return t;
 }
 
 Tensor* tensor_slice(Tensor* t, const int* start, const int* end) {
     int new_dims[MAX_DIMS];
     for (int i = 0; i < t->ndims; i++) {
-        if (start[i] < 0 || end[i] > t->dims[i] || start[i] >= end[i]) return NULL;
         new_dims[i] = end[i] - start[i];
+        if (start[i] < 0 || end[i] > t->dims[i] || start[i] >= end[i]) return NULL;
     }
     
     Tensor* result = tensor_new(t->ndims, new_dims, NULL, t->requires_grad);
@@ -75,9 +74,7 @@ Tensor* tensor_slice(Tensor* t, const int* start, const int* end) {
     int coords[MAX_DIMS], src_coords[MAX_DIMS];
     for (int i = 0; i < result->size; i++) {
         index_to_coords(i, coords, result->dims, result->ndims);
-        for (int j = 0; j < t->ndims; j++) {
-            src_coords[j] = coords[j] + start[j];
-        }
+        for (int j = 0; j < t->ndims; j++) src_coords[j] = coords[j] + start[j];
         result->data[i] = t->data[coords_to_index(src_coords, t->dims, t->ndims)];
     }
     
@@ -88,7 +85,6 @@ Tensor* tensor_slice(Tensor* t, const int* start, const int* end) {
         memcpy(slice_end, end, t->ndims * sizeof(int));
         tape.entries[tape.len++] = (TapeEntry){SLICE, result, t, NULL, slice_start, slice_end};
     }
-    
     return result;
 }
 
@@ -128,9 +124,7 @@ Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
     Tensor* result = tensor_new(out_ndims, out_dims, NULL, a->requires_grad || b->requires_grad);
     
     if (op == ADD) {
-        for (int i = 0; i < result->size; i++) {
-            result->data[i] = a->data[i] + b->data[i];
-        }
+        for (int i = 0; i < result->size; i++) result->data[i] = a->data[i] + b->data[i];
     } else {
         int batch_size = result->size / (result->dims[out_ndims-2] * result->dims[out_ndims-1]);
         int m = a->dims[a->ndims-2], n = a->dims[a->ndims-1], p = b->dims[b->ndims-1];
@@ -180,9 +174,7 @@ void backward() {
                     int coords[MAX_DIMS], src_coords[MAX_DIMS];
                     for (int j = 0; j < t->size; j++) {
                         index_to_coords(j, coords, t->dims, t->ndims);
-                        for (int k = 0; k < a->ndims; k++) {
-                            src_coords[k] = coords[k] + e->slice_start[k];
-                        }
+                        for (int k = 0; k < a->ndims; k++) src_coords[k] = coords[k] + e->slice_start[k];
                         a->grad[coords_to_index(src_coords, a->dims, a->ndims)] += t->grad[j];
                     }
                 }
