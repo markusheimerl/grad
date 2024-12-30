@@ -244,10 +244,10 @@ int main() {
     FILE* f = fopen("compare.py", "w");
     fprintf(f, "import torch\n\n");
     
-    // Test 1: 3D Tensor MatMul
-    fprintf(f, "# Test 1: 3D Tensor MatMul\n");
-    fprintf(f, "a = torch.tensor([[[1.0, 0.5], [0.5, 1.0]], [[0.8, 0.2], [0.3, 0.7]]], requires_grad=True)\n");
-    fprintf(f, "b = torch.tensor([[[0.5, 1.0], [1.0, 0.5]], [[0.4, 0.6], [0.9, 0.1]]], requires_grad=True)\n");
+    // Test 1: Edge Case - Very Small Numbers
+    fprintf(f, "# Test 1: Edge Case - Very Small Numbers\n");
+    fprintf(f, "a = torch.tensor([[[1e-7, 2e-7], [3e-7, 4e-7]], [[5e-7, 6e-7], [7e-7, 8e-7]]], requires_grad=True)\n");
+    fprintf(f, "b = torch.tensor([[[1e-7, 2e-7], [3e-7, 4e-7]], [[5e-7, 6e-7], [7e-7, 8e-7]]], requires_grad=True)\n");
     fprintf(f, "c = torch.matmul(a, b)\n");
     fprintf(f, "c.backward(torch.ones_like(c))\n");
     fprintf(f, "print('TEST1_RESULTS')\n");
@@ -255,10 +255,10 @@ int main() {
     fprintf(f, "print(' '.join(map(str, b.grad.numpy().flatten())))\n");
     fprintf(f, "print(' '.join(map(str, c.detach().numpy().flatten())))\n");
 
-    // Test 2: 3D Tensor Addition
-    fprintf(f, "\n# Test 2: 3D Tensor Addition\n");
-    fprintf(f, "x1 = torch.tensor([[[1., 2.], [3., 4.]], [[5., 6.], [7., 8.]]], requires_grad=True)\n");
-    fprintf(f, "x2 = torch.tensor([[[0.1, 0.2], [0.3, 0.4]], [[0.5, 0.6], [0.7, 0.8]]], requires_grad=True)\n");
+    // Test 2: Edge Case - Very Large Numbers
+    fprintf(f, "\n# Test 2: Edge Case - Very Large Numbers\n");
+    fprintf(f, "x1 = torch.tensor([[[1e5, 2e5], [3e5, 4e5]], [[5e5, 6e5], [7e5, 8e5]]], requires_grad=True)\n");
+    fprintf(f, "x2 = torch.tensor([[[1e-5, 2e-5], [3e-5, 4e-5]], [[5e-5, 6e-5], [7e-5, 8e-5]]], requires_grad=True)\n");
     fprintf(f, "y = x1 + x2\n");
     fprintf(f, "z = torch.matmul(y, x1)\n");
     fprintf(f, "z.backward(torch.ones_like(z))\n");
@@ -267,13 +267,15 @@ int main() {
     fprintf(f, "print(' '.join(map(str, x2.grad.numpy().flatten())))\n");
     fprintf(f, "print(' '.join(map(str, z.detach().numpy().flatten())))\n");
 
-    // Test 3: Complex 3D Graph
-    fprintf(f, "\n# Test 3: Complex 3D Graph\n");
-    fprintf(f, "m1 = torch.tensor([[[1., 2.], [3., 4.]], [[5., 6.], [7., 8.]]], requires_grad=True)\n");
-    fprintf(f, "m2 = torch.tensor([[[0.1, 0.2], [0.3, 0.4]], [[0.5, 0.6], [0.7, 0.8]]], requires_grad=True)\n");
-    fprintf(f, "m3 = torch.tensor([[[0.9, 0.8], [0.7, 0.6]], [[0.5, 0.4], [0.3, 0.2]]], requires_grad=True)\n");
-    fprintf(f, "temp = torch.matmul(m1, m2)\n");
-    fprintf(f, "result = torch.matmul(temp + m3, m1)\n");
+    // Test 3: Complex Graph with Mixed Operations
+    fprintf(f, "\n# Test 3: Complex Graph with Mixed Operations\n");
+    fprintf(f, "m1 = torch.tensor([[[0.1, 0.2], [0.3, 0.4]], [[0.5, 0.6], [0.7, 0.8]]], requires_grad=True)\n");
+    fprintf(f, "m2 = torch.tensor([[[1.0, 0.0], [0.0, 1.0]], [[1.0, 0.0], [0.0, 1.0]]], requires_grad=True)\n");
+    fprintf(f, "m3 = torch.tensor([[[0.5, 0.5], [0.5, 0.5]], [[0.5, 0.5], [0.5, 0.5]]], requires_grad=True)\n");
+    fprintf(f, "temp1 = torch.matmul(m1, m2)\n");
+    fprintf(f, "temp2 = torch.matmul(m2, m3)\n");
+    fprintf(f, "temp3 = temp1 + temp2\n");
+    fprintf(f, "result = torch.matmul(temp3, torch.matmul(m1, m3))\n");
     fprintf(f, "result.backward(torch.ones_like(result))\n");
     fprintf(f, "print('TEST3_RESULTS')\n");
     fprintf(f, "print(' '.join(map(str, m1.grad.numpy().flatten())))\n");
@@ -281,16 +283,33 @@ int main() {
     fprintf(f, "print(' '.join(map(str, m3.grad.numpy().flatten())))\n");
     fprintf(f, "print(' '.join(map(str, result.detach().numpy().flatten())))\n");
 
-    // Test 4: Deep Chain with 3D Tensors
-    fprintf(f, "\n# Test 4: Deep Chain with 3D Tensors\n");
-    fprintf(f, "d1 = torch.tensor([[[0.5, 0.5], [0.5, 0.5]], [[0.5, 0.5], [0.5, 0.5]]], requires_grad=True)\n");
+    // Test 4: Deep Chain with Alternating Operations
+    fprintf(f, "\n# Test 4: Deep Chain with Alternating Operations\n");
+    fprintf(f, "d1 = torch.tensor([[[0.1, 0.1], [0.1, 0.1]], [[0.1, 0.1], [0.1, 0.1]]], requires_grad=True)\n");
+    fprintf(f, "d2 = torch.tensor([[[0.2, 0.2], [0.2, 0.2]], [[0.2, 0.2], [0.2, 0.2]]], requires_grad=True)\n");
     fprintf(f, "current = d1\n");
-    fprintf(f, "for _ in range(3):\n");
-    fprintf(f, "    current = torch.matmul(current, d1)\n");
+    fprintf(f, "for i in range(5):\n");
+    fprintf(f, "    if i % 2 == 0:\n");
+    fprintf(f, "        current = torch.matmul(current, d2)\n");
+    fprintf(f, "    else:\n");
+    fprintf(f, "        current = current + d1\n");
     fprintf(f, "current.backward(torch.ones_like(current))\n");
     fprintf(f, "print('TEST4_RESULTS')\n");
     fprintf(f, "print(' '.join(map(str, d1.grad.numpy().flatten())))\n");
+    fprintf(f, "print(' '.join(map(str, d2.grad.numpy().flatten())))\n");
     fprintf(f, "print(' '.join(map(str, current.detach().numpy().flatten())))\n");
+
+    // Test 5: Identity and Zero Matrices
+    fprintf(f, "\n# Test 5: Identity and Zero Matrices\n");
+    fprintf(f, "i1 = torch.eye(2).reshape(1, 2, 2).repeat(2, 1, 1).requires_grad_(True)\n");
+    fprintf(f, "z1 = torch.zeros(2, 2, 2).requires_grad_(True)\n");
+    fprintf(f, "temp = torch.matmul(i1, z1)\n");
+    fprintf(f, "final = temp + i1\n");
+    fprintf(f, "final.backward(torch.ones_like(final))\n");
+    fprintf(f, "print('TEST5_RESULTS')\n");
+    fprintf(f, "print(' '.join(map(str, i1.grad.numpy().flatten())))\n");
+    fprintf(f, "print(' '.join(map(str, z1.grad.numpy().flatten())))\n");
+    fprintf(f, "print(' '.join(map(str, final.detach().numpy().flatten())))\n");
 
     fclose(f);
 
@@ -302,7 +321,7 @@ int main() {
     }
 
     char buffer[1024];
-    char pytorch_results[20][1024];
+    char pytorch_results[25][1024];  // Increased size for more results
     int result_idx = -1;
     int current_section = 0;
     
@@ -314,6 +333,7 @@ int main() {
             else if (strstr(buffer, "TEST2")) current_section = 3;
             else if (strstr(buffer, "TEST3")) current_section = 6;
             else if (strstr(buffer, "TEST4")) current_section = 10;
+            else if (strstr(buffer, "TEST5")) current_section = 13;
             result_idx = 0;
             continue;
         }
@@ -327,30 +347,39 @@ int main() {
     pclose(pipe);
     remove("compare.py");
 
-    printf("Running 3D tensor tests...\n\n");
+    printf("Running comprehensive tensor tests...\n\n");
     float tol = 1e-5;
 
-    // Test 1: 3D Tensor MatMul
-    printf("=== Test 1: 3D Tensor MatMul ===\n");
+    // Test 1: Very Small Numbers
+    printf("=== Test 1: Edge Case - Very Small Numbers ===\n");
     int dims[] = {2, 2, 2};
-    float data1[] = {1.0, 0.5, 0.5, 1.0, 0.8, 0.2, 0.3, 0.7};
-    float data2[] = {0.5, 1.0, 1.0, 0.5, 0.4, 0.6, 0.9, 0.1};
+    float data1[8], data2[8];
+    for(int i = 0; i < 8; i++) {
+        data1[i] = (i + 1) * 1e-7f;
+        data2[i] = (i + 1) * 1e-7f;
+    }
     
     Tensor *a = tensor_new(3, dims, data1, 1);
     Tensor *b = tensor_new(3, dims, data2, 1);
     Tensor *c = tensor_matmul(a, b);
     
     backward();
-    compare_with_pytorch(a->grad, pytorch_results[0], a->size, "a.grad", tol);
-    compare_with_pytorch(b->grad, pytorch_results[1], b->size, "b.grad", tol);
-    compare_with_pytorch(c->data, pytorch_results[2], c->size, "c values", tol);
+    compare_with_pytorch(a->grad, pytorch_results[0], a->size, "a.grad (small numbers)", tol);
+    compare_with_pytorch(b->grad, pytorch_results[1], b->size, "b.grad (small numbers)", tol);
+    compare_with_pytorch(c->data, pytorch_results[2], c->size, "c values (small numbers)", tol);
 
     tape_clear();
+    tensor_free(a);
+    tensor_free(b);
+    tensor_free(c);
 
-    // Test 2: 3D Tensor Addition and MatMul
-    printf("\n=== Test 2: 3D Tensor Addition and MatMul ===\n");
-    float data3[] = {1,2,3,4,5,6,7,8};
-    float data4[] = {0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8};
+        // Test 2: Very Large Numbers
+    printf("\n=== Test 2: Edge Case - Very Large Numbers ===\n");
+    float data3[8], data4[8];
+    for(int i = 0; i < 8; i++) {
+        data3[i] = (i + 1) * 1e5f;
+        data4[i] = (i + 1) * 1e-5f;
+    }
     
     Tensor *x1 = tensor_new(3, dims, data3, 1);
     Tensor *x2 = tensor_new(3, dims, data4, 1);
@@ -358,43 +387,125 @@ int main() {
     Tensor *z = tensor_matmul(y, x1);
     
     backward();
-    compare_with_pytorch(x1->grad, pytorch_results[3], x1->size, "x1.grad", tol);
-    compare_with_pytorch(x2->grad, pytorch_results[4], x2->size, "x2.grad", tol);
-    compare_with_pytorch(z->data, pytorch_results[5], z->size, "z values", tol);
+    compare_with_pytorch(x1->grad, pytorch_results[3], x1->size, "x1.grad (large numbers)", 1e5);
+    compare_with_pytorch(x2->grad, pytorch_results[4], x2->size, "x2.grad (large numbers)", 1e5);
+    compare_with_pytorch(z->data, pytorch_results[5], z->size, "z values (large numbers)", 1e5);
 
     tape_clear();
+    tensor_free(x1);
+    tensor_free(x2);
+    tensor_free(y);
+    tensor_free(z);
 
-    // Test 3: Complex 3D Graph
-    printf("\n=== Test 3: Complex 3D Graph ===\n");
-    float data5[] = {0.9,0.8,0.7,0.6,0.5,0.4,0.3,0.2};
+    // Test 3: Complex Graph with Mixed Operations
+    printf("\n=== Test 3: Complex Graph with Mixed Operations ===\n");
+    float data5[] = {0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8};
+    float data6[] = {1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0};
+    float data7[] = {0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5};
     
-    Tensor *m1 = tensor_new(3, dims, data3, 1);
-    Tensor *m2 = tensor_new(3, dims, data4, 1);
-    Tensor *m3 = tensor_new(3, dims, data5, 1);
-    Tensor *temp = tensor_matmul(m1, m2);
-    Tensor *result = tensor_matmul(tensor_add(temp, m3), m1);
+    Tensor *m1 = tensor_new(3, dims, data5, 1);
+    Tensor *m2 = tensor_new(3, dims, data6, 1);
+    Tensor *m3 = tensor_new(3, dims, data7, 1);
+    
+    Tensor *temp1 = tensor_matmul(m1, m2);
+    Tensor *temp2 = tensor_matmul(m2, m3);
+    Tensor *temp3 = tensor_add(temp1, temp2);
+    Tensor *inner_prod = tensor_matmul(m1, m3);
+    Tensor *result = tensor_matmul(temp3, inner_prod);
     
     backward();
-    compare_with_pytorch(m1->grad, pytorch_results[6], m1->size, "m1.grad", tol);
-    compare_with_pytorch(m2->grad, pytorch_results[7], m2->size, "m2.grad", tol);
-    compare_with_pytorch(m3->grad, pytorch_results[8], m3->size, "m3.grad", tol);
-    compare_with_pytorch(result->data, pytorch_results[9], result->size, "result values", tol);
+    compare_with_pytorch(m1->grad, pytorch_results[6], m1->size, "m1.grad (complex)", tol);
+    compare_with_pytorch(m2->grad, pytorch_results[7], m2->size, "m2.grad (complex)", tol);
+    compare_with_pytorch(m3->grad, pytorch_results[8], m3->size, "m3.grad (complex)", tol);
+    compare_with_pytorch(result->data, pytorch_results[9], result->size, "result values (complex)", tol);
 
     tape_clear();
+    tensor_free(m1);
+    tensor_free(m2);
+    tensor_free(m3);
+    tensor_free(temp1);
+    tensor_free(temp2);
+    tensor_free(temp3);
+    tensor_free(inner_prod);
+    tensor_free(result);
 
-    // Test 4: Deep Chain with 3D Tensors
-    printf("\n=== Test 4: Deep Chain with 3D Tensors ===\n");
-    float data6[] = {0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5};
-    Tensor *d1 = tensor_new(3, dims, data6, 1);
-    Tensor *current = d1;
-    for(int i = 0; i < 3; i++) {
-        current = tensor_matmul(current, d1);
+// Test 4: Deep Chain with Alternating Operations
+printf("\n=== Test 4: Deep Chain with Alternating Operations ===\n");
+float data8[] = {0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1};
+float data9[] = {0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2};
+
+printf("Creating initial tensors...\n");
+Tensor *d1 = tensor_new(3, dims, data8, 1);
+Tensor *d2 = tensor_new(3, dims, data9, 1);
+Tensor *current = d1;
+
+// Store intermediate results to free them after backward
+Tensor* intermediates[5] = {NULL};
+int intermediate_count = 0;
+
+printf("Starting loop...\n");
+for(int i = 0; i < 5; i++) {
+    printf("Iteration %d\n", i);
+    Tensor* new_tensor;
+    if(i % 2 == 0) {
+        printf("Performing matmul...\n");
+        new_tensor = tensor_matmul(current, d2);
+    } else {
+        printf("Performing add...\n");
+        new_tensor = tensor_add(current, d1);
     }
+    if(!new_tensor) {
+        printf("Operation failed!\n");
+        exit(1);
+    }
+    if(i > 0) {
+        // Store the previous intermediate result
+        intermediates[intermediate_count++] = current;
+    }
+    current = new_tensor;
+    printf("Iteration %d complete\n", i);
+}
+
+printf("Starting backward pass...\n");
+backward();
+printf("Backward pass complete\n");
+
+printf("Comparing results...\n");
+compare_with_pytorch(d1->grad, pytorch_results[10], d1->size, "d1.grad (chain)", tol);
+compare_with_pytorch(d2->grad, pytorch_results[11], d2->size, "d2.grad (chain)", tol);
+compare_with_pytorch(current->data, pytorch_results[12], current->size, "current values (chain)", tol);
+
+printf("Cleaning up...\n");
+// Free intermediate tensors (excluding the final result)
+for(int i = 0; i < intermediate_count; i++) {
+    tensor_free(intermediates[i]);
+}
+tape_clear();
+tensor_free(d1);
+tensor_free(d2);
+tensor_free(current);  // Free the final result
+
+    // Test 5: Identity and Zero Matrices
+    printf("\n=== Test 5: Identity and Zero Matrices ===\n");
+    float identity[] = {1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0};
+    float zeros[] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    
+    Tensor *i1 = tensor_new(3, dims, identity, 1);
+    Tensor *z1 = tensor_new(3, dims, zeros, 1);
+    Tensor *temp = tensor_matmul(i1, z1);
+    Tensor *final = tensor_add(temp, i1);
     
     backward();
-    compare_with_pytorch(d1->grad, pytorch_results[10], d1->size, "d1.grad", tol);
-    compare_with_pytorch(current->data, pytorch_results[11], current->size, "final values", tol);
+    compare_with_pytorch(i1->grad, pytorch_results[13], i1->size, "i1.grad (identity)", tol);
+    compare_with_pytorch(z1->grad, pytorch_results[14], z1->size, "z1.grad (zeros)", tol);
+    compare_with_pytorch(final->data, pytorch_results[15], final->size, "final values (identity)", tol);
 
-    printf("\nAll tests completed successfully!\n");
+    tape_clear();
+    tensor_free(i1);
+    tensor_free(z1);
+    tensor_free(temp);
+    tensor_free(final);
+
+    printf("\nAll comprehensive tests completed successfully!\n");
     return 0;
 }
