@@ -5,9 +5,9 @@ ToDo:
 - Training support on GitHub runners
 - Artifact generation and package releases
 - Element-wise multiplication (Hadamard product)
-- Reduction operations (reduce_mean across dimension)
-- Square root operation
-- Softmax operation across dimension
+- Reduction operations (reduce_mean across dimension) (composable)
+- Inverse Square root operation (1/√x)
+- Softmax operation across dimension (composable)
 
 Done:
 - ✓ MatMul
