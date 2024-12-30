@@ -7,7 +7,7 @@
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 #define MAX(a,b) ((a) > (b) ? (a) : (b))
 
-typedef enum { ADD, MATMUL, RELU, SIGMOID, RESHAPE, SLICE } OpType;
+typedef enum { ADD, MATMUL, RELU, SIGMOID, RESHAPE, SLICE, PERMUTE } OpType;
 
 typedef struct {
     float *data, *grad;
@@ -19,6 +19,7 @@ typedef struct {
     OpType op;
     Tensor *result, *input1, *input2;
     int *slice_start, *slice_end;
+    int *permutation;
 } TapeEntry;
 
 static struct { TapeEntry entries[1000]; int len; } tape;
@@ -62,6 +63,49 @@ Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_g
     return t;
 }
 
+Tensor* tensor_permute(Tensor* t, const int* permutation) {
+    // Validate permutation
+    int* used = calloc(t->ndims, sizeof(int));
+    for (int i = 0; i < t->ndims; i++) {
+        if (permutation[i] < 0 || permutation[i] >= t->ndims || used[permutation[i]]) {
+            free(used);
+            return NULL;
+        }
+        used[permutation[i]] = 1;
+    }
+    free(used);
+
+    // Create new tensor with permuted dimensions
+    int new_dims[MAX_DIMS];
+    for (int i = 0; i < t->ndims; i++) {
+        new_dims[i] = t->dims[permutation[i]];
+    }
+    Tensor* result = tensor_new(t->ndims, new_dims, NULL, t->requires_grad);
+
+    // Permute the data
+    int old_coords[MAX_DIMS], new_coords[MAX_DIMS];
+    for (int i = 0; i < t->size; i++) {
+        // Convert linear index to coordinates in result tensor
+        index_to_coords(i, new_coords, result->dims, result->ndims);
+        
+        // Map coordinates through inverse permutation
+        for (int j = 0; j < t->ndims; j++) {
+            old_coords[permutation[j]] = new_coords[j];
+        }
+        
+        // Get data from original tensor
+        int old_idx = coords_to_index(old_coords, t->dims, t->ndims);
+        result->data[i] = t->data[old_idx];
+    }
+
+    if (result->requires_grad) {
+        int* perm_copy = malloc(t->ndims * sizeof(int));
+        memcpy(perm_copy, permutation, t->ndims * sizeof(int));
+        tape.entries[tape.len++] = (TapeEntry){PERMUTE, result, t, NULL, NULL, NULL, perm_copy};
+    }
+    return result;
+}
+
 Tensor* tensor_slice(Tensor* t, const int* start, const int* end) {
     int new_dims[MAX_DIMS];
     for (int i = 0; i < t->ndims; i++) {
@@ -83,7 +127,7 @@ Tensor* tensor_slice(Tensor* t, const int* start, const int* end) {
         int* slice_end = malloc(t->ndims * sizeof(int));
         memcpy(slice_start, start, t->ndims * sizeof(int));
         memcpy(slice_end, end, t->ndims * sizeof(int));
-        tape.entries[tape.len++] = (TapeEntry){SLICE, result, t, NULL, slice_start, slice_end};
+        tape.entries[tape.len++] = (TapeEntry){SLICE, result, t, NULL, slice_start, slice_end, NULL};
     }
     return result;
 }
@@ -95,7 +139,7 @@ Tensor* tensor_reshape(Tensor* t, int new_ndims, const int* new_dims) {
     
     Tensor* result = tensor_new(new_ndims, new_dims, t->data, t->requires_grad);
     if (result->requires_grad) {
-        tape.entries[tape.len++] = (TapeEntry){RESHAPE, result, t, NULL, NULL, NULL};
+        tape.entries[tape.len++] = (TapeEntry){RESHAPE, result, t, NULL, NULL, NULL, NULL};
     }
     return result;
 }
@@ -107,7 +151,7 @@ Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
             result->data[i] = op == RELU ? relu(a->data[i]) : sigmoid(a->data[i]);
         }
         if (result->requires_grad) {
-            tape.entries[tape.len++] = (TapeEntry){op, result, a, NULL, NULL, NULL};
+            tape.entries[tape.len++] = (TapeEntry){op, result, a, NULL, NULL, NULL, NULL};
         }
         return result;
     }
@@ -144,7 +188,7 @@ Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
     }
     
     if (result->requires_grad) {
-        tape.entries[tape.len++] = (TapeEntry){op, result, a, b, NULL, NULL};
+        tape.entries[tape.len++] = (TapeEntry){op, result, a, b, NULL, NULL, NULL};
     }
     return result;
 }
@@ -169,6 +213,25 @@ void backward() {
         if (b && b->requires_grad && !b->grad) b->grad = calloc(b->size, sizeof(float));
         
         switch (e->op) {
+            case PERMUTE: {
+                if (a->requires_grad) {
+                    int inverse_perm[MAX_DIMS];
+                    for (int j = 0; j < t->ndims; j++) {
+                        inverse_perm[e->permutation[j]] = j;
+                    }
+                    
+                    int old_coords[MAX_DIMS], new_coords[MAX_DIMS];
+                    for (int j = 0; j < t->size; j++) {
+                        index_to_coords(j, old_coords, t->dims, t->ndims);
+                        for (int k = 0; k < t->ndims; k++) {
+                            new_coords[inverse_perm[k]] = old_coords[k];
+                        }
+                        int new_idx = coords_to_index(new_coords, a->dims, a->ndims);
+                        a->grad[new_idx] += t->grad[j];
+                    }
+                }
+                break;
+            }
             case SLICE: {
                 if (a->requires_grad) {
                     int coords[MAX_DIMS], src_coords[MAX_DIMS];
@@ -230,6 +293,7 @@ void cleanup_tape() {
     for (int i = 0; i < tape.len; i++) {
         free(tape.entries[i].slice_start);
         free(tape.entries[i].slice_end);
+        free(tape.entries[i].permutation);
     }
     tape.len = 0;
 }
@@ -366,33 +430,26 @@ int main() {
         tensor_free(t);
     }
 
-// Add this as Test 4 in main()
+    // Test 4: Combined operations with slicing
     printf("\nTest 4: Combined operations with slicing\n");
     {
-        // Create a 2x4x3 tensor
         int dims[] = {2, 4, 3};
         float* data = malloc(24 * sizeof(float));
         for (int i = 0; i < 24; i++) data[i] = (float)(i) / 4.0f;
         Tensor* input = tensor_new(3, dims, data, 1);
 
-        // Create a weight matrix 2x2
         int w_dims[] = {2, 2};
         float w_data[] = {0.1f, 0.2f, 0.3f, 0.4f};
         Tensor* weights = tensor_new(2, w_dims, w_data, 1);
 
-        // Slice input: take [0:1, 1:3, 0:2]
         int start[] = {0, 1, 0};
         int end[] = {1, 3, 2};
         Tensor* sliced = tensor_slice(input, start, end);
 
-        // Reshape sliced tensor to 2x2
         int reshape_dims[] = {2, 2};
         Tensor* reshaped = tensor_reshape(sliced, 2, reshape_dims);
 
-        // Perform matrix multiplication
         Tensor* matmul_result = tensor_matmul(reshaped, weights);
-
-        // Apply ReLU and sigmoid
         Tensor* relu_result = tensor_relu(matmul_result);
         Tensor* final_result = tensor_sigmoid(relu_result);
 
@@ -446,7 +503,6 @@ int main() {
             printf("\n");
         }
 
-        // Compute gradients
         backward();
 
         printf("\nGradients in weight matrix:\n");
@@ -465,7 +521,6 @@ int main() {
             printf("\n");
         }
 
-        // Cleanup
         cleanup_tape();
         tensor_free(final_result);
         tensor_free(relu_result);
@@ -475,6 +530,97 @@ int main() {
         tensor_free(weights);
         tensor_free(input);
         free(data);
+    }
+
+    // Test 5: Permute operation
+    printf("\nTest 5: Permute operation\n");
+    {
+        // First, test with a simple 2x3x4 tensor
+        int dims[] = {2, 3, 4};
+        float* data = malloc(24 * sizeof(float));
+        for (int i = 0; i < 24; i++) data[i] = i;
+        Tensor* t = tensor_new(3, dims, data, 1);
+
+        // Permute from (2,3,4) to (4,2,3)
+        int permutation[] = {2, 0, 1};
+        Tensor* permuted = tensor_permute(t, permutation);
+
+        printf("Original tensor shape: %dx%dx%d\n", t->dims[0], t->dims[1], t->dims[2]);
+        printf("Permuted tensor shape: %dx%dx%d\n", permuted->dims[0], permuted->dims[1], permuted->dims[2]);
+
+        printf("\nOriginal tensor:\n");
+        for (int i = 0; i < t->dims[0]; i++) {
+            printf("Slice %d:\n", i);
+            for (int j = 0; j < t->dims[1]; j++) {
+                for (int k = 0; k < t->dims[2]; k++) {
+                    printf("%2.0f ", t->data[i * t->dims[1] * t->dims[2] + j * t->dims[2] + k]);
+                }
+                printf("\n");
+            }
+            printf("\n");
+        }
+
+        printf("Permuted tensor:\n");
+        for (int i = 0; i < permuted->dims[0]; i++) {
+            printf("Slice %d:\n", i);
+            for (int j = 0; j < permuted->dims[1]; j++) {
+                for (int k = 0; k < permuted->dims[2]; k++) {
+                    printf("%2.0f ", permuted->data[i * permuted->dims[1] * permuted->dims[2] + j * permuted->dims[2] + k]);
+                }
+                printf("\n");
+            }
+            printf("\n");
+        }
+
+        // Test gradient flow
+        Tensor* activated = tensor_relu(permuted);
+        backward();
+
+        printf("Gradients in original tensor:\n");
+        for (int i = 0; i < t->dims[0]; i++) {
+            printf("Slice %d:\n", i);
+            for (int j = 0; j < t->dims[1]; j++) {
+                for (int k = 0; k < t->dims[2]; k++) {
+                    printf("%2.1f ", t->grad[i * t->dims[1] * t->dims[2] + j * t->dims[2] + k]);
+                }
+                printf("\n");
+            }
+            printf("\n");
+        }
+
+        cleanup_tape();
+        tensor_free(activated);
+        tensor_free(permuted);
+        tensor_free(t);
+        free(data);
+
+        // Add a simple 2D example
+        printf("\nSimple 2D permute test:\n");
+        int dims2d[] = {2, 3};
+        float data2d[] = {1, 2, 3, 4, 5, 6};
+        Tensor* t2d = tensor_new(2, dims2d, data2d, 1);
+        
+        int perm2d[] = {1, 0};
+        Tensor* permuted2d = tensor_permute(t2d, perm2d);
+
+        printf("Original 2D tensor (%dx%d):\n", t2d->dims[0], t2d->dims[1]);
+        for (int i = 0; i < t2d->dims[0]; i++) {
+            for (int j = 0; j < t2d->dims[1]; j++) {
+                printf("%2.0f ", t2d->data[i * t2d->dims[1] + j]);
+            }
+            printf("\n");
+        }
+
+        printf("\nPermuted 2D tensor (%dx%d):\n", permuted2d->dims[0], permuted2d->dims[1]);
+        for (int i = 0; i < permuted2d->dims[0]; i++) {
+            for (int j = 0; j < permuted2d->dims[1]; j++) {
+                printf("%2.0f ", permuted2d->data[i * permuted2d->dims[1] + j]);
+            }
+            printf("\n");
+        }
+
+        tensor_free(permuted2d);
+        tensor_free(t2d);
     }
 
     return 0;
