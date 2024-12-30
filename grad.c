@@ -401,5 +401,47 @@ int main() {
         tensor_free(t2);
     }
 
+    // Test 8: Power operation
+    printf("\nTest 8: Power operation\n");
+    {
+        int dims[] = {2, 3};
+        float data[] = {1, 2, 3, 4, 5, 6};
+        float exponent = 2.0;  // Square the elements
+        
+        Tensor* t = tensor_new(2, dims, data, 1);
+        Tensor* result = tensor_pow(t, exponent);
+        
+        printf("Original tensor:\n");
+        for (int i = 0; i < dims[0]; i++) {
+            for (int j = 0; j < dims[1]; j++) {
+                printf("%2.0f ", t->data[i * dims[1] + j]);
+            }
+            printf("\n");
+        }
+        
+        printf("\nPower (x^%.1f) result:\n", exponent);
+        for (int i = 0; i < dims[0]; i++) {
+            for (int j = 0; j < dims[1]; j++) {
+                printf("%3.0f ", result->data[i * dims[1] + j]);
+            }
+            printf("\n");
+        }
+        
+        backward();
+        
+        printf("\nGradients (derivative of x^%.1f = %.1f * x^%.1f):\n", 
+            exponent, exponent, exponent-1);
+        for (int i = 0; i < dims[0]; i++) {
+            for (int j = 0; j < dims[1]; j++) {
+                printf("%4.1f ", t->grad[i * dims[1] + j]);
+            }
+            printf("\n");
+        }
+        
+        cleanup_tape();
+        tensor_free(result);
+        tensor_free(t);
+    }
+
     return 0;
 }
