@@ -228,7 +228,7 @@ void print_tensor(const Tensor* t, const char* name) {
 }
 
 void test_basic_operations() {
-    // Create two 2x2 matrices
+    // Test setup
     int dims[] = {2, 2};
     float data1[] = {1.0f, 2.0f, 3.0f, 4.0f};
     float data2[] = {0.5f, 0.5f, 0.5f, 0.5f};
@@ -236,27 +236,24 @@ void test_basic_operations() {
     Tensor* a = tensor_new(2, dims, data1, 1);
     Tensor* b = tensor_new(2, dims, data2, 1);
     
+    // Print inputs
     printf("Input tensors:\n");
     print_tensor(a, "A");
     print_tensor(b, "B");
     
-    // Single matrix multiplication
+    // Forward pass
     Tensor* c = tensor_matmul(a, b);
-    
-    // Set specific gradients for testing
     c->grad = calloc(c->size, sizeof(float));
     c->grad[0] = 1.0f;  // Only set gradient for first element
-    c->grad[1] = 0.0f;
-    c->grad[2] = 0.0f;
-    c->grad[3] = 0.0f;
     
     printf("\nForward pass result:\n");
     print_tensor(c, "C = A @ B");
     printf("Setting dL/dC = [1, 0; 0, 0] for testing\n\n");
     
-    // Test backward pass
+    // Backward pass
     backward();
     
+    // Print expected and actual results
     printf("Analytical gradients:\n");
     printf("dL/dA should be:\n");
     printf("  [0.5, 0.5;   (gradient with respect to first row of A)\n");
@@ -278,10 +275,10 @@ void test_basic_operations() {
 }
 
 void test_chain_rule() {
-    // Same setup as before
+    // Test setup
     int dims[] = {2, 2};
-    float data1[] = {1.0f, 2.0f, 3.0f, 4.0f};  // Matrix A
-    float data2[] = {0.5f, 0.5f, 0.5f, 0.5f};  // Matrix B
+    float data1[] = {1.0f, 2.0f, 3.0f, 4.0f};
+    float data2[] = {0.5f, 0.5f, 0.5f, 0.5f};
     
     Tensor* a = tensor_new(2, dims, data1, 1);
     Tensor* b = tensor_new(2, dims, data2, 1);
@@ -290,39 +287,33 @@ void test_chain_rule() {
     printf("Starting with dL/dE[0,0] = 1.0, others = 0\n\n");
     
     // Forward pass
-    Tensor* c = tensor_matmul(a, b);        // C = A @ B
-    Tensor* d = tensor_relu(c);             // D = ReLU(C)
-    Tensor* e = tensor_sigmoid(d);          // E = Sigmoid(D)
+    Tensor* c = tensor_matmul(a, b);
+    Tensor* d = tensor_relu(c);
+    Tensor* e = tensor_sigmoid(d);
     
+    // Print forward pass values
     printf("Forward pass values:\n");
     printf("A = [1 2; 3 4]\n");
     printf("B = [0.5 0.5; 0.5 0.5]\n");
-    
-    // C = A @ B = [1.5 1.5; 3.5 3.5]
     printf("\nC = A @ B = [1.5 1.5; 3.5 3.5]\n");
-    
-    // D = ReLU(C) = [1.5 1.5; 3.5 3.5] (all positive)
     printf("D = ReLU(C) = [1.5 1.5; 3.5 3.5]\n");
-    
-    // E = Sigmoid(D)
     printf("E = Sigmoid(D)\n");
     
-    // Set gradient at output
+    // Set output gradient
     e->grad = calloc(e->size, sizeof(float));
-    e->grad[0] = 1.0f;  // Only first element
+    e->grad[0] = 1.0f;
     
+    // Print gradient computation steps
     printf("\nAnalytical gradient computation:\n");
     printf("1. dL/dE[0,0] = 1.0 (given)\n");
-    
     printf("2. dL/dD = dL/dE * dSigmoid(D)\n");
     printf("   dSigmoid(x) = sigmoid(x) * (1 - sigmoid(x))\n");
-    
     printf("3. dL/dC = dL/dD * dReLU(C)\n");
     printf("   dReLU(x) = 1 if x > 0, 0 otherwise\n");
-    
     printf("4. dL/dA = dL/dC @ B^T\n");
     printf("   dL/dB = A^T @ dL/dC\n");
     
+    // Backward pass and print results
     backward();
     
     printf("\nComputed gradients:\n");
