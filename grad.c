@@ -6,7 +6,7 @@
 #define MAX_DIMS 4
 #define MAX_TAPE 1000
 
-typedef enum { ADD, MATMUL, RELU, SIGMOID } OpType;
+typedef enum { MATMUL, EXP, LOG } OpType;
 
 typedef struct Tensor {
     float* data;
@@ -28,15 +28,6 @@ static struct {
     TapeEntry entries[MAX_TAPE];
     int len;
 } tape = {0};
-
-static float sigmoid(float x) {
-    x = fmaxf(fminf(x, 88.0f), -88.0f);
-    return 1.0f / (1.0f + expf(-x));
-}
-
-static float relu(float x) {
-    return fmaxf(0.0f, x);
-}
 
 Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_grad) {
     Tensor* t = calloc(1, sizeof(Tensor));
@@ -67,14 +58,6 @@ static void record_operation(OpType op, Tensor* result, Tensor* input1, Tensor* 
         tape.entries[tape.len++] = (TapeEntry){op, result, input1, input2};
 }
 
-Tensor* tensor_add(Tensor* a, Tensor* b) {
-    Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad || b->requires_grad);
-    for (int i = 0; i < result->size; i++)
-        result->data[i] = a->data[i] + b->data[i];
-    record_operation(ADD, result, a, b);
-    return result;
-}
-
 Tensor* tensor_matmul(Tensor* a, Tensor* b) {
     int dims[] = {a->dims[0], b->dims[1]};
     Tensor* result = tensor_new(2, dims, NULL, a->requires_grad || b->requires_grad);
@@ -91,19 +74,21 @@ Tensor* tensor_matmul(Tensor* a, Tensor* b) {
     return result;
 }
 
-Tensor* tensor_relu(Tensor* a) {
+Tensor* tensor_exp(Tensor* a) {
     Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
-    for (int i = 0; i < a->size; i++)
-        result->data[i] = relu(a->data[i]);
-    record_operation(RELU, result, a, NULL);
+    for (int i = 0; i < a->size; i++) {
+        result->data[i] = expf(fmaxf(fminf(a->data[i], 88.0f), -88.0f));
+    }
+    record_operation(EXP, result, a, NULL);
     return result;
 }
 
-Tensor* tensor_sigmoid(Tensor* a) {
+Tensor* tensor_log(Tensor* a) {
     Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
-    for (int i = 0; i < a->size; i++)
-        result->data[i] = sigmoid(a->data[i]);
-    record_operation(SIGMOID, result, a, NULL);
+    for (int i = 0; i < a->size; i++) {
+        result->data[i] = logf(fmaxf(a->data[i], 1e-7f));
+    }
+    record_operation(LOG, result, a, NULL);
     return result;
 }
 
@@ -126,19 +111,6 @@ void backward() {
         Tensor *result = entry->result, *a = entry->input1, *b = entry->input2;
         
         switch (entry->op) {
-            case ADD:
-                if (a->requires_grad) {
-                    if (!a->grad) a->grad = calloc(a->size, sizeof(float));
-                    for (int i = 0; i < a->size; i++)
-                        a->grad[i] += result->grad[i];
-                }
-                if (b->requires_grad) {
-                    if (!b->grad) b->grad = calloc(b->size, sizeof(float));
-                    for (int i = 0; i < b->size; i++)
-                        b->grad[i] += result->grad[i];
-                }
-                break;
-                
             case MATMUL:
                 if (a->requires_grad) {
                     if (!a->grad) a->grad = calloc(a->size, sizeof(float));
@@ -162,20 +134,20 @@ void backward() {
                 }
                 break;
                 
-            case RELU:
-                if (a->requires_grad) {
-                    if (!a->grad) a->grad = calloc(a->size, sizeof(float));
-                    for (int i = 0; i < a->size; i++)
-                        a->grad[i] += result->grad[i] * (a->data[i] > 0.0f);
-                }
-                break;
-                
-            case SIGMOID:
+            case EXP:
                 if (a->requires_grad) {
                     if (!a->grad) a->grad = calloc(a->size, sizeof(float));
                     for (int i = 0; i < a->size; i++) {
-                        float s = sigmoid(a->data[i]);
-                        a->grad[i] += result->grad[i] * s * (1.0f - s);
+                        a->grad[i] += result->grad[i] * result->data[i];
+                    }
+                }
+                break;
+                
+            case LOG:
+                if (a->requires_grad) {
+                    if (!a->grad) a->grad = calloc(a->size, sizeof(float));
+                    for (int i = 0; i < a->size; i++) {
+                        a->grad[i] += result->grad[i] / fmaxf(a->data[i], 1e-7f);
                     }
                 }
                 break;
@@ -187,19 +159,14 @@ void cleanup_tape() {
     tape.len = 0;
 }
 
-// Utility function to print tensor
 void print_tensor(const Tensor* t, const char* name) {
-    if (!t) {
-        printf("%s: NULL tensor\n", name);
-        return;
-    }
-    
     printf("%s: dims=[", name);
     for (int i = 0; i < t->ndims; i++) {
         printf("%d%s", t->dims[i], i < t->ndims - 1 ? "," : "");
     }
     printf("]\n");
     
+    printf("Data:\n");
     if (t->ndims == 2) {
         for (int i = 0; i < t->dims[0]; i++) {
             for (int j = 0; j < t->dims[1]; j++) {
@@ -208,7 +175,6 @@ void print_tensor(const Tensor* t, const char* name) {
             printf("\n");
         }
     } else {
-        printf("Data: ");
         for (int i = 0; i < t->size && i < 10; i++) {
             printf("%8.4f ", t->data[i]);
         }
@@ -217,18 +183,26 @@ void print_tensor(const Tensor* t, const char* name) {
     }
     
     if (t->grad) {
-        printf("Gradients: ");
-        for (int i = 0; i < t->size && i < 10; i++) {
-            printf("%8.4f ", t->grad[i]);
+        printf("Gradients:\n");
+        if (t->ndims == 2) {
+            for (int i = 0; i < t->dims[0]; i++) {
+                for (int j = 0; j < t->dims[1]; j++) {
+                    printf("%8.4f ", t->grad[i * t->dims[1] + j]);
+                }
+                printf("\n");
+            }
+        } else {
+            for (int i = 0; i < t->size && i < 10; i++) {
+                printf("%8.4f ", t->grad[i]);
+            }
+            if (t->size > 10) printf("...");
+            printf("\n");
         }
-        if (t->size > 10) printf("...");
-        printf("\n");
     }
     printf("\n");
 }
 
-void test_basic_operations() {
-    // Test setup
+void test_operations() {
     int dims[] = {2, 2};
     float data1[] = {1.0f, 2.0f, 3.0f, 4.0f};
     float data2[] = {0.5f, 0.5f, 0.5f, 0.5f};
@@ -236,94 +210,31 @@ void test_basic_operations() {
     Tensor* a = tensor_new(2, dims, data1, 1);
     Tensor* b = tensor_new(2, dims, data2, 1);
     
-    // Print inputs
-    printf("Input tensors:\n");
+    printf("Initial tensors:\n");
     print_tensor(a, "A");
     print_tensor(b, "B");
     
-    // Forward pass
     Tensor* c = tensor_matmul(a, b);
-    c->grad = calloc(c->size, sizeof(float));
-    c->grad[0] = 1.0f;  // Only set gradient for first element
+    Tensor* d = tensor_exp(c);
+    Tensor* e = tensor_log(d);
     
-    printf("\nForward pass result:\n");
-    print_tensor(c, "C = A @ B");
-    printf("Setting dL/dC = [1, 0; 0, 0] for testing\n\n");
-    
-    // Backward pass
-    backward();
-    
-    // Print expected and actual results
-    printf("Analytical gradients:\n");
-    printf("dL/dA should be:\n");
-    printf("  [0.5, 0.5;   (gradient with respect to first row of A)\n");
-    printf("   0.0, 0.0]   (gradient with respect to second row of A)\n\n");
-    
-    printf("dL/dB should be:\n");
-    printf("  [1.0, 0.0;   (from first element of A)\n");
-    printf("   2.0, 0.0]   (from second element of A)\n\n");
-    
-    printf("Computed gradients:\n");
-    print_tensor(a, "dL/dA");
-    print_tensor(b, "dL/dB");
-    
-    // Cleanup
-    tensor_free(a);
-    tensor_free(b);
-    tensor_free(c);
-    cleanup_tape();
-}
-
-void test_chain_rule() {
-    // Test setup
-    int dims[] = {2, 2};
-    float data1[] = {1.0f, 2.0f, 3.0f, 4.0f};
-    float data2[] = {0.5f, 0.5f, 0.5f, 0.5f};
-    
-    Tensor* a = tensor_new(2, dims, data1, 1);
-    Tensor* b = tensor_new(2, dims, data2, 1);
-    
-    printf("Chain Rule Test: E = Sigmoid(ReLU(A @ B))\n");
-    printf("Starting with dL/dE[0,0] = 1.0, others = 0\n\n");
-    
-    // Forward pass
-    Tensor* c = tensor_matmul(a, b);
-    Tensor* d = tensor_relu(c);
-    Tensor* e = tensor_sigmoid(d);
-    
-    // Print forward pass values
-    printf("Forward pass values:\n");
-    printf("A = [1 2; 3 4]\n");
-    printf("B = [0.5 0.5; 0.5 0.5]\n");
-    printf("\nC = A @ B = [1.5 1.5; 3.5 3.5]\n");
-    printf("D = ReLU(C) = [1.5 1.5; 3.5 3.5]\n");
-    printf("E = Sigmoid(D)\n");
-    
-    // Set output gradient
     e->grad = calloc(e->size, sizeof(float));
     e->grad[0] = 1.0f;
     
-    // Print gradient computation steps
-    printf("\nAnalytical gradient computation:\n");
-    printf("1. dL/dE[0,0] = 1.0 (given)\n");
-    printf("2. dL/dD = dL/dE * dSigmoid(D)\n");
-    printf("   dSigmoid(x) = sigmoid(x) * (1 - sigmoid(x))\n");
-    printf("3. dL/dC = dL/dD * dReLU(C)\n");
-    printf("   dReLU(x) = 1 if x > 0, 0 otherwise\n");
-    printf("4. dL/dA = dL/dC @ B^T\n");
-    printf("   dL/dB = A^T @ dL/dC\n");
+    printf("Forward pass results:\n");
+    print_tensor(c, "C = A @ B");
+    print_tensor(d, "D = exp(C)");
+    print_tensor(e, "E = log(D)");
     
-    // Backward pass and print results
     backward();
     
-    printf("\nComputed gradients:\n");
+    printf("Gradients after backward pass:\n");
     print_tensor(a, "dL/dA");
     print_tensor(b, "dL/dB");
     print_tensor(c, "dL/dC");
     print_tensor(d, "dL/dD");
     print_tensor(e, "dL/dE");
     
-    // Cleanup
     tensor_free(a);
     tensor_free(b);
     tensor_free(c);
@@ -333,7 +244,6 @@ void test_chain_rule() {
 }
 
 int main() {
-    test_basic_operations();
-    test_chain_rule();
+    test_operations();
     return 0;
 }
