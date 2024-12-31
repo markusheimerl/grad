@@ -7,7 +7,7 @@
 #define MIN_LOG 1e-7f
 #define MAX_EXP 88.0f
 
-typedef enum { MATMUL, EXP, LOG, HADAMARD } OpType;
+typedef enum { MATMUL, EXP, LOG, ADD } OpType;
 
 typedef struct Tensor {
     float *data, *grad;
@@ -39,7 +39,7 @@ void tensor_free(Tensor* t) {
     free(t->data); free(t->grad); free(t->dims); free(t);
 }
 
-Tensor* tensor_hadamard(Tensor* a, Tensor* b) {
+Tensor* tensor_add(Tensor* a, Tensor* b) {
     // Check if dimensions match
     if (a->ndims != b->ndims) return NULL;
     for (int i = 0; i < a->ndims; i++) {
@@ -49,14 +49,14 @@ Tensor* tensor_hadamard(Tensor* a, Tensor* b) {
     // Create result tensor
     Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad || b->requires_grad);
     
-    // Perform element-wise multiplication
+    // Perform element-wise addition
     for (int i = 0; i < a->size; i++) {
-        result->data[i] = a->data[i] * b->data[i];
+        result->data[i] = a->data[i] + b->data[i];
     }
     
     // Record operation in tape if gradients are required
     if (result->requires_grad) {
-        tape.entries[tape.len++] = (TapeEntry){HADAMARD, result, a, b};
+        tape.entries[tape.len++] = (TapeEntry){ADD, result, a, b};
     }
     
     return result;
@@ -149,17 +149,17 @@ void backward() {
                 }
                 break;
             }
-            case HADAMARD: {
+            case ADD: {
                 if (a->requires_grad) {
                     if (!a->grad) a->grad = calloc(a->size, sizeof(float));
                     for (int i = 0; i < a->size; i++) {
-                        a->grad[i] += result->grad[i] * b->data[i];
+                        a->grad[i] += result->grad[i];
                     }
                 }
                 if (b->requires_grad) {
                     if (!b->grad) b->grad = calloc(b->size, sizeof(float));
                     for (int i = 0; i < b->size; i++) {
-                        b->grad[i] += result->grad[i] * a->data[i];
+                        b->grad[i] += result->grad[i];
                     }
                 }
                 break;
@@ -295,16 +295,16 @@ int main() {
         tape.len = 0;
     }
 
-    // Test 4: Hadamard Product
+    // Test 4: Element-wise Addition
     {
-        printf("\nTest 4: Hadamard Product\n");
+        printf("\nTest 4: Element-wise Addition\n");
         float data1[] = {1.0f, 2.0f, 3.0f, 4.0f};
         float data2[] = {0.5f, 0.5f, 0.5f, 0.5f};
         int dims[] = {2, 2};
         
         Tensor *a = tensor_new(2, dims, data1, 1);
         Tensor *b = tensor_new(2, dims, data2, 1);
-        Tensor *c = tensor_hadamard(a, b);
+        Tensor *c = tensor_add(a, b);
         Tensor *d = tensor_exp(c);
         
         d->grad = calloc(d->size, sizeof(float));
@@ -312,7 +312,7 @@ int main() {
         
         print_tensor(a, "A (2x2)");
         print_tensor(b, "B (2x2)");
-        print_tensor(c, "C = A ⊙ B");
+        print_tensor(c, "C = A + B");
         print_tensor(d, "D = exp(C)");
         
         backward();
@@ -321,6 +321,50 @@ int main() {
         print_tensor(b, "B (with gradients)");
         
         tensor_free(a); tensor_free(b); tensor_free(c); tensor_free(d);
+        tape.len = 0;
+    }
+
+    // Test 5: Hadamard Product using Addition
+    {
+        printf("\nTest 5: Hadamard Product using Addition (implemented via exp(log(a) + log(b)))\n");
+        float data1[] = {1.0f, 2.0f, 3.0f, 4.0f};
+        float data2[] = {0.5f, 1.5f, 2.5f, 3.5f};
+        int dims[] = {2, 2};
+        
+        Tensor *a = tensor_new(2, dims, data1, 1);
+        Tensor *b = tensor_new(2, dims, data2, 1);
+        
+        // Implement a * b as exp(log(a) + log(b))
+        Tensor *log_a = tensor_log(a);
+        Tensor *log_b = tensor_log(b);
+        Tensor *sum_logs = tensor_add(log_a, log_b);
+        Tensor *hadamard = tensor_exp(sum_logs);
+        
+        hadamard->grad = calloc(hadamard->size, sizeof(float));
+        for (int i = 0; i < hadamard->size; i++) hadamard->grad[i] = 1.0f;
+        
+        print_tensor(a, "A (2x2)");
+        print_tensor(b, "B (2x2)");
+        print_tensor(hadamard, "C = A ⊙ B (Hadamard product)");
+        
+        // For verification, print the direct multiplication
+        printf("\nVerification (direct multiplication):\n");
+        for (int i = 0; i < 4; i++) {
+            printf("%8.4f ", data1[i] * data2[i]);
+        }
+        printf("\n\n");
+        
+        backward();
+        printf("\nAfter backward pass:\n");
+        print_tensor(a, "A (with gradients)");
+        print_tensor(b, "B (with gradients)");
+        
+        tensor_free(a);
+        tensor_free(b);
+        tensor_free(log_a);
+        tensor_free(log_b);
+        tensor_free(sum_logs);
+        tensor_free(hadamard);
         tape.len = 0;
     }
     
