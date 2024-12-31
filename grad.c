@@ -171,57 +171,88 @@ Tensor* tensor_hadamard(Tensor* a, Tensor* b) {
 }
 
 int main() {
-    // Create 4D tensors (batch, channels, height, width)
-    int dims4d[] = {2, 3, 4, 5};  // 2 batches, 3 channels, 4x5 spatial dims
-    float data1[120] = {0};  // 2*3*4*5 = 120
-    float data2[120] = {0};
-    float matrix_data[1800] = {0};  // 60*30 = 1800
+    // 1. Define dimensions and sizes
+    const int batch_size = 2;
+    const int channels = 3;
+    const int height = 4;
+    const int width = 5;
+    const int dims4d[] = {batch_size, channels, height, width};
+    const int tensor_size = batch_size * channels * height * width;  // 120
     
-    // Initialize with interesting patterns
-    for(int i = 0; i < 120; i++) {
-        data1[i] = sinf(i * 0.1f) + 1.0f;  // ensure positive for log
+    const int matrix_rows = 60;
+    const int matrix_cols = 30;
+    const int matrix_dims[] = {matrix_rows, matrix_cols};
+    const int matrix_size = matrix_rows * matrix_cols;  // 1800
+    
+    // 2. Initialize input data
+    float* data1 = malloc(tensor_size * sizeof(float));
+    float* data2 = malloc(tensor_size * sizeof(float));
+    float* matrix_data = malloc(matrix_size * sizeof(float));
+    
+    for (int i = 0; i < tensor_size; i++) {
+        data1[i] = sinf(i * 0.1f) + 1.0f;  // Ensure positive for log
         data2[i] = cosf(i * 0.1f) + 1.0f;
     }
-    for(int i = 0; i < 1800; i++) {
+    
+    for (int i = 0; i < matrix_size; i++) {
         matrix_data[i] = sinf(i * 0.05f) * 0.1f;
     }
-
-    Tensor* a = tensor_new(4, dims4d, data1, 1);
-    Tensor* b = tensor_new(4, dims4d, data2, 1);
-
-    // Test all operations in a complex computation graph
-    Tensor* c = tensor_add(a, b);                    // Add
     
-    int reshape_dims[] = {2, 60};                    // Reshape to 2x60
-    Tensor* d = tensor_reshape(c, 2, reshape_dims);
+    // 3. Create input tensors
+    Tensor* input1 = tensor_new(4, dims4d, data1, 1);
+    Tensor* input2 = tensor_new(4, dims4d, data2, 1);
+    Tensor* weight_matrix = tensor_new(2, matrix_dims, matrix_data, 1);
     
-    int matrix_dims[] = {60, 30};                    // Create matrix for matmul
-    Tensor* matrix = tensor_new(2, matrix_dims, matrix_data, 1);
+    // 4. Build computation graph
+    // First branch: input1 + input2
+    Tensor* sum = tensor_add(input1, input2);
     
-    Tensor* e = tensor_matmul(d, matrix);            // MatMul
-    Tensor* f = tensor_exp(e);                       // Exp
-    Tensor* g = tensor_log(f);                       // Log
-    Tensor* h = tensor_hadamard(g, g);               // Hadamard
-
-    // Set gradient at output
-    for(int i = 0; i < h->size; i++) h->grad[i] = 1.0f;
-
-    // Backward pass
+    // Reshape for matrix multiplication
+    const int reshape_dims[] = {batch_size, matrix_rows};
+    Tensor* reshaped = tensor_reshape(sum, 2, reshape_dims);
+    
+    // Matrix multiplication and activation
+    Tensor* matmul_result = tensor_matmul(reshaped, weight_matrix);
+    Tensor* activated = tensor_exp(matmul_result);
+    Tensor* logged = tensor_log(activated);
+    Tensor* final_output = tensor_hadamard(logged, logged);
+    
+    // 5. Set output gradients
+    for (int i = 0; i < final_output->size; i++) {
+        final_output->grad[i] = 1.0f;
+    }
+    
+    // 6. Perform backward pass
     backward();
-
-    // Print some statistics to verify results
-    printf("Input tensor dims: %dx%dx%dx%d\n", dims4d[0], dims4d[1], dims4d[2], dims4d[3]);
-    printf("Final tensor dims: %dx%d\n", h->dims[0], h->dims[1]);
     
-    float sum_grad_a = 0, sum_grad_matrix = 0;
-    for(int i = 0; i < a->size; i++) sum_grad_a += a->grad[i];
-    for(int i = 0; i < matrix->size; i++) sum_grad_matrix += matrix->grad[i];
+    // 7. Print results
+    printf("Network Architecture:\n");
+    printf("Input tensors: %dx%dx%dx%d\n", batch_size, channels, height, width);
+    printf("Weight matrix: %dx%d\n", matrix_rows, matrix_cols);
+    printf("Output tensor: %dx%d\n\n", final_output->dims[0], final_output->dims[1]);
     
-    printf("Sum of gradients in first tensor: %f\n", sum_grad_a);
-    printf("Sum of gradients in matrix: %f\n", sum_grad_matrix);
-    printf("Sample of final output: %f %f %f\n", 
-           h->data[0], h->data[h->size/2], h->data[h->size-1]);
-
+    // Calculate gradient statistics
+    float input_grad_sum = 0, weight_grad_sum = 0;
+    for (int i = 0; i < tensor_size; i++) {
+        input_grad_sum += input1->grad[i];
+    }
+    for (int i = 0; i < matrix_size; i++) {
+        weight_grad_sum += weight_matrix->grad[i];
+    }
+    
+    printf("Gradient Statistics:\n");
+    printf("Input gradient sum: %f\n", input_grad_sum);
+    printf("Weight gradient sum: %f\n", weight_grad_sum);
+    printf("Output samples: [%f, %f, %f]\n", 
+           final_output->data[0], 
+           final_output->data[final_output->size/2], 
+           final_output->data[final_output->size-1]);
+    
+    // 8. Clean up
+    free(data1);
+    free(data2);
+    free(matrix_data);
     clean_registry();
+    
     return 0;
 }
