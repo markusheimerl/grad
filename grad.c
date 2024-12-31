@@ -21,15 +21,10 @@ typedef struct {
     Tensor *result, *input1, *input2;
 } TapeEntry;
 
-static struct {
-    TapeEntry entries[MAX_TAPE];
-    int len;
-} tape = {0};
-
-static struct {
-    Tensor* tensors[MAX_TENSORS];
-    int len;
-} registry = {0};
+static TapeEntry tape[MAX_TAPE];
+static int tape_len = 0;
+static Tensor* registry[MAX_TENSORS];
+static int registry_len = 0;
 
 Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_grad) {
     Tensor* t = calloc(1, sizeof(Tensor));
@@ -41,20 +36,18 @@ Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_g
     t->data = malloc(t->size * sizeof(float));
     if (data) memcpy(t->data, data, t->size * sizeof(float));
     if ((t->requires_grad = requires_grad)) t->grad = calloc(t->size, sizeof(float));
-    if (registry.len < MAX_TENSORS) registry.tensors[registry.len++] = t;
+    registry[registry_len++] = t;
     return t;
 }
 
 void clean_registry() {
-    for (int i = 0; i < registry.len; i++) {
-        if (registry.tensors[i]) {
-            free(registry.tensors[i]->data);
-            free(registry.tensors[i]->grad);
-            free(registry.tensors[i]->dims);
-            free(registry.tensors[i]);
-        }
+    for (int i = 0; i < registry_len; i++) {
+        free(registry[i]->data);
+        free(registry[i]->grad);
+        free(registry[i]->dims);
+        free(registry[i]);
     }
-    registry.len = 0;
+    registry_len = 0;
 }
 
 Tensor* tensor_add(Tensor* a, Tensor* b) {
@@ -63,7 +56,7 @@ Tensor* tensor_add(Tensor* a, Tensor* b) {
     
     Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad || b->requires_grad);
     for (int i = 0; i < a->size; i++) result->data[i] = a->data[i] + b->data[i];
-    if (result->requires_grad) tape.entries[tape.len++] = (TapeEntry){ADD, result, a, b};
+    if (result->requires_grad) tape[tape_len++] = (TapeEntry){ADD, result, a, b};
     return result;
 }
 
@@ -91,44 +84,31 @@ Tensor* tensor_matmul(Tensor* a, Tensor* b) {
                 result->data[n*M*N + i*N + j] = sum;
             }
     
-    if (result->requires_grad) tape.entries[tape.len++] = (TapeEntry){MATMUL, result, a, b};
+    if (result->requires_grad) tape[tape_len++] = (TapeEntry){MATMUL, result, a, b};
     return result;
 }
 
 Tensor* tensor_exp(Tensor* a) {
     Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
     for (int i = 0; i < a->size; i++) result->data[i] = expf(fminf(a->data[i], MAX_EXP));
-    if (result->requires_grad) tape.entries[tape.len++] = (TapeEntry){EXP, result, a, NULL};
+    if (result->requires_grad) tape[tape_len++] = (TapeEntry){EXP, result, a, NULL};
     return result;
 }
 
 Tensor* tensor_log(Tensor* a) {
     Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
     for (int i = 0; i < a->size; i++) result->data[i] = logf(fmaxf(a->data[i], MIN_LOG));
-    if (result->requires_grad) tape.entries[tape.len++] = (TapeEntry){LOG, result, a, NULL};
+    if (result->requires_grad) tape[tape_len++] = (TapeEntry){LOG, result, a, NULL};
     return result;
 }
 
-// Helper function to validate reshape dimensions
-int validate_reshape_dims(const Tensor* t, int ndims, const int* new_dims) {
-    int total_size = 1;
-    for (int i = 0; i < ndims; i++) {
-        if (new_dims[i] < 1) return 0;  // Invalid dimension
-        total_size *= new_dims[i];
-    }
-    return total_size == t->size;  // New shape must preserve total size
-}
-
 Tensor* tensor_reshape(Tensor* a, int ndims, const int* new_dims) {
-    if (!validate_reshape_dims(a, ndims, new_dims)) return NULL;
-    
-    Tensor* result = tensor_new(ndims, new_dims, NULL, a->requires_grad);
-    memcpy(result->data, a->data, a->size * sizeof(float));
-    
-    if (result->requires_grad) {
-        tape.entries[tape.len++] = (TapeEntry){RESHAPE, result, a, NULL};
-    }
-    
+    int size = 1;
+    for (int i = 0; i < ndims; i++) size *= new_dims[i];
+    if (size != a->size) return NULL;
+
+    Tensor* result = tensor_new(ndims, new_dims, a->data, a->requires_grad);
+    if (result->requires_grad) tape[tape_len++] = (TapeEntry){RESHAPE, result, a, NULL};
     return result;
 }
 
@@ -139,16 +119,12 @@ Tensor* tensor_hadamard(Tensor* a, Tensor* b) {
 }
 
 void backward() {
-    if (!tape.len) return;
-    
-    Tensor* final = tape.entries[tape.len-1].result;
-    if (!final->grad) {
-        final->grad = calloc(final->size, sizeof(float));
-        for (int i = 0; i < final->size; i++) final->grad[i] = 1.0f;
-    }
-    
-    for (int t = tape.len-1; t >= 0; t--) {
-        TapeEntry* entry = &tape.entries[t];
+    if (!tape_len) return;
+    Tensor* final = tape[tape_len-1].result;
+    if (!final->requires_grad) return;
+ 
+    for (int t = tape_len-1; t >= 0; t--) {
+        TapeEntry* entry = &tape[t];
         Tensor *result = entry->result, *a = entry->input1, *b = entry->input2;
         
         switch (entry->op) {
@@ -205,19 +181,15 @@ void backward() {
                         a->grad[i] += result->grad[i] / fmaxf(a->data[i], MIN_LOG);
                 }
                 break;
-            case RESHAPE: {
+            case RESHAPE:
                 if (a->requires_grad) {
                     if (!a->grad) a->grad = calloc(a->size, sizeof(float));
-                    // For reshape, we just need to copy the gradients while preserving the order
-                    for (int i = 0; i < a->size; i++) {
-                        a->grad[i] += result->grad[i];
-                    }
+                    for (int i = 0; i < a->size; i++) a->grad[i] += result->grad[i];
                 }
                 break;
-            }
         }
     }
-    tape.len = 0;
+    tape_len = 0;
 }
 
 void print_tensor(const Tensor* t, const char* name) {
@@ -236,17 +208,16 @@ int main() {
     // Test 1: 3D Batch Matrix Multiplication
     {
         printf("\nTest 1: 3D Batch Matrix Multiplication\n");
-        // 2 batches, each 3x4 @ 4x3 matrices
         float data1[] = {
-            0.1, 0.2, 0.3, 0.4,  0.5, 0.6, 0.7, 0.8,  0.9, 1.0, 1.1, 1.2,  // batch 1
-            0.2, 0.3, 0.4, 0.5,  0.6, 0.7, 0.8, 0.9,  1.0, 1.1, 1.2, 1.3   // batch 2
+            0.1, 0.2, 0.3, 0.4,  0.5, 0.6, 0.7, 0.8,  0.9, 1.0, 1.1, 1.2,
+            0.2, 0.3, 0.4, 0.5,  0.6, 0.7, 0.8, 0.9,  1.0, 1.1, 1.2, 1.3
         };
         float data2[] = {
-            0.05, 0.06, 0.07,  0.08, 0.09, 0.10,  0.11, 0.12, 0.13,  0.14, 0.15, 0.16,  // batch 1
-            0.04, 0.05, 0.06,  0.07, 0.08, 0.09,  0.10, 0.11, 0.12,  0.13, 0.14, 0.15   // batch 2
+            0.05, 0.06, 0.07,  0.08, 0.09, 0.10,  0.11, 0.12, 0.13,  0.14, 0.15, 0.16,
+            0.04, 0.05, 0.06,  0.07, 0.08, 0.09,  0.10, 0.11, 0.12,  0.13, 0.14, 0.15
         };
-        int dims1[] = {2,3,4}; // batch_size x M x K
-        int dims2[] = {2,4,3}; // batch_size x K x N
+        int dims1[] = {2,3,4};
+        int dims2[] = {2,4,3};
         
         Tensor *a = tensor_new(3, dims1, data1, 1);
         Tensor *b = tensor_new(3, dims2, data2, 1);
@@ -269,13 +240,12 @@ int main() {
     // Test 2: 4D Tensor Addition
     {
         printf("\nTest 2: 4D Tensor Addition\n");
-        // 2x2x3x3 tensors (like image batch with channels)
         float data1[36], data2[36];
         for (int i = 0; i < 36; i++) {
             data1[i] = (float)(i + 1) * 0.1f;
             data2[i] = (float)(i + 1) * 0.05f;
         }
-        int dims[] = {2,2,3,3}; // batch x channels x height x width
+        int dims[] = {2,2,3,3};
         
         Tensor *a = tensor_new(4, dims, data1, 1);
         Tensor *b = tensor_new(4, dims, data2, 1);
@@ -298,7 +268,6 @@ int main() {
     // Test 3: 3D Hadamard Product
     {
         printf("\nTest 3: 3D Hadamard Product\n");
-        // 2x3x4 tensors
         float data1[24], data2[24];
         for (int i = 0; i < 24; i++) {
             data1[i] = (float)(i + 1) * 0.2f;
@@ -329,13 +298,12 @@ int main() {
     // Test 4: Reshape Operation
     {
         printf("\nTest 4: Reshape Operation\n");
-        // Start with a 2x3x4 tensor
         float data[24];
         for (int i = 0; i < 24; i++) {
             data[i] = (float)(i + 1) * 0.1f;
         }
         int orig_dims[] = {2,3,4};
-        int new_dims[] = {4,6};  // Reshape to 4x6
+        int new_dims[] = {4,6};
         
         Tensor *a = tensor_new(3, orig_dims, data, 1);
         Tensor *b = tensor_reshape(a, 2, new_dims);
