@@ -20,7 +20,14 @@ typedef struct {
     Tensor *result, *input1, *input2;
 } TapeEntry;
 
-static struct { TapeEntry entries[MAX_TAPE]; int len; } tape = {0};
+#define MAX_TENSORS 1000
+
+static struct {
+    TapeEntry entries[MAX_TAPE];
+    int len;
+    Tensor* freed_tensors[MAX_TENSORS];
+    int freed_count;
+} tape = {0};
 
 Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_grad) {
     Tensor* t = calloc(1, sizeof(Tensor));
@@ -36,7 +43,39 @@ Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_g
 }
 
 void tensor_free(Tensor* t) {
-    free(t->data); free(t->grad); free(t->dims); free(t);
+    if (!t) return;
+    free(t->data);
+    free(t->grad);
+    free(t->dims);
+    free(t);
+}
+
+void tape_free() {
+    if (tape.len == 0) return;
+    tape.freed_count = 0;
+
+    for (int i = 0; i < tape.len; i++) {
+        TapeEntry* entry = &tape.entries[i];
+        
+        // Helper function to safely free a tensor
+        void safe_free(Tensor* t) {
+            if (!t) return;
+            // Check if this tensor was already freed
+            for (int j = 0; j < tape.freed_count; j++) {
+                if (tape.freed_tensors[j] == t) return;
+            }
+            // If not freed yet, free it and record it
+            tensor_free(t);
+            tape.freed_tensors[tape.freed_count++] = t;
+        }
+
+        safe_free(entry->result);
+        safe_free(entry->input1);
+        safe_free(entry->input2);
+    }
+
+    tape.len = 0;
+    tape.freed_count = 0;
 }
 
 Tensor* tensor_add(Tensor* a, Tensor* b) {
@@ -171,8 +210,6 @@ Tensor* tensor_hadamard(Tensor* a, Tensor* b) {
     Tensor *log_a = tensor_log(a), *log_b = tensor_log(b);
     Tensor *sum_logs = tensor_add(log_a, log_b);
     Tensor *result = tensor_exp(sum_logs);
-    
-    tensor_free(log_a); tensor_free(log_b); tensor_free(sum_logs);
     return result;
 }
 
@@ -217,9 +254,7 @@ int main() {
         printf("After backward:\n");
         print_tensor(a, "A"); print_tensor(b, "B");
         
-        tensor_free(a); tensor_free(b); tensor_free(c); 
-        tensor_free(d); tensor_free(e);
-        tape.len = 0;
+        tape_free();
     }
 
     // Test 2: 3D Tensor Multiplication
@@ -249,8 +284,7 @@ int main() {
         print_tensor(a, "A"); print_tensor(b, "B");
         
         free(data1); free(data2);
-        tensor_free(a); tensor_free(b); tensor_free(c); tensor_free(d);
-        tape.len = 0;
+        tape_free();
     }
 
     // Test 3: Element-wise Addition
@@ -276,8 +310,7 @@ int main() {
         printf("After backward:\n");
         print_tensor(a, "A"); print_tensor(b, "B");
         
-        tensor_free(a); tensor_free(b); tensor_free(c); tensor_free(d);
-        tape.len = 0;
+        tape_free();
     }
 
     // Test 4: Hadamard Product
@@ -305,8 +338,7 @@ int main() {
         printf("After backward:\n");
         print_tensor(a, "A"); print_tensor(b, "B");
         
-        tensor_free(a); tensor_free(b); tensor_free(c);
-        tape.len = 0;
+        tape_free();
     }
     
     return 0;
