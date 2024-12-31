@@ -23,22 +23,16 @@ static struct {
     int len;
 } tape = {0};
 
-int compute_size(int ndims, const int* dims) {
-    int size = 1;
-    for (int i = 0; i < ndims; i++) size *= dims[i];
-    return size;
-}
-
 Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_grad) {
     Tensor* t = calloc(1, sizeof(Tensor));
     t->ndims = ndims;
     t->dims = malloc(ndims * sizeof(int));
+    t->size = 1;
+    for (int i = 0; i < ndims; i++) t->size *= dims[i];
     memcpy(t->dims, dims, ndims * sizeof(int));
-    t->size = compute_size(ndims, dims);
     t->data = malloc(t->size * sizeof(float));
     if (data) memcpy(t->data, data, t->size * sizeof(float));
-    t->requires_grad = requires_grad;
-    if (requires_grad) t->grad = calloc(t->size, sizeof(float));
+    if ((t->requires_grad = requires_grad)) t->grad = calloc(t->size, sizeof(float));
     return t;
 }
 
