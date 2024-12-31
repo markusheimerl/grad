@@ -19,3 +19,6 @@ Done:
 - ✓ Gather
 - ✓ Hadamard
 - ✓ Pow
+
+Note:
+Only EXP,LOG,MATMUL,HADAMARD and RESHAPE seem fundamental...
