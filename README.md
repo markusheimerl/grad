@@ -1,61 +1,69 @@
 # grad
-A differentiation library for efficient tensor operations
+A minimal automatic differentiation library for tensor operations
 
-ToDo:
-- Training support on GitHub runners
-- Artifact generation and package releases
-- Reduction operations (reduce_sum, reduce_mean, reduce_max, reduce_min)
-- Inverse Square root operation (1/√x)
-- Softmax operation across dimension (composable)
+## Fundamental Operations (Implemented)
+- MatMul
+- Add
+- Exp
+- Log
+- Reshape
 
-Done:
-- ✓ MatMul
-- ✓ Add
-- ✓ Relu
-- ✓ Sigmoid
-- ✓ Reshape
-- ✓ Slice
-- ✓ Permute
-- ✓ Gather
-- ✓ Hadamard
-- ✓ Pow
-
-Note:
-Only ADD,EXP,LOG,MATMUL and RESHAPE seem fundamental...
-
-1. HADAMARD (as we already saw):
+## Composite Operations (Implemented via Fundamentals)
+1. Hadamard Product (Element-wise multiplication)
 ```c
-// a ⊙ b = exp(log(a) + log(b))
+a ⊙ b = exp(log(a) + log(b))
 ```
 
-2. DIV (division):
+2. Reduce Sum
 ```c
-// a / b = exp(log(a) - log(b))
-// where subtraction is ADD with negative
+// Using matrix multiplication with a vector of ones
+reduce_sum(A, axis) = ones @ A  // for axis=0
+reduce_sum(A, axis) = A @ ones  // for axis=1
 ```
 
-3. POW:
+## Required Operations for Transformer Decoder
+
+1. Softmax
 ```c
-// a^n = exp(n * log(a))
-// where multiplication by scalar can be done via diagonal matrix multiplication
+// Can be implemented using existing operations:
+softmax(x) = exp(x) / sum(exp(x))
+           = exp(x - max(x)) / sum(exp(x - max(x)))  // for numerical stability
+
+// Breaking it down:
+a) max(x) ≈ log(sum(exp(x)))  // log-sum-exp trick
+b) normalized = exp(x - max(x))
+c) sum_normalized = reduce_sum(normalized, axis=-1)
+d) result = normalized / sum_normalized
+         = exp(log(normalized) - log(sum_normalized))
 ```
 
-4. REDUCE_SUM:
+2. Layer Normalization
 ```c
-// Can be implemented via MATMUL with a vector of ones
-// For example, to sum a matrix along rows:
-// [1 1 1] @ [a b c] = [a+b+c]
-//           [d e f]   [d+e+f]
+// Can be composed from:
+a) mean = reduce_sum(x, axis=-1) / n
+b) variance = reduce_sum((x - mean)², axis=-1) / n
+c) normalized = (x - mean) / sqrt(variance + ε)
+d) result = γ * normalized + β
+
+// Where sqrt(x) = exp(0.5 * log(x))
 ```
 
-5. SIGMOID:
+3. Masked Attention
 ```c
-// sigmoid(x) = 1 / (1 + exp(-x))
-// = exp(-log(1 + exp(-x)))
-// Can be composed using EXP, LOG, and ADD
+// Can be implemented using:
+a) Q @ K.T  // matrix multiplication
+b) mask addition
+c) softmax
+d) dropout (optional)
+e) result @ V
 ```
 
-6. REDUCE_MAX:
+4. Feed Forward Network
 ```c
-// Can be approximated using log-sum-exp trick:
-// max(x) ≈ log(sum(exp(x)))
+// Just needs existing operations:
+a) MatMul
+b) Add (for bias)
+c) ReLU or GELU
+   // ReLU(x) = max(0,x) can be approximated with softplus
+   // GELU(x) ≈ x * sigmoid(1.702 * x)
+```
