@@ -6,12 +6,7 @@
 #define MAX_DIMS 4
 #define MAX_TAPE 1000
 
-typedef enum {
-    ADD,
-    MATMUL,
-    RELU,
-    SIGMOID
-} OpType;
+typedef enum { ADD, MATMUL, RELU, SIGMOID } OpType;
 
 typedef struct Tensor {
     float* data;
@@ -34,7 +29,6 @@ static struct {
     int len;
 } tape = {0};
 
-// Helper functions
 static float sigmoid(float x) {
     x = fmaxf(fminf(x, 88.0f), -88.0f);
     return 1.0f / (1.0f + expf(-x));
@@ -44,55 +38,24 @@ static float relu(float x) {
     return fmaxf(0.0f, x);
 }
 
-// Core tensor operations
 Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_grad) {
-    if (ndims > MAX_DIMS) return NULL;
-    
     Tensor* t = calloc(1, sizeof(Tensor));
-    if (!t) return NULL;
-    
     t->ndims = ndims;
     t->dims = malloc(ndims * sizeof(int));
-    if (!t->dims) {
-        free(t);
-        return NULL;
-    }
     memcpy(t->dims, dims, ndims * sizeof(int));
     
     t->size = 1;
-    for (int i = 0; i < ndims; i++) {
-        t->size *= dims[i];
-    }
+    for (int i = 0; i < ndims; i++) t->size *= dims[i];
     
     t->data = malloc(t->size * sizeof(float));
-    if (!t->data) {
-        free(t->dims);
-        free(t);
-        return NULL;
-    }
-    
-    if (data) {
-        memcpy(t->data, data, t->size * sizeof(float));
-    } else {
-        memset(t->data, 0, t->size * sizeof(float));
-    }
+    if (data) memcpy(t->data, data, t->size * sizeof(float));
     
     t->requires_grad = requires_grad;
-    if (requires_grad) {
-        t->grad = calloc(t->size, sizeof(float));
-        if (!t->grad) {
-            free(t->data);
-            free(t->dims);
-            free(t);
-            return NULL;
-        }
-    }
-    
+    if (requires_grad) t->grad = calloc(t->size, sizeof(float));
     return t;
 }
 
 void tensor_free(Tensor* t) {
-    if (!t) return;
     free(t->data);
     free(t->grad);
     free(t->dims);
@@ -100,205 +63,116 @@ void tensor_free(Tensor* t) {
 }
 
 static void record_operation(OpType op, Tensor* result, Tensor* input1, Tensor* input2) {
-    if (tape.len >= MAX_TAPE) return;
-    if (!result->requires_grad) return;
-    
-    tape.entries[tape.len++] = (TapeEntry){
-        .op = op,
-        .result = result,
-        .input1 = input1,
-        .input2 = input2
-    };
+    if (tape.len < MAX_TAPE && result->requires_grad)
+        tape.entries[tape.len++] = (TapeEntry){op, result, input1, input2};
 }
 
 Tensor* tensor_add(Tensor* a, Tensor* b) {
-    if (!a || !b || a->ndims != b->ndims) return NULL;
-    for (int i = 0; i < a->ndims; i++) {
-        if (a->dims[i] != b->dims[i]) return NULL;
-    }
-    
     Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad || b->requires_grad);
-    if (!result) return NULL;
-    
-    for (int i = 0; i < result->size; i++) {
+    for (int i = 0; i < result->size; i++)
         result->data[i] = a->data[i] + b->data[i];
-    }
-    
-    if (result->requires_grad) {
-        record_operation(ADD, result, a, b);
-    }
-    
+    record_operation(ADD, result, a, b);
     return result;
 }
 
-// Matrix multiplication
 Tensor* tensor_matmul(Tensor* a, Tensor* b) {
-    if (!a || !b || a->ndims != 2 || b->ndims != 2 || 
-        a->dims[1] != b->dims[0]) return NULL;
-    
     int dims[] = {a->dims[0], b->dims[1]};
     Tensor* result = tensor_new(2, dims, NULL, a->requires_grad || b->requires_grad);
-    if (!result) return NULL;
     
-    // Perform matrix multiplication
-    for (int i = 0; i < a->dims[0]; i++) {
+    for (int i = 0; i < a->dims[0]; i++)
         for (int j = 0; j < b->dims[1]; j++) {
             float sum = 0.0f;
-            for (int k = 0; k < a->dims[1]; k++) {
+            for (int k = 0; k < a->dims[1]; k++)
                 sum += a->data[i * a->dims[1] + k] * b->data[k * b->dims[1] + j];
-            }
             result->data[i * b->dims[1] + j] = sum;
         }
-    }
     
-    if (result->requires_grad) {
-        record_operation(MATMUL, result, a, b);
-    }
-    
+    record_operation(MATMUL, result, a, b);
     return result;
 }
 
 Tensor* tensor_relu(Tensor* a) {
-    if (!a) return NULL;
-    
     Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
-    if (!result) return NULL;
-    
-    for (int i = 0; i < a->size; i++) {
+    for (int i = 0; i < a->size; i++)
         result->data[i] = relu(a->data[i]);
-    }
-    
-    if (result->requires_grad) {
-        record_operation(RELU, result, a, NULL);
-    }
-    
+    record_operation(RELU, result, a, NULL);
     return result;
 }
 
 Tensor* tensor_sigmoid(Tensor* a) {
-    if (!a) return NULL;
-    
     Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
-    if (!result) return NULL;
-    
-    for (int i = 0; i < a->size; i++) {
+    for (int i = 0; i < a->size; i++)
         result->data[i] = sigmoid(a->data[i]);
-    }
-    
-    if (result->requires_grad) {
-        record_operation(SIGMOID, result, a, NULL);
-    }
-    
+    record_operation(SIGMOID, result, a, NULL);
     return result;
 }
 
 void backward() {
-    if (tape.len == 0) return;
+    if (!tape.len) return;
     
-    // Initialize gradient of final tensor
     Tensor* final = tape.entries[tape.len - 1].result;
-    if (!final->grad) {
-        final->grad = calloc(final->size, sizeof(float));
-        if (!final->grad) return;
-    }
-    // Set gradient of final tensor to 1.0 if it's all zeros
-    int all_zeros = 1;
-    for (int i = 0; i < final->size; i++) {
-        if (final->grad[i] != 0.0f) {
-            all_zeros = 0;
-            break;
-        }
-    }
-    if (all_zeros) {
-        for (int i = 0; i < final->size; i++) {
-            final->grad[i] = 1.0f;
-        }
-    }
+    if (!final->grad) final->grad = calloc(final->size, sizeof(float));
     
-    // Backward pass through the tape
+    int all_zeros = 1;
+    for (int i = 0; i < final->size && all_zeros; i++)
+        if (final->grad[i] != 0.0f) all_zeros = 0;
+    
+    if (all_zeros)
+        for (int i = 0; i < final->size; i++)
+            final->grad[i] = 1.0f;
+    
     for (int t = tape.len - 1; t >= 0; t--) {
         TapeEntry* entry = &tape.entries[t];
-        Tensor *result = entry->result, 
-               *a = entry->input1, 
-               *b = entry->input2;
+        Tensor *result = entry->result, *a = entry->input1, *b = entry->input2;
         
         switch (entry->op) {
             case ADD:
-                if (a && a->requires_grad) {
-                    if (!a->grad) {
-                        a->grad = calloc(a->size, sizeof(float));
-                        if (!a->grad) return;
-                    }
-                    for (int i = 0; i < a->size; i++) {
+                if (a->requires_grad) {
+                    if (!a->grad) a->grad = calloc(a->size, sizeof(float));
+                    for (int i = 0; i < a->size; i++)
                         a->grad[i] += result->grad[i];
-                    }
                 }
-                if (b && b->requires_grad) {
-                    if (!b->grad) {
-                        b->grad = calloc(b->size, sizeof(float));
-                        if (!b->grad) return;
-                    }
-                    for (int i = 0; i < b->size; i++) {
+                if (b->requires_grad) {
+                    if (!b->grad) b->grad = calloc(b->size, sizeof(float));
+                    for (int i = 0; i < b->size; i++)
                         b->grad[i] += result->grad[i];
-                    }
                 }
                 break;
                 
             case MATMUL:
-                if (a && a->requires_grad) {
-                    if (!a->grad) {
-                        a->grad = calloc(a->size, sizeof(float));
-                        if (!a->grad) return;
-                    }
-                    // dC/dA = dC/dY * B^T
-                    for (int i = 0; i < a->dims[0]; i++) {
+                if (a->requires_grad) {
+                    if (!a->grad) a->grad = calloc(a->size, sizeof(float));
+                    for (int i = 0; i < a->dims[0]; i++)
                         for (int j = 0; j < a->dims[1]; j++) {
                             float sum = 0.0f;
-                            for (int k = 0; k < b->dims[1]; k++) {
-                                sum += result->grad[i * b->dims[1] + k] * 
-                                      b->data[j * b->dims[1] + k];
-                            }
+                            for (int k = 0; k < b->dims[1]; k++)
+                                sum += result->grad[i * b->dims[1] + k] * b->data[j * b->dims[1] + k];
                             a->grad[i * a->dims[1] + j] += sum;
                         }
-                    }
                 }
-                if (b && b->requires_grad) {
-                    if (!b->grad) {
-                        b->grad = calloc(b->size, sizeof(float));
-                        if (!b->grad) return;
-                    }
-                    // dC/dB = A^T * dC/dY
-                    for (int i = 0; i < b->dims[0]; i++) {
+                if (b->requires_grad) {
+                    if (!b->grad) b->grad = calloc(b->size, sizeof(float));
+                    for (int i = 0; i < b->dims[0]; i++)
                         for (int j = 0; j < b->dims[1]; j++) {
                             float sum = 0.0f;
-                            for (int k = 0; k < a->dims[0]; k++) {
-                                sum += a->data[k * a->dims[1] + i] * 
-                                      result->grad[k * b->dims[1] + j];
-                            }
+                            for (int k = 0; k < a->dims[0]; k++)
+                                sum += a->data[k * a->dims[1] + i] * result->grad[k * b->dims[1] + j];
                             b->grad[i * b->dims[1] + j] += sum;
                         }
-                    }
                 }
                 break;
                 
             case RELU:
-                if (a && a->requires_grad) {
-                    if (!a->grad) {
-                        a->grad = calloc(a->size, sizeof(float));
-                        if (!a->grad) return;
-                    }
-                    for (int i = 0; i < a->size; i++) {
-                        a->grad[i] += result->grad[i] * (a->data[i] > 0.0f ? 1.0f : 0.0f);
-                    }
+                if (a->requires_grad) {
+                    if (!a->grad) a->grad = calloc(a->size, sizeof(float));
+                    for (int i = 0; i < a->size; i++)
+                        a->grad[i] += result->grad[i] * (a->data[i] > 0.0f);
                 }
                 break;
                 
             case SIGMOID:
-                if (a && a->requires_grad) {
-                    if (!a->grad) {
-                        a->grad = calloc(a->size, sizeof(float));
-                        if (!a->grad) return;
-                    }
+                if (a->requires_grad) {
+                    if (!a->grad) a->grad = calloc(a->size, sizeof(float));
                     for (int i = 0; i < a->size; i++) {
                         float s = sigmoid(a->data[i]);
                         a->grad[i] += result->grad[i] * s * (1.0f - s);
