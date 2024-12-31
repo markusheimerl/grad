@@ -235,49 +235,70 @@ Tensor* tensor_hadamard(Tensor* a, Tensor* b) {
     return tensor_exp(tensor_add(tensor_log(a), tensor_log(b)));
 }
 
+void print_tensor(Tensor* t, const char* name) {
+    printf("%s: shape(", name);
+    for (int i = 0; i < t->ndims; i++) 
+        printf("%d%s", t->dims[i], i < t->ndims - 1 ? "," : ")");
+    printf(" first[%.4f,%.4f] grad[%.4f,%.4f]\n", 
+           t->data[0], t->data[1],
+           t->requires_grad ? t->grad[0] : 0.0f,
+           t->requires_grad ? t->grad[1] : 0.0f);
+}
+
 int main() {
-    const int batch_size = 2, channels = 3, height = 4, width = 5;
-    const int dims4d[] = {batch_size, channels, height, width};
-    const int tensor_size = batch_size * channels * height * width;
+    const int b = 2, c = 3, h = 4, w = 5;
+    const int dims4d[] = {b, c, h, w};
+    const int size = b * c * h * w;
     
-    float *data1 = malloc(tensor_size * sizeof(float));
-    float *data2 = malloc(tensor_size * sizeof(float));
-    
-    for (int i = 0; i < tensor_size; i++) {
+    float *data1 = malloc(size * sizeof(float));
+    float *data2 = malloc(size * sizeof(float));
+    for (int i = 0; i < size; i++) 
         data1[i] = data2[i] = (float)(i % 10) / 10.0f + 0.5f;
-    }
     
     Tensor* input1 = tensor_new(4, dims4d, data1, 1);
-    int permuted_dims[] = {batch_size, width, channels, height};
-    Tensor* input2 = tensor_new(4, permuted_dims, data2, 1);
+    print_tensor(input1, "input1");
     
     const int perm[] = {0, 3, 1, 2};
     Tensor* permuted = tensor_permute(input1, perm);
+    print_tensor(permuted, "permuted");
+    
+    int permuted_dims[] = {b, w, c, h};
+    Tensor* input2 = tensor_new(4, permuted_dims, data2, 1);
+    
     Tensor* sum = tensor_add(permuted, input2);
+    print_tensor(sum, "sum");
     
-    const int reshape_dims[] = {batch_size, channels * height * width};
+    const int reshape_dims[] = {b, c * h * w};
     Tensor* reshaped = tensor_reshape(sum, 2, reshape_dims);
+    print_tensor(reshaped, "reshaped");
     
-    const int matrix_dims[] = {channels * height * width, 10};
+    const int matrix_dims[] = {c * h * w, 10};
     float* matrix_data = malloc(matrix_dims[0] * matrix_dims[1] * sizeof(float));
     for (int i = 0; i < matrix_dims[0] * matrix_dims[1]; i++) 
         matrix_data[i] = (float)(i % 10) / 20.0f;
     
     Tensor* weight_matrix = tensor_new(2, matrix_dims, matrix_data, 1);
     Tensor* matmul_result = tensor_matmul(reshaped, weight_matrix);
-    Tensor* activated = tensor_exp(matmul_result);
-    Tensor* logged = tensor_log(activated);
-    Tensor* final_output = tensor_hadamard(logged, logged);
+    print_tensor(matmul_result, "matmul");
     
-    for (int i = 0; i < final_output->size; i++) 
-        final_output->grad[i] = 1.0f;
+    Tensor* final = tensor_hadamard(
+        tensor_log(tensor_exp(matmul_result)),
+        tensor_log(tensor_exp(matmul_result))
+    );
+    print_tensor(final, "final");
+    
+    for (int i = 0; i < final->size; i++) 
+        final->grad[i] = 1.0f;
     
     backward();
+    
+    printf("\nGradients:\n");
+    print_tensor(input1, "input1");
+    print_tensor(weight_matrix, "weight");
     
     free(data1);
     free(data2);
     free(matrix_data);
     clean_registry();
-    
     return 0;
 }
