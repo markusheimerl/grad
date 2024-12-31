@@ -133,7 +133,6 @@ void backward() {
                 int batch = result->size / (M * N);
                 
                 if (a->requires_grad) {
-                    if (!a->grad) a->grad = calloc(a->size, sizeof(float));
                     for (int n = 0; n < batch; n++)
                         for (int i = 0; i < M; i++)
                             for (int k = 0; k < K; k++) {
@@ -145,7 +144,6 @@ void backward() {
                 }
                 
                 if (b->requires_grad) {
-                    if (!b->grad) b->grad = calloc(b->size, sizeof(float));
                     for (int n = 0; n < batch; n++)
                         for (int k = 0; k < K; k++)
                             for (int j = 0; j < N; j++) {
@@ -159,31 +157,26 @@ void backward() {
             }
             case ADD:
                 if (a->requires_grad) {
-                    if (!a->grad) a->grad = calloc(a->size, sizeof(float));
                     for (int i = 0; i < a->size; i++) a->grad[i] += result->grad[i];
                 }
                 if (b->requires_grad) {
-                    if (!b->grad) b->grad = calloc(b->size, sizeof(float));
                     for (int i = 0; i < b->size; i++) b->grad[i] += result->grad[i];
                 }
                 break;
             case EXP:
                 if (a->requires_grad) {
-                    if (!a->grad) a->grad = calloc(a->size, sizeof(float));
                     for (int i = 0; i < a->size; i++)
                         a->grad[i] += result->grad[i] * result->data[i];
                 }
                 break;
             case LOG:
                 if (a->requires_grad) {
-                    if (!a->grad) a->grad = calloc(a->size, sizeof(float));
                     for (int i = 0; i < a->size; i++)
                         a->grad[i] += result->grad[i] / fmaxf(a->data[i], MIN_LOG);
                 }
                 break;
             case RESHAPE:
                 if (a->requires_grad) {
-                    if (!a->grad) a->grad = calloc(a->size, sizeof(float));
                     for (int i = 0; i < a->size; i++) a->grad[i] += result->grad[i];
                 }
                 break;
