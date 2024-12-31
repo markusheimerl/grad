@@ -218,10 +218,13 @@ Tensor* tensor_ones(int ndims, const int* dims) {
 
 Tensor* tensor_reduce_sum(Tensor* a, int axis) {
     if (!a || axis < 0 || axis >= a->ndims) return NULL;
-    return tensor_matmul(
-        tensor_reshape(a, 2, (int[]){a->size / a->dims[axis], a->dims[axis]}),
-        tensor_reshape(tensor_ones(2, (int[]){1, a->dims[axis]}), 2, (int[]){a->dims[axis], 1})
-    );
+    int p[MAX_DIMS], d[MAX_DIMS], j = 0;
+    for (int i = 0; i < a->ndims; i++) if (i != axis) p[j] = i, d[j++] = a->dims[i];
+    p[a->ndims - 1] = axis;
+    Tensor* t = tensor_permute(a, p);
+    return tensor_reshape(tensor_matmul(tensor_reshape(t, 2, (int[]){t->size / t->dims[t->ndims - 1], 
+        t->dims[t->ndims - 1]}), tensor_reshape(tensor_ones(1, (int[]){t->dims[t->ndims - 1]}), 2, 
+        (int[]){t->dims[t->ndims - 1], 1})), a->ndims - 1, d);
 }
 
 void print_tensor(Tensor* t, const char* name) {
@@ -235,65 +238,149 @@ void print_tensor(Tensor* t, const char* name) {
 }
 
 int main() {
-    // Create a 3D tensor with shape (2, 3, 4)
-    const int dims[] = {2, 3, 4};
-    const int size = 24;  // 2 * 3 * 4
-    
-    // Initialize data with increasing values
-    float* data = malloc(size * sizeof(float));
-    for (int i = 0; i < size; i++) {
-        data[i] = i + 1;
+    printf("=== Comprehensive tensor_reduce_sum Testing ===\n\n");
+
+    // Test Case 1: 1D tensor
+    {
+        printf("Test Case 1: 1D tensor (5)\n");
+        float data1[] = {1, 2, 3, 4, 5};
+        int dims1[] = {5};
+        Tensor* t1 = tensor_new(1, dims1, data1, 1);
+        
+        Tensor* r1 = tensor_reduce_sum(t1, 0);
+        printf("Input: ");
+        for(int i = 0; i < t1->size; i++) printf("%.1f ", t1->data[i]);
+        printf("\nReduced (axis=0): %.1f\n\n", r1->data[0]);
     }
-    
-    // Create input tensor
-    Tensor* input = tensor_new(3, dims, data, 1);
-    printf("Original tensor:\n");
-    print_tensor(input, "input");
-    
-    // Print the actual values for better visualization
-    printf("\nOriginal tensor values:\n");
-    for (int i = 0; i < dims[0]; i++) {
-        printf("i=%d:\n", i);
-        for (int j = 0; j < dims[1]; j++) {
-            for (int k = 0; k < dims[2]; k++) {
-                printf("%.1f ", input->data[i*dims[1]*dims[2] + j*dims[2] + k]);
+
+    // Test Case 2: 2D tensor (matrix)
+    {
+        printf("Test Case 2: 2D tensor (3x4)\n");
+        float data2[] = {
+            1, 2, 3, 4,
+            5, 6, 7, 8,
+            9, 10, 11, 12
+        };
+        int dims2[] = {3, 4};
+        Tensor* t2 = tensor_new(2, dims2, data2, 1);
+        
+        printf("Input:\n");
+        for(int i = 0; i < dims2[0]; i++) {
+            for(int j = 0; j < dims2[1]; j++)
+                printf("%2.1f ", t2->data[i*dims2[1] + j]);
+            printf("\n");
+        }
+        
+        Tensor* r2_0 = tensor_reduce_sum(t2, 0);
+        Tensor* r2_1 = tensor_reduce_sum(t2, 1);
+        
+        printf("Reduced (axis=0): ");
+        for(int i = 0; i < r2_0->size; i++) printf("%.1f ", r2_0->data[i]);
+        printf("\nReduced (axis=1): ");
+        for(int i = 0; i < r2_1->size; i++) printf("%.1f ", r2_1->data[i]);
+        printf("\n\n");
+    }
+
+    // Test Case 3: 3D tensor
+    {
+        printf("Test Case 3: 3D tensor (2x3x4)\n");
+        float* data3 = malloc(24 * sizeof(float));
+        for(int i = 0; i < 24; i++) data3[i] = i + 1;
+        int dims3[] = {2, 3, 4};
+        Tensor* t3 = tensor_new(3, dims3, data3, 1);
+        
+        printf("Input:\n");
+        for(int i = 0; i < dims3[0]; i++) {
+            printf("Layer %d:\n", i);
+            for(int j = 0; j < dims3[1]; j++) {
+                for(int k = 0; k < dims3[2]; k++)
+                    printf("%2.1f ", t3->data[i*dims3[1]*dims3[2] + j*dims3[2] + k]);
+                printf("\n");
             }
             printf("\n");
         }
+        
+        Tensor* r3_0 = tensor_reduce_sum(t3, 0);
+        Tensor* r3_1 = tensor_reduce_sum(t3, 1);
+        Tensor* r3_2 = tensor_reduce_sum(t3, 2);
+        
+        printf("Reduced (axis=0):\n");
+        for(int j = 0; j < dims3[1]; j++) {
+            for(int k = 0; k < dims3[2]; k++)
+                printf("%2.1f ", r3_0->data[j*dims3[2] + k]);
+            printf("\n");
+        }
+        
+        printf("\nReduced (axis=1):\n");
+        for(int i = 0; i < dims3[0]; i++) {
+            for(int k = 0; k < dims3[2]; k++)
+                printf("%2.1f ", r3_1->data[i*dims3[2] + k]);
+            printf("\n");
+        }
+        
+        printf("\nReduced (axis=2):\n");
+        for(int i = 0; i < dims3[0]; i++) {
+            for(int j = 0; j < dims3[1]; j++)
+                printf("%2.1f ", r3_2->data[i*dims3[1] + j]);
+            printf("\n");
+        }
         printf("\n");
+        free(data3);
     }
-    
-    // Reduce sum along different axes
-    printf("\nReducing along different axes:\n");
-    
-    // Reduce along axis 0 (first dimension)
-    Tensor* reduced0 = tensor_reduce_sum(input, 0);
-    print_tensor(reduced0, "reduced_axis0");
-    
-    // Reduce along axis 1 (middle dimension)
-    Tensor* reduced1 = tensor_reduce_sum(input, 1);
-    print_tensor(reduced1, "reduced_axis1");
-    
-    // Reduce along axis 2 (last dimension)
-    Tensor* reduced2 = tensor_reduce_sum(input, 2);
-    print_tensor(reduced2, "reduced_axis2");
-    
-    // Test backpropagation
-    printf("\nTesting backpropagation:\n");
-    
-    // Set gradients of reduced tensor to 1.0
-    for (int i = 0; i < reduced1->size; i++) {
-        reduced1->grad[i] = 1.0f;
+
+    // Test Case 4: 4D tensor
+    {
+        printf("Test Case 4: 4D tensor (2x2x2x2)\n");
+        float* data4 = malloc(16 * sizeof(float));
+        for(int i = 0; i < 16; i++) data4[i] = i + 1;
+        int dims4[] = {2, 2, 2, 2};
+        Tensor* t4 = tensor_new(4, dims4, data4, 1);
+        
+        printf("Input:\n");
+        for(int i = 0; i < dims4[0]; i++) {
+            printf("Hyperplane %d:\n", i);
+            for(int j = 0; j < dims4[1]; j++) {
+                printf("Layer %d:\n", j);
+                for(int k = 0; k < dims4[2]; k++) {
+                    for(int l = 0; l < dims4[3]; l++)
+                        printf("%2.1f ", t4->data[i*8 + j*4 + k*2 + l]);
+                    printf("\n");
+                }
+                printf("\n");
+            }
+        }
+        
+        // Test reduction along each axis
+        for(int axis = 0; axis < 4; axis++) {
+            Tensor* r4 = tensor_reduce_sum(t4, axis);
+            printf("Reduced (axis=%d) shape: (", axis);
+            for(int i = 0; i < r4->ndims; i++)
+                printf("%d%s", r4->dims[i], i < r4->ndims-1 ? "," : ")\n");
+            printf("Values: ");
+            for(int i = 0; i < r4->size; i++)
+                printf("%.1f ", r4->data[i]);
+            printf("\n\n");
+        }
+        free(data4);
     }
-    
-    // Perform backward pass
-    backward();
-    
-    // Print input gradients
-    print_tensor(input, "input_grad");
-    
+
+    // Test Case 5: Edge cases
+    {
+        printf("Test Case 5: Edge cases\n");
+        
+        // Single element tensor
+        float data5[] = {42};
+        int dims5[] = {1};
+        Tensor* t5 = tensor_new(1, dims5, data5, 1);
+        Tensor* r5 = tensor_reduce_sum(t5, 0);
+        printf("Single element tensor reduction: %.1f\n", r5->data[0]);
+        
+        // Invalid axis
+        Tensor* r5_invalid = tensor_reduce_sum(t5, 1);
+        printf("Invalid axis reduction: %s\n\n", r5_invalid ? "Failed" : "Correctly returned NULL");
+    }
+
     // Clean up
-    free(data);
     clean_registry();
     return 0;
 }
