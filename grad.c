@@ -118,6 +118,62 @@ Tensor* tensor_hadamard(Tensor* a, Tensor* b) {
     return tensor_exp(tensor_add(tensor_log(a), tensor_log(b)));
 }
 
+// Helper function to create a tensor filled with ones
+
+Tensor* tensor_ones(int ndims, const int* dims) {
+    Tensor* t = tensor_new(ndims, dims, NULL, 0);
+    for (int i = 0; i < t->size; i++) t->data[i] = 1.0f;
+    return t;
+}
+
+Tensor* tensor_reduce_sum(Tensor* a, int axis) {
+    if (axis < 0 || axis >= a->ndims) return NULL;
+    
+    // Create shape for the ones tensor
+    int ones_dims[2] = {1, a->dims[axis]};
+    if (axis == a->ndims - 1) {
+        ones_dims[0] = a->dims[axis];
+        ones_dims[1] = 1;
+    }
+    
+    // Calculate reshape dimensions
+    int reshape_dims[2];
+    if (axis == a->ndims - 1) {
+        int prod = 1;
+        for (int i = 0; i < a->ndims - 1; i++) prod *= a->dims[i];
+        reshape_dims[0] = prod;
+        reshape_dims[1] = a->dims[axis];
+    } else {
+        reshape_dims[0] = a->dims[axis];
+        int prod = 1;
+        for (int i = 0; i < a->ndims; i++) {
+            if (i != axis) prod *= a->dims[i];
+        }
+        reshape_dims[1] = prod;
+    }
+    
+    // Create ones tensor and perform reduction
+    Tensor* ones = tensor_ones(2, ones_dims);
+    Tensor* reshaped = tensor_reshape(a, 2, reshape_dims);
+    Tensor* result = (axis == a->ndims - 1) ? 
+                    tensor_matmul(reshaped, ones) : 
+                    tensor_matmul(ones, reshaped);
+    
+    // If result should have more than 1 dimension, reshape it
+    if (a->ndims > 2) {
+        int new_ndims = a->ndims - 1;
+        int* new_dims = malloc(new_ndims * sizeof(int));
+        for (int i = 0, j = 0; i < a->ndims; i++) {
+            if (i != axis) new_dims[j++] = a->dims[i];
+        }
+        Tensor* final = tensor_reshape(result, new_ndims, new_dims);
+        free(new_dims);
+        return final;
+    }
+    
+    return result;
+}
+
 void backward() {
     if (!tape_len) return;
     Tensor* final = tape[tape_len-1].result;
@@ -312,6 +368,62 @@ int main() {
         printf("After backward:\n");
         print_tensor(a, "A");
         print_tensor(b, "B");
+    }
+
+// Test 5: Reduce Sum
+    {
+        printf("\nTest 1: 3D Tensor Reduction\n");
+        float data[24];
+        for (int i = 0; i < 24; i++) data[i] = i + 1;
+        int dims[] = {2, 3, 4};  // 2 batches, 3 rows, 4 columns
+        
+        Tensor* a = tensor_new(3, dims, data, 1);
+        
+        // Reduce along different axes
+        Tensor* sum_axis0 = tensor_reduce_sum(a, 0);  // Should be (3x4)
+        Tensor* sum_axis1 = tensor_reduce_sum(a, 1);  // Should be (2x4)
+        Tensor* sum_axis2 = tensor_reduce_sum(a, 2);  // Should be (2x3)
+        
+        print_tensor(a, "A (2x3x4)");
+        print_tensor(sum_axis0, "Sum along axis 0 (batch)");
+        print_tensor(sum_axis1, "Sum along axis 1 (rows)");
+        print_tensor(sum_axis2, "Sum along axis 2 (columns)");
+        
+        // Set gradients for backward
+        for (int i = 0; i < sum_axis2->size; i++) sum_axis2->grad[i] = 1.0f;
+        
+        backward();
+        printf("After backward:\n");
+        print_tensor(a, "A gradients");
+    }
+
+    // Test 2: 4D tensor (2x2x3x3)
+    {
+        printf("\nTest 2: 4D Tensor Reduction\n");
+        float data[36];
+        for (int i = 0; i < 36; i++) data[i] = i + 1;
+        int dims[] = {2, 2, 3, 3};  // 2 batches, 2 channels, 3 rows, 3 columns
+        
+        Tensor* a = tensor_new(4, dims, data, 1);
+        
+        // Reduce along different axes
+        Tensor* sum_axis0 = tensor_reduce_sum(a, 0);  // Should be (2x3x3)
+        Tensor* sum_axis1 = tensor_reduce_sum(a, 1);  // Should be (2x3x3)
+        Tensor* sum_axis2 = tensor_reduce_sum(a, 2);  // Should be (2x2x3)
+        Tensor* sum_axis3 = tensor_reduce_sum(a, 3);  // Should be (2x2x3)
+        
+        print_tensor(a, "A (2x2x3x3)");
+        print_tensor(sum_axis0, "Sum along axis 0 (batch)");
+        print_tensor(sum_axis1, "Sum along axis 1 (channels)");
+        print_tensor(sum_axis2, "Sum along axis 2 (rows)");
+        print_tensor(sum_axis3, "Sum along axis 3 (columns)");
+        
+        // Set gradients for backward
+        for (int i = 0; i < sum_axis3->size; i++) sum_axis3->grad[i] = 1.0f;
+        
+        backward();
+        printf("After backward:\n");
+        print_tensor(a, "A gradients");
     }
 
     clean_registry();

@@ -21,7 +21,7 @@ Done:
 - ✓ Pow
 
 Note:
-Only EXP,LOG,MATMUL,HADAMARD and RESHAPE seem fundamental...
+Only ADD,EXP,LOG,MATMUL and RESHAPE seem fundamental...
 
 1. HADAMARD (as we already saw):
 ```c
