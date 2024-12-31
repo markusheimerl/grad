@@ -4,6 +4,8 @@
 #include <math.h>
 
 #define MAX_TAPE 1000
+#define MIN_LOG 1e-7f
+#define MAX_EXP 88.0f
 
 typedef enum { MATMUL, EXP, LOG } OpType;
 
@@ -18,10 +20,7 @@ typedef struct {
     Tensor *result, *input1, *input2;
 } TapeEntry;
 
-static struct {
-    TapeEntry entries[MAX_TAPE];
-    int len;
-} tape = {0};
+static struct { TapeEntry entries[MAX_TAPE]; int len; } tape = {0};
 
 Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_grad) {
     Tensor* t = calloc(1, sizeof(Tensor));
@@ -43,30 +42,26 @@ void tensor_free(Tensor* t) {
 Tensor* tensor_matmul(Tensor* a, Tensor* b) {
     if (a->ndims < 1 || b->ndims < 1 || a->dims[a->ndims-1] != b->dims[b->ndims-2]) return NULL;
     
-    int max_ndims = (a->ndims > b->ndims) ? a->ndims : b->ndims;
+    int max_ndims = fmax(a->ndims, b->ndims);
     int* result_dims = malloc(max_ndims * sizeof(int));
-    const Tensor* larger = (a->ndims > b->ndims) ? a : b;
-    memcpy(result_dims, larger->dims, (max_ndims - 2) * sizeof(int));
+    memcpy(result_dims, (a->ndims > b->ndims ? a : b)->dims, (max_ndims - 2) * sizeof(int));
     result_dims[max_ndims-2] = a->dims[a->ndims-2];
     result_dims[max_ndims-1] = b->dims[b->ndims-1];
     
     Tensor* result = tensor_new(max_ndims, result_dims, NULL, a->requires_grad || b->requires_grad);
     free(result_dims);
     
-    int batch_size = result->size / (result->dims[max_ndims-2] * result->dims[max_ndims-1]);
+    int batch = result->size / (result->dims[max_ndims-2] * result->dims[max_ndims-1]);
     int M = a->dims[a->ndims-2], N = b->dims[b->ndims-1], K = a->dims[a->ndims-1];
     
-    for (int batch = 0; batch < batch_size; batch++) {
-        for (int i = 0; i < M; i++) {
+    for (int n = 0; n < batch; n++)
+        for (int i = 0; i < M; i++)
             for (int j = 0; j < N; j++) {
                 float sum = 0;
-                for (int k = 0; k < K; k++) {
-                    sum += a->data[batch*M*K + i*K + k] * b->data[batch*K*N + k*N + j];
-                }
-                result->data[batch*M*N + i*N + j] = sum;
+                for (int k = 0; k < K; k++)
+                    sum += a->data[n*M*K + i*K + k] * b->data[n*K*N + k*N + j];
+                result->data[n*M*N + i*N + j] = sum;
             }
-        }
-    }
     
     if (result->requires_grad) tape.entries[tape.len++] = (TapeEntry){MATMUL, result, a, b};
     return result;
@@ -74,18 +69,16 @@ Tensor* tensor_matmul(Tensor* a, Tensor* b) {
 
 Tensor* tensor_exp(Tensor* a) {
     Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
-    for (int i = 0; i < a->size; i++) {
-        result->data[i] = expf(fmaxf(fminf(a->data[i], 88.0f), -88.0f));
-    }
+    for (int i = 0; i < a->size; i++)
+        result->data[i] = expf(fmaxf(fminf(a->data[i], MAX_EXP), -MAX_EXP));
     if (result->requires_grad) tape.entries[tape.len++] = (TapeEntry){EXP, result, a, NULL};
     return result;
 }
 
 Tensor* tensor_log(Tensor* a) {
     Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
-    for (int i = 0; i < a->size; i++) {
-        result->data[i] = logf(fmaxf(a->data[i], 1e-7f));
-    }
+    for (int i = 0; i < a->size; i++)
+        result->data[i] = logf(fmaxf(a->data[i], MIN_LOG));
     if (result->requires_grad) tape.entries[tape.len++] = (TapeEntry){LOG, result, a, NULL};
     return result;
 }
@@ -105,57 +98,46 @@ void backward() {
         
         switch (entry->op) {
             case MATMUL: {
+                int M = a->dims[a->ndims-2], K = a->dims[a->ndims-1], N = b->dims[b->ndims-1];
+                int batch = result->size / (M * N);
+                
                 if (a->requires_grad) {
                     if (!a->grad) a->grad = calloc(a->size, sizeof(float));
-                    int M = a->dims[a->ndims-2], K = a->dims[a->ndims-1], N = b->dims[b->ndims-1];
-                    int batch_size = result->size / (M * N);
-                    
-                    for (int batch = 0; batch < batch_size; batch++) {
-                        for (int i = 0; i < M; i++) {
+                    for (int n = 0; n < batch; n++)
+                        for (int i = 0; i < M; i++)
                             for (int k = 0; k < K; k++) {
                                 float sum = 0;
-                                for (int j = 0; j < N; j++) {
-                                    sum += result->grad[batch*M*N + i*N + j] * b->data[batch*K*N + k*N + j];
-                                }
-                                a->grad[batch*M*K + i*K + k] += sum;
+                                for (int j = 0; j < N; j++)
+                                    sum += result->grad[n*M*N + i*N + j] * b->data[n*K*N + k*N + j];
+                                a->grad[n*M*K + i*K + k] += sum;
                             }
-                        }
-                    }
                 }
                 
                 if (b->requires_grad) {
                     if (!b->grad) b->grad = calloc(b->size, sizeof(float));
-                    int M = a->dims[a->ndims-2], K = a->dims[a->ndims-1], N = b->dims[b->ndims-1];
-                    int batch_size = result->size / (M * N);
-                    
-                    for (int batch = 0; batch < batch_size; batch++) {
-                        for (int k = 0; k < K; k++) {
+                    for (int n = 0; n < batch; n++)
+                        for (int k = 0; k < K; k++)
                             for (int j = 0; j < N; j++) {
                                 float sum = 0;
-                                for (int i = 0; i < M; i++) {
-                                    sum += a->data[batch*M*K + i*K + k] * result->grad[batch*M*N + i*N + j];
-                                }
-                                b->grad[batch*K*N + k*N + j] += sum;
+                                for (int i = 0; i < M; i++)
+                                    sum += a->data[n*M*K + i*K + k] * result->grad[n*M*N + i*N + j];
+                                b->grad[n*K*N + k*N + j] += sum;
                             }
-                        }
-                    }
                 }
                 break;
             }
             case EXP:
                 if (a->requires_grad) {
                     if (!a->grad) a->grad = calloc(a->size, sizeof(float));
-                    for (int i = 0; i < a->size; i++) {
+                    for (int i = 0; i < a->size; i++)
                         a->grad[i] += result->grad[i] * result->data[i];
-                    }
                 }
                 break;
             case LOG:
                 if (a->requires_grad) {
                     if (!a->grad) a->grad = calloc(a->size, sizeof(float));
-                    for (int i = 0; i < a->size; i++) {
-                        a->grad[i] += result->grad[i] / fmaxf(a->data[i], 1e-7f);
-                    }
+                    for (int i = 0; i < a->size; i++)
+                        a->grad[i] += result->grad[i] / fmaxf(a->data[i], MIN_LOG);
                 }
                 break;
         }
@@ -166,12 +148,12 @@ void print_tensor(const Tensor* t, const char* name) {
     printf("%s: dims=[", name);
     for (int i = 0; i < t->ndims; i++) printf("%d%s", t->dims[i], i < t->ndims-1 ? "," : "");
     printf("]\nData (first few elements):\n");
-    for (int i = 0; i < t->size && i < 10; i++) printf("%8.4f ", t->data[i]);
+    for (int i = 0; i < fmin(t->size, 10); i++) printf("%8.4f ", t->data[i]);
     if (t->size > 10) printf("...");
     printf("\n");
     if (t->grad) {
         printf("Gradients (first few elements):\n");
-        for (int i = 0; i < t->size && i < 10; i++) printf("%8.4f ", t->grad[i]);
+        for (int i = 0; i < fmin(t->size, 10); i++) printf("%8.4f ", t->grad[i]);
         if (t->size > 10) printf("...");
         printf("\n");
     }
@@ -182,9 +164,8 @@ int main() {
     // Test 1: 2D Matrix Multiplication
     {
         printf("Test 1: 2D Matrix Multiplication\n");
+        float data1[] = {1.0f, 2.0f, 3.0f, 4.0f}, data2[] = {0.5f, 0.5f, 0.5f, 0.5f};
         int dims[] = {2, 2};
-        float data1[] = {1.0f, 2.0f, 3.0f, 4.0f};
-        float data2[] = {0.5f, 0.5f, 0.5f, 0.5f};
         
         Tensor *a = tensor_new(2, dims, data1, 1);
         Tensor *b = tensor_new(2, dims, data2, 1);
@@ -202,7 +183,6 @@ int main() {
         print_tensor(e, "E = log(D)");
         
         backward();
-        
         printf("\nAfter backward pass:\n");
         print_tensor(a, "A (with gradients)");
         print_tensor(b, "B (with gradients)");
@@ -218,8 +198,8 @@ int main() {
         float *data1 = malloc(24 * sizeof(float));
         float *data2 = malloc(16 * sizeof(float));
         
-        for (int i = 0; i < 24; i++) data1[i] = (float)i / 10.0f;
-        for (int i = 0; i < 16; i++) data2[i] = (float)i / 20.0f;
+        for (int i = 0; i < 24; i++) data1[i] = i / 10.0f;
+        for (int i = 0; i < 16; i++) data2[i] = i / 20.0f;
         
         Tensor *a = tensor_new(3, dims1, data1, 1);
         Tensor *b = tensor_new(3, dims2, data2, 1);
@@ -235,7 +215,6 @@ int main() {
         print_tensor(d, "D = exp(C)");
         
         backward();
-        
         printf("\nAfter backward pass:\n");
         print_tensor(a, "A (with gradients)");
         print_tensor(b, "B (with gradients)");
@@ -252,8 +231,8 @@ int main() {
         float *data1 = malloc(120 * sizeof(float));
         float *data2 = malloc(90 * sizeof(float));
         
-        for (int i = 0; i < 120; i++) data1[i] = (float)i / 100.0f;
-        for (int i = 0; i < 90; i++) data2[i] = (float)i / 100.0f;
+        for (int i = 0; i < 120; i++) data1[i] = i / 100.0f;
+        for (int i = 0; i < 90; i++) data2[i] = i / 100.0f;
         
         Tensor *a = tensor_new(4, dims1, data1, 1);
         Tensor *b = tensor_new(4, dims2, data2, 1);
@@ -269,7 +248,6 @@ int main() {
         print_tensor(d, "D = log(C)");
         
         backward();
-        
         printf("\nAfter backward pass:\n");
         print_tensor(a, "A (with gradients)");
         print_tensor(b, "B (with gradients)");
