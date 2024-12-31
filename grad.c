@@ -212,14 +212,10 @@ void backward() {
                         a->grad[i] += result->grad[i];
                 break;
             case PERMUTE:
-                if (a->requires_grad && entry->perm) {
-                    Tensor* grad_tensor = tensor_new(result->ndims, result->dims, result->grad, 0);
-                    if (grad_tensor) {
-                        Tensor* permuted_grad = tensor_permute(grad_tensor, entry->perm);
-                        if (permuted_grad)
-                            for (int i = 0; i < a->size; i++)
-                                a->grad[i] += permuted_grad->data[i];
-                    }
+                if (a->requires_grad) {
+                    Tensor* permuted_grad = tensor_permute(tensor_new(result->ndims, result->dims, result->grad, 0), entry->perm);
+                    for (int i = 0; i < a->size; i++)
+                        a->grad[i] += permuted_grad->data[i];
                 }
                 free(entry->perm);
                 break;
