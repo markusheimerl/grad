@@ -8,7 +8,7 @@
 #define MIN_LOG 1e-7f
 #define MAX_EXP 88.0f
 
-typedef enum { MATMUL, EXP, LOG, ADD } OpType;
+typedef enum { MATMUL, EXP, LOG, ADD, RESHAPE } OpType;
 
 typedef struct Tensor {
     float *data, *grad;
@@ -109,21 +109,33 @@ Tensor* tensor_log(Tensor* a) {
     return result;
 }
 
+// Helper function to validate reshape dimensions
+int validate_reshape_dims(const Tensor* t, int ndims, const int* new_dims) {
+    int total_size = 1;
+    for (int i = 0; i < ndims; i++) {
+        if (new_dims[i] < 1) return 0;  // Invalid dimension
+        total_size *= new_dims[i];
+    }
+    return total_size == t->size;  // New shape must preserve total size
+}
+
+Tensor* tensor_reshape(Tensor* a, int ndims, const int* new_dims) {
+    if (!validate_reshape_dims(a, ndims, new_dims)) return NULL;
+    
+    Tensor* result = tensor_new(ndims, new_dims, NULL, a->requires_grad);
+    memcpy(result->data, a->data, a->size * sizeof(float));
+    
+    if (result->requires_grad) {
+        tape.entries[tape.len++] = (TapeEntry){RESHAPE, result, a, NULL};
+    }
+    
+    return result;
+}
+
 Tensor* tensor_hadamard(Tensor* a, Tensor* b) {
     if (a->ndims != b->ndims) return NULL;
     for (int i = 0; i < a->ndims; i++) if (a->dims[i] != b->dims[i]) return NULL;
     return tensor_exp(tensor_add(tensor_log(a), tensor_log(b)));
-}
-
-Tensor* tensor_reshape(Tensor* a, int ndims, const int* new_dims) {
-    int new_size = 1;
-    for (int i = 0; i < ndims; i++) new_size *= new_dims[i];
-    if (new_size != a->size) return NULL;
-    Tensor* intermediate = tensor_new(ndims, new_dims, a->data, a->requires_grad);
-    float zeros[new_size];
-    memset(zeros, 0, new_size * sizeof(float));
-    Tensor* zero_tensor = tensor_new(ndims, new_dims, zeros, 0);
-    return tensor_add(intermediate, zero_tensor);
 }
 
 void backward() {
@@ -193,6 +205,16 @@ void backward() {
                         a->grad[i] += result->grad[i] / fmaxf(a->data[i], MIN_LOG);
                 }
                 break;
+            case RESHAPE: {
+                if (a->requires_grad) {
+                    if (!a->grad) a->grad = calloc(a->size, sizeof(float));
+                    // For reshape, we just need to copy the gradients while preserving the order
+                    for (int i = 0; i < a->size; i++) {
+                        a->grad[i] += result->grad[i];
+                    }
+                }
+                break;
+            }
         }
     }
     tape.len = 0;
@@ -297,6 +319,33 @@ int main() {
         printf("Direct multiplication verification for first few elements: ");
         for (int i = 0; i < 5; i++) printf("%.4f ", data1[i] * data2[i]);
         printf("\n\n");
+        
+        backward();
+        printf("After backward:\n");
+        print_tensor(a, "A");
+        print_tensor(b, "B");
+    }
+
+    // Test 4: Reshape Operation
+    {
+        printf("\nTest 4: Reshape Operation\n");
+        // Start with a 2x3x4 tensor
+        float data[24];
+        for (int i = 0; i < 24; i++) {
+            data[i] = (float)(i + 1) * 0.1f;
+        }
+        int orig_dims[] = {2,3,4};
+        int new_dims[] = {4,6};  // Reshape to 4x6
+        
+        Tensor *a = tensor_new(3, orig_dims, data, 1);
+        Tensor *b = tensor_reshape(a, 2, new_dims);
+        Tensor *c = tensor_exp(b);
+        
+        print_tensor(a, "A (original)");
+        print_tensor(b, "B (reshaped)");
+        print_tensor(c, "C = exp(B)");
+        
+        for (int i = 0; i < c->size; i++) c->grad[i] = 1.0f;
         
         backward();
         printf("After backward:\n");
