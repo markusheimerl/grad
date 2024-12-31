@@ -211,6 +211,55 @@ Tensor* tensor_hadamard(Tensor* a, Tensor* b) {
     return tensor_exp(tensor_add(tensor_log(a), tensor_log(b)));
 }
 
+Tensor* tensor_ones(int ndims, const int* dims) {
+    Tensor* t = tensor_new(ndims, dims, NULL, 0);  // no grad needed for ones
+    for (int i = 0; i < t->size; i++) 
+        t->data[i] = 1.0f;
+    return t;
+}
+
+Tensor* tensor_reduce_sum(Tensor* a, int axis) {
+    if (axis < 0 || axis >= a->ndims) return NULL;
+    
+    // Create permutation to move the reduction axis to the end
+    int* perm = malloc(a->ndims * sizeof(int));
+    int j = 0;
+    for (int i = 0; i < a->ndims; i++)
+        if (i != axis) perm[j++] = i;
+    perm[a->ndims-1] = axis;
+    
+    // Permute the tensor to move reduction axis to the end
+    Tensor* permuted = tensor_permute(a, perm);
+    free(perm);
+    
+    // Reshape to 2D tensor where the last dimension is the reduction axis
+    int new_rows = 1;
+    for (int i = 0; i < a->ndims-1; i++)
+        new_rows *= permuted->dims[i];
+    int new_cols = permuted->dims[a->ndims-1];
+    
+    int reshape_dims[] = {new_rows, new_cols};
+    Tensor* reshaped = tensor_reshape(permuted, 2, reshape_dims);
+    
+    // Create a column vector of ones with shape (new_cols, 1)
+    int ones_dims[] = {new_cols, 1};
+    Tensor* ones = tensor_ones(2, ones_dims);
+    
+    // Matmul will sum along the reduction axis
+    Tensor* result = tensor_matmul(reshaped, ones);
+    
+    // Reshape back to original dimensions minus the reduced axis
+    int* final_dims = malloc((a->ndims-1) * sizeof(int));
+    j = 0;
+    for (int i = 0; i < a->ndims; i++)
+        if (i != axis) final_dims[j++] = a->dims[i];
+    
+    Tensor* final_result = tensor_reshape(result, a->ndims-1, final_dims);
+    free(final_dims);
+    
+    return final_result;
+}
+
 void print_tensor(Tensor* t, const char* name) {
     printf("%s: shape(", name);
     for (int i = 0; i < t->ndims; i++) 
@@ -222,59 +271,65 @@ void print_tensor(Tensor* t, const char* name) {
 }
 
 int main() {
-    const int b = 2, c = 3, h = 4, w = 5;
-    const int dims4d[] = {b, c, h, w};
-    const int size = b * c * h * w;
+    // Create a 3D tensor with shape (2, 3, 4)
+    const int dims[] = {2, 3, 4};
+    const int size = 24;  // 2 * 3 * 4
     
-    float *data1 = malloc(size * sizeof(float));
-    float *data2 = malloc(size * sizeof(float));
-    for (int i = 0; i < size; i++) 
-        data1[i] = data2[i] = (float)(i % 10) / 10.0f + 0.5f;
+    // Initialize data with increasing values
+    float* data = malloc(size * sizeof(float));
+    for (int i = 0; i < size; i++) {
+        data[i] = i + 1;
+    }
     
-    Tensor* input1 = tensor_new(4, dims4d, data1, 1);
-    print_tensor(input1, "input1");
+    // Create input tensor
+    Tensor* input = tensor_new(3, dims, data, 1);
+    printf("Original tensor:\n");
+    print_tensor(input, "input");
     
-    const int perm[] = {0, 3, 1, 2};
-    Tensor* permuted = tensor_permute(input1, perm);
-    print_tensor(permuted, "permuted");
+    // Print the actual values for better visualization
+    printf("\nOriginal tensor values:\n");
+    for (int i = 0; i < dims[0]; i++) {
+        printf("i=%d:\n", i);
+        for (int j = 0; j < dims[1]; j++) {
+            for (int k = 0; k < dims[2]; k++) {
+                printf("%.1f ", input->data[i*dims[1]*dims[2] + j*dims[2] + k]);
+            }
+            printf("\n");
+        }
+        printf("\n");
+    }
     
-    int permuted_dims[] = {b, w, c, h};
-    Tensor* input2 = tensor_new(4, permuted_dims, data2, 1);
+    // Reduce sum along different axes
+    printf("\nReducing along different axes:\n");
     
-    Tensor* sum = tensor_add(permuted, input2);
-    print_tensor(sum, "sum");
+    // Reduce along axis 0 (first dimension)
+    Tensor* reduced0 = tensor_reduce_sum(input, 0);
+    print_tensor(reduced0, "reduced_axis0");
     
-    const int reshape_dims[] = {b, c * h * w};
-    Tensor* reshaped = tensor_reshape(sum, 2, reshape_dims);
-    print_tensor(reshaped, "reshaped");
+    // Reduce along axis 1 (middle dimension)
+    Tensor* reduced1 = tensor_reduce_sum(input, 1);
+    print_tensor(reduced1, "reduced_axis1");
     
-    const int matrix_dims[] = {c * h * w, 10};
-    float* matrix_data = malloc(matrix_dims[0] * matrix_dims[1] * sizeof(float));
-    for (int i = 0; i < matrix_dims[0] * matrix_dims[1]; i++) 
-        matrix_data[i] = (float)(i % 10) / 20.0f;
+    // Reduce along axis 2 (last dimension)
+    Tensor* reduced2 = tensor_reduce_sum(input, 2);
+    print_tensor(reduced2, "reduced_axis2");
     
-    Tensor* weight_matrix = tensor_new(2, matrix_dims, matrix_data, 1);
-    Tensor* matmul_result = tensor_matmul(reshaped, weight_matrix);
-    print_tensor(matmul_result, "matmul");
+    // Test backpropagation
+    printf("\nTesting backpropagation:\n");
     
-    Tensor* final = tensor_hadamard(
-        tensor_log(tensor_exp(matmul_result)),
-        tensor_log(tensor_exp(matmul_result))
-    );
-    print_tensor(final, "final");
+    // Set gradients of reduced tensor to 1.0
+    for (int i = 0; i < reduced1->size; i++) {
+        reduced1->grad[i] = 1.0f;
+    }
     
-    for (int i = 0; i < final->size; i++) 
-        final->grad[i] = 1.0f;
-    
+    // Perform backward pass
     backward();
     
-    printf("\nGradients:\n");
-    print_tensor(input1, "input1");
-    print_tensor(weight_matrix, "weight");
+    // Print input gradients
+    print_tensor(input, "input_grad");
     
-    free(data1);
-    free(data2);
-    free(matrix_data);
+    // Clean up
+    free(data);
     clean_registry();
     return 0;
 }
