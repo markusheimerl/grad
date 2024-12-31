@@ -125,43 +125,23 @@ Tensor* tensor_reshape(Tensor* a, int ndims, const int* new_dims) {
 }
 
 Tensor* tensor_permute(Tensor* a, const int* perm) {
-    if (!a || !perm || a->ndims <= 1) 
-        return a ? tensor_new(a->ndims, a->dims, a->data, a->requires_grad) : NULL;
-    
-    char used[MAX_DIMS] = {0};
-    for (int i = 0; i < a->ndims; i++) {
-        if (perm[i] < 0 || perm[i] >= a->ndims || used[perm[i]]) return NULL;
-        used[perm[i]] = 1;
+    if (!a || !perm || a->ndims <= 1) return a ? tensor_new(a->ndims, a->dims, a->data, a->requires_grad) : NULL;
+    char u[MAX_DIMS] = {0}; int d[MAX_DIMS], o[MAX_DIMS], n[MAX_DIMS], j, t;
+    for (int i = 0; i < a->ndims; i++) if (perm[i] < 0 || perm[i] >= a->ndims || u[perm[i]]) return NULL; else u[perm[i]] = 1;
+    for (int i = 0; i < a->ndims; i++) d[i] = a->dims[perm[i]];
+    Tensor* r = tensor_new(a->ndims, d, NULL, a->requires_grad);
+    for (int i = 0; i < a->size; i++) {
+        for (t = i, j = a->ndims-1; j >= 0; j--) { o[j] = t % a->dims[j]; t /= a->dims[j]; }
+        for (j = 0; j < a->ndims; j++) n[j] = o[perm[j]];
+        for (t = 0, j = 0; j < a->ndims; j++) t = t * d[j] + n[j];
+        r->data[t] = a->data[i];
     }
-
-    int new_dims[MAX_DIMS], old_strides[MAX_DIMS], new_strides[MAX_DIMS];
-    for (int i = 0; i < a->ndims; i++) new_dims[i] = a->dims[perm[i]];
-    
-    Tensor* result = tensor_new(a->ndims, new_dims, NULL, a->requires_grad);
-    
-    old_strides[a->ndims - 1] = new_strides[a->ndims - 1] = 1;
-    for (int i = a->ndims - 2; i >= 0; i--) {
-        old_strides[i] = old_strides[i + 1] * a->dims[i + 1];
-        new_strides[i] = new_strides[i + 1] * new_dims[i + 1];
+    if (r->requires_grad) {
+        int* p = malloc(a->ndims * sizeof(int));
+        for (int i = 0; i < a->ndims; i++) p[perm[i]] = i;
+        tape[tape_len++] = (TapeEntry){PERMUTE, r, a, NULL, p};
     }
-
-    for (int idx = 0; idx < a->size; idx++) {
-        int coords[MAX_DIMS], temp = idx, new_idx = 0;
-        for (int i = 0; i < a->ndims; i++) {
-            coords[i] = temp / old_strides[i];
-            temp %= old_strides[i];
-        }
-        for (int i = 0; i < a->ndims; i++) 
-            new_idx += coords[perm[i]] * new_strides[i];
-        result->data[new_idx] = a->data[idx];
-    }
-
-    if (result->requires_grad) {
-        int* inv_perm = malloc(a->ndims * sizeof(int));
-        for (int i = 0; i < a->ndims; i++) inv_perm[perm[i]] = i;
-        tape[tape_len++] = (TapeEntry){PERMUTE, result, a, NULL, inv_perm};
-    }
-    return result;
+    return r;
 }
 
 void backward() {
