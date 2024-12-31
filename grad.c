@@ -4,6 +4,7 @@
 #include <math.h>
 
 #define MAX_TAPE 1000
+#define MAX_TENSORS 1000
 #define MIN_LOG 1e-7f
 #define MAX_EXP 88.0f
 
@@ -25,12 +26,10 @@ static struct {
     int len;
 } tape = {0};
 
-#define MAX_TENSORS 1000
-
 static struct {
     Tensor* tensors[MAX_TENSORS];
     int len;
-} tensor_registry = {0};
+} registry = {0};
 
 Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_grad) {
     Tensor* t = calloc(1, sizeof(Tensor));
@@ -42,32 +41,20 @@ Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_g
     t->data = malloc(t->size * sizeof(float));
     if (data) memcpy(t->data, data, t->size * sizeof(float));
     if ((t->requires_grad = requires_grad)) t->grad = calloc(t->size, sizeof(float));
-    
-    // Register the tensor
-    if (tensor_registry.len < MAX_TENSORS) {
-        tensor_registry.tensors[tensor_registry.len++] = t;
-    }
-    
+    if (registry.len < MAX_TENSORS) registry.tensors[registry.len++] = t;
     return t;
 }
 
-void tensor_free(Tensor* t) {
-    if (!t) return;
-    free(t->data);
-    free(t->grad);
-    free(t->dims);
-    free(t);
-}
-
 void clean_registry() {
-    // Free all tensors in the registry
-    for (int i = 0; i < tensor_registry.len; i++) {
-        if (tensor_registry.tensors[i]) {
-            tensor_free(tensor_registry.tensors[i]);
-            tensor_registry.tensors[i] = NULL;
+    for (int i = 0; i < registry.len; i++) {
+        if (registry.tensors[i]) {
+            free(registry.tensors[i]->data);
+            free(registry.tensors[i]->grad);
+            free(registry.tensors[i]->dims);
+            free(registry.tensors[i]);
         }
     }
-    tensor_registry.len = 0;
+    registry.len = 0;
 }
 
 Tensor* tensor_add(Tensor* a, Tensor* b) {
@@ -110,18 +97,22 @@ Tensor* tensor_matmul(Tensor* a, Tensor* b) {
 
 Tensor* tensor_exp(Tensor* a) {
     Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
-    for (int i = 0; i < a->size; i++)
-        result->data[i] = expf(fminf(a->data[i], MAX_EXP));
+    for (int i = 0; i < a->size; i++) result->data[i] = expf(fminf(a->data[i], MAX_EXP));
     if (result->requires_grad) tape.entries[tape.len++] = (TapeEntry){EXP, result, a, NULL};
     return result;
 }
 
 Tensor* tensor_log(Tensor* a) {
     Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
-    for (int i = 0; i < a->size; i++)
-        result->data[i] = logf(fmaxf(a->data[i], MIN_LOG));
+    for (int i = 0; i < a->size; i++) result->data[i] = logf(fmaxf(a->data[i], MIN_LOG));
     if (result->requires_grad) tape.entries[tape.len++] = (TapeEntry){LOG, result, a, NULL};
     return result;
+}
+
+Tensor* tensor_hadamard(Tensor* a, Tensor* b) {
+    if (a->ndims != b->ndims) return NULL;
+    for (int i = 0; i < a->ndims; i++) if (a->dims[i] != b->dims[i]) return NULL;
+    return tensor_exp(tensor_add(tensor_log(a), tensor_log(b)));
 }
 
 void backward() {
@@ -196,17 +187,6 @@ void backward() {
     tape.len = 0;
 }
 
-Tensor* tensor_hadamard(Tensor* a, Tensor* b) {
-    if (a->ndims != b->ndims) return NULL;
-    for (int i = 0; i < a->ndims; i++) if (a->dims[i] != b->dims[i]) return NULL;
-    
-    Tensor *log_a = tensor_log(a);
-    Tensor *log_b = tensor_log(b);
-    Tensor *sum_logs = tensor_add(log_a, log_b);
-    Tensor *result = tensor_exp(sum_logs);
-    return result;
-}
-
 void print_tensor(const Tensor* t, const char* name) {
     printf("%s: dims=[", name);
     for (int i = 0; i < t->ndims; i++) printf("%d%s", t->dims[i], i < t->ndims-1 ? "," : "");
@@ -220,7 +200,7 @@ void print_tensor(const Tensor* t, const char* name) {
 }
 
 int main() {
-    // Test 1: 2D Matrix Multiplication
+    // Test 1: Matrix Multiplication
     {
         printf("\nTest 1: 2D Matrix Multiplication\n");
         float data1[] = {1.0f, 2.0f, 3.0f, 4.0f};
@@ -245,7 +225,7 @@ int main() {
         print_tensor(b, "B");
     }
 
-    // Test 2: Element-wise Addition
+    // Test 2: Addition
     {
         printf("\nTest 2: Element-wise Addition\n");
         float data1[] = {1.0f, 2.0f, 3.0f, 4.0f};
@@ -270,7 +250,7 @@ int main() {
         print_tensor(b, "B");
     }
 
-    // Test 3: Hadamard Product
+    // Test 3: Hadamard
     {
         printf("\nTest 3: Hadamard Product\n");
         float data1[] = {1.0f, 2.0f, 3.0f, 4.0f};
@@ -298,6 +278,5 @@ int main() {
     }
 
     clean_registry();
-    
     return 0;
 }
