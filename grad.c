@@ -20,13 +20,9 @@ typedef struct {
     Tensor *result, *input1, *input2;
 } TapeEntry;
 
-#define MAX_TENSORS 1000
-
 static struct {
     TapeEntry entries[MAX_TAPE];
     int len;
-    Tensor* freed_tensors[MAX_TENSORS];
-    int freed_count;
 } tape = {0};
 
 Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_grad) {
@@ -48,34 +44,6 @@ void tensor_free(Tensor* t) {
     free(t->grad);
     free(t->dims);
     free(t);
-}
-
-void tape_free() {
-    if (tape.len == 0) return;
-    tape.freed_count = 0;
-
-    for (int i = 0; i < tape.len; i++) {
-        TapeEntry* entry = &tape.entries[i];
-        
-        // Helper function to safely free a tensor
-        void safe_free(Tensor* t) {
-            if (!t) return;
-            // Check if this tensor was already freed
-            for (int j = 0; j < tape.freed_count; j++) {
-                if (tape.freed_tensors[j] == t) return;
-            }
-            // If not freed yet, free it and record it
-            tensor_free(t);
-            tape.freed_tensors[tape.freed_count++] = t;
-        }
-
-        safe_free(entry->result);
-        safe_free(entry->input1);
-        safe_free(entry->input2);
-    }
-
-    tape.len = 0;
-    tape.freed_count = 0;
 }
 
 Tensor* tensor_add(Tensor* a, Tensor* b) {
@@ -119,7 +87,7 @@ Tensor* tensor_matmul(Tensor* a, Tensor* b) {
 Tensor* tensor_exp(Tensor* a) {
     Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
     for (int i = 0; i < a->size; i++)
-        result->data[i] = expf(fmaxf(fminf(a->data[i], MAX_EXP), -MAX_EXP));
+        result->data[i] = expf(fminf(a->data[i], MAX_EXP));
     if (result->requires_grad) tape.entries[tape.len++] = (TapeEntry){EXP, result, a, NULL};
     return result;
 }
@@ -201,13 +169,15 @@ void backward() {
                 break;
         }
     }
+    tape.len = 0;
 }
 
 Tensor* tensor_hadamard(Tensor* a, Tensor* b) {
     if (a->ndims != b->ndims) return NULL;
     for (int i = 0; i < a->ndims; i++) if (a->dims[i] != b->dims[i]) return NULL;
     
-    Tensor *log_a = tensor_log(a), *log_b = tensor_log(b);
+    Tensor *log_a = tensor_log(a);
+    Tensor *log_b = tensor_log(b);
     Tensor *sum_logs = tensor_add(log_a, log_b);
     Tensor *result = tensor_exp(sum_logs);
     return result;
@@ -217,79 +187,43 @@ void print_tensor(const Tensor* t, const char* name) {
     printf("%s: dims=[", name);
     for (int i = 0; i < t->ndims; i++) printf("%d%s", t->dims[i], i < t->ndims-1 ? "," : "");
     printf("]\nData: ");
-    for (int i = 0; i < fmin(t->size, 10); i++) printf("%8.4f ", t->data[i]);
-    if (t->size > 10) printf("...");
-    printf("\n");
+    for (int i = 0; i < t->size; i++) printf("%.4f ", t->data[i]);
     if (t->grad) {
-        printf("Grad: ");
-        for (int i = 0; i < fmin(t->size, 10); i++) printf("%8.4f ", t->grad[i]);
-        if (t->size > 10) printf("...");
-        printf("\n");
+        printf("\nGrad: ");
+        for (int i = 0; i < t->size; i++) printf("%.4f ", t->grad[i]);
     }
-    printf("\n");
+    printf("\n\n");
 }
 
 int main() {
     // Test 1: 2D Matrix Multiplication
     {
-        float data1[] = {1.0f, 2.0f, 3.0f, 4.0f}, data2[] = {0.5f, 0.5f, 0.5f, 0.5f};
+        printf("\nTest 1: 2D Matrix Multiplication\n");
+        float data1[] = {1.0f, 2.0f, 3.0f, 4.0f};
+        float data2[] = {0.5f, 0.5f, 0.5f, 0.5f};
         int dims[] = {2, 2};
         
-        printf("\nTest 1: 2D Matrix Multiplication\n");
         Tensor *a = tensor_new(2, dims, data1, 1);
         Tensor *b = tensor_new(2, dims, data2, 1);
         Tensor *c = tensor_matmul(a, b);
         Tensor *d = tensor_exp(c);
-        Tensor *e = tensor_log(d);
         
-        e->grad = calloc(e->size, sizeof(float));
-        e->grad[0] = 1.0f;
-        
-        print_tensor(a, "A"); print_tensor(b, "B");
-        print_tensor(c, "C = A @ B");
-        print_tensor(d, "D = exp(C)");
-        print_tensor(e, "E = log(D)");
-        
-        backward();
-        printf("After backward:\n");
-        print_tensor(a, "A"); print_tensor(b, "B");
-        
-        tape_free();
-    }
-
-    // Test 2: 3D Tensor Multiplication
-    {
-        printf("\nTest 2: 3D Tensor Multiplication\n");
-        int dims1[] = {2, 3, 4}, dims2[] = {2, 4, 2};
-        float *data1 = malloc(24 * sizeof(float));
-        float *data2 = malloc(16 * sizeof(float));
-        
-        for (int i = 0; i < 24; i++) data1[i] = i / 10.0f;
-        for (int i = 0; i < 16; i++) data2[i] = i / 20.0f;
-        
-        Tensor *a = tensor_new(3, dims1, data1, 1);
-        Tensor *b = tensor_new(3, dims2, data2, 1);
-        Tensor *c = tensor_matmul(a, b);
-        Tensor *d = tensor_exp(c);
-        
-        d->grad = calloc(d->size, sizeof(float));
         for (int i = 0; i < d->size; i++) d->grad[i] = 1.0f;
         
-        print_tensor(a, "A"); print_tensor(b, "B");
+        print_tensor(a, "A");
+        print_tensor(b, "B");
         print_tensor(c, "C = A @ B");
         print_tensor(d, "D = exp(C)");
         
         backward();
         printf("After backward:\n");
-        print_tensor(a, "A"); print_tensor(b, "B");
-        
-        free(data1); free(data2);
-        tape_free();
+        print_tensor(a, "A");
+        print_tensor(b, "B");
     }
 
-    // Test 3: Element-wise Addition
+    // Test 2: Element-wise Addition
     {
-        printf("\nTest 3: Element-wise Addition\n");
+        printf("\nTest 2: Element-wise Addition\n");
         float data1[] = {1.0f, 2.0f, 3.0f, 4.0f};
         float data2[] = {0.5f, 0.5f, 0.5f, 0.5f};
         int dims[] = {2, 2};
@@ -299,23 +233,22 @@ int main() {
         Tensor *c = tensor_add(a, b);
         Tensor *d = tensor_exp(c);
         
-        d->grad = calloc(d->size, sizeof(float));
         for (int i = 0; i < d->size; i++) d->grad[i] = 1.0f;
         
-        print_tensor(a, "A"); print_tensor(b, "B");
+        print_tensor(a, "A");
+        print_tensor(b, "B");
         print_tensor(c, "C = A + B");
         print_tensor(d, "D = exp(C)");
         
         backward();
         printf("After backward:\n");
-        print_tensor(a, "A"); print_tensor(b, "B");
-        
-        tape_free();
+        print_tensor(a, "A");
+        print_tensor(b, "B");
     }
 
-    // Test 4: Hadamard Product
+    // Test 3: Hadamard Product
     {
-        printf("\nTest 4: Hadamard Product\n");
+        printf("\nTest 3: Hadamard Product\n");
         float data1[] = {1.0f, 2.0f, 3.0f, 4.0f};
         float data2[] = {0.5f, 1.5f, 2.5f, 3.5f};
         int dims[] = {2, 2};
@@ -324,21 +257,20 @@ int main() {
         Tensor *b = tensor_new(2, dims, data2, 1);
         Tensor *c = tensor_hadamard(a, b);
         
-        c->grad = calloc(c->size, sizeof(float));
         for (int i = 0; i < c->size; i++) c->grad[i] = 1.0f;
         
-        print_tensor(a, "A"); print_tensor(b, "B");
+        print_tensor(a, "A");
+        print_tensor(b, "B");
         print_tensor(c, "C = A ⊙ B");
         
         printf("Direct multiplication verification: ");
-        for (int i = 0; i < 4; i++) printf("%8.4f ", data1[i] * data2[i]);
-        printf("\n");
+        for (int i = 0; i < 4; i++) printf("%.4f ", data1[i] * data2[i]);
+        printf("\n\n");
         
         backward();
         printf("After backward:\n");
-        print_tensor(a, "A"); print_tensor(b, "B");
-        
-        tape_free();
+        print_tensor(a, "A");
+        print_tensor(b, "B");
     }
     
     return 0;
