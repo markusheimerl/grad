@@ -115,13 +115,6 @@ Tensor* tensor_hadamard(Tensor* a, Tensor* b) {
     return tensor_exp(tensor_add(tensor_log(a), tensor_log(b)));
 }
 
-Tensor* tensor_reduce_sum(Tensor* a, int dim) {
-    if (dim < 0 || dim >= a->ndims) return NULL;
-    float ones_data[a->dims[dim]];
-    for (int i = 0; i < a->dims[dim]; i++) ones_data[i] = 1.0f;
-    return tensor_matmul(a, tensor_new(2, (int[2]){a->dims[dim], 1}, ones_data, 0));
-}
-
 void backward() {
     if (!tape.len) return;
     
@@ -207,15 +200,23 @@ void print_tensor(const Tensor* t, const char* name) {
 }
 
 int main() {
-    // Test 1: Matrix Multiplication
+    // Test 1: 3D Batch Matrix Multiplication
     {
-        printf("\nTest 1: 2D Matrix Multiplication\n");
-        float data1[] = {1.0f, 2.0f, 3.0f, 4.0f};
-        float data2[] = {0.5f, 0.5f, 0.5f, 0.5f};
-        int dims[] = {2, 2};
+        printf("\nTest 1: 3D Batch Matrix Multiplication\n");
+        // 2 batches, each 3x4 @ 4x3 matrices
+        float data1[] = {
+            1,2,3,4, 5,6,7,8, 9,10,11,12,  // batch 1
+            2,3,4,5, 6,7,8,9, 10,11,12,13  // batch 2
+        };
+        float data2[] = {
+            0.5,0.6,0.7, 0.8,0.9,1.0, 1.1,1.2,1.3, 1.4,1.5,1.6,  // batch 1
+            0.4,0.5,0.6, 0.7,0.8,0.9, 1.0,1.1,1.2, 1.3,1.4,1.5   // batch 2
+        };
+        int dims1[] = {2,3,4}; // batch_size x M x K
+        int dims2[] = {2,4,3}; // batch_size x K x N
         
-        Tensor *a = tensor_new(2, dims, data1, 1);
-        Tensor *b = tensor_new(2, dims, data2, 1);
+        Tensor *a = tensor_new(3, dims1, data1, 1);
+        Tensor *b = tensor_new(3, dims2, data2, 1);
         Tensor *c = tensor_matmul(a, b);
         Tensor *d = tensor_exp(c);
         
@@ -232,15 +233,19 @@ int main() {
         print_tensor(b, "B");
     }
 
-    // Test 2: Addition
+    // Test 2: 4D Tensor Addition
     {
-        printf("\nTest 2: Element-wise Addition\n");
-        float data1[] = {1.0f, 2.0f, 3.0f, 4.0f};
-        float data2[] = {0.5f, 0.5f, 0.5f, 0.5f};
-        int dims[] = {2, 2};
+        printf("\nTest 2: 4D Tensor Addition\n");
+        // 2x2x3x3 tensors (like image batch with channels)
+        float data1[36], data2[36];
+        for (int i = 0; i < 36; i++) {
+            data1[i] = (float)(i + 1) * 0.1f;
+            data2[i] = (float)(i + 1) * 0.05f;
+        }
+        int dims[] = {2,2,3,3}; // batch x channels x height x width
         
-        Tensor *a = tensor_new(2, dims, data1, 1);
-        Tensor *b = tensor_new(2, dims, data2, 1);
+        Tensor *a = tensor_new(4, dims, data1, 1);
+        Tensor *b = tensor_new(4, dims, data2, 1);
         Tensor *c = tensor_add(a, b);
         Tensor *d = tensor_exp(c);
         
@@ -257,15 +262,19 @@ int main() {
         print_tensor(b, "B");
     }
 
-    // Test 3: Hadamard
+    // Test 3: 3D Hadamard Product
     {
-        printf("\nTest 3: Hadamard Product\n");
-        float data1[] = {1.0f, 2.0f, 3.0f, 4.0f};
-        float data2[] = {0.5f, 1.5f, 2.5f, 3.5f};
-        int dims[] = {2, 2};
+        printf("\nTest 3: 3D Hadamard Product\n");
+        // 2x3x4 tensors
+        float data1[24], data2[24];
+        for (int i = 0; i < 24; i++) {
+            data1[i] = (float)(i + 1) * 0.2f;
+            data2[i] = (float)(i + 1) * 0.15f;
+        }
+        int dims[] = {2,3,4};
         
-        Tensor *a = tensor_new(2, dims, data1, 1);
-        Tensor *b = tensor_new(2, dims, data2, 1);
+        Tensor *a = tensor_new(3, dims, data1, 1);
+        Tensor *b = tensor_new(3, dims, data2, 1);
         Tensor *c = tensor_hadamard(a, b);
         
         for (int i = 0; i < c->size; i++) c->grad[i] = 1.0f;
@@ -274,33 +283,14 @@ int main() {
         print_tensor(b, "B");
         print_tensor(c, "C = A ⊙ B");
         
-        printf("Direct multiplication verification: ");
-        for (int i = 0; i < 4; i++) printf("%.4f ", data1[i] * data2[i]);
+        printf("Direct multiplication verification for first few elements: ");
+        for (int i = 0; i < 5; i++) printf("%.4f ", data1[i] * data2[i]);
         printf("\n\n");
         
         backward();
         printf("After backward:\n");
         print_tensor(a, "A");
         print_tensor(b, "B");
-    }
-
-    // Test 4: Reduce Sum
-    {
-        printf("\nTest 4: Reduce Sum\n");
-        float data[] = {1, 2, 3, 4, 5, 6};
-        int dims[] = {2, 3};
-        
-        Tensor *a = tensor_new(2, dims, data, 1);
-        Tensor *b = tensor_reduce_sum(a, 1);  // Sum along columns
-
-        for (int i = 0; i < b->size; i++) b->grad[i] = 1.0f;
-        
-        print_tensor(a, "A");
-        print_tensor(b, "B = reduce_sum(A, dim=1)");
-        
-        backward();
-        printf("After backward:\n");
-        print_tensor(a, "A");
     }
 
     clean_registry();
