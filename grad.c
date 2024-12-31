@@ -163,12 +163,6 @@ void backward() {
     tape_len = 0;
 }
 
-Tensor* tensor_ones(int ndims, const int* dims) {
-    Tensor* t = tensor_new(ndims, dims, NULL, 0);
-    for (int i = 0; i < t->size; i++) t->data[i] = 1.0f;
-    return t;
-}
-
 Tensor* tensor_hadamard(Tensor* a, Tensor* b) {
     if (a->ndims != b->ndims) return NULL;
     for (int i = 0; i < a->ndims; i++) 
@@ -176,119 +170,57 @@ Tensor* tensor_hadamard(Tensor* a, Tensor* b) {
     return tensor_exp(tensor_add(tensor_log(a), tensor_log(b)));
 }
 
-Tensor* tensor_reduce_sum(Tensor* a, int axis) {
-    if (axis < 0 || axis >= a->ndims) return NULL;
-    
-    int ones_dims[2] = {1, a->dims[axis]};
-    int reshape_dims[2];
-    
-    if (axis == a->ndims - 1) {
-        ones_dims[0] = a->dims[axis];
-        ones_dims[1] = 1;
-        reshape_dims[0] = a->size / a->dims[axis];
-        reshape_dims[1] = a->dims[axis];
-    } else {
-        reshape_dims[0] = a->dims[axis];
-        reshape_dims[1] = a->size / a->dims[axis];
-    }
-    
-    Tensor* ones = tensor_ones(2, ones_dims);
-    Tensor* reshaped = tensor_reshape(a, 2, reshape_dims);
-    Tensor* result = (axis == a->ndims - 1) ? 
-                    tensor_matmul(reshaped, ones) : 
-                    tensor_matmul(ones, reshaped);
-    
-    if (a->ndims > 2) {
-        int new_ndims = a->ndims - 1;
-        int* new_dims = malloc(new_ndims * sizeof(int));
-        for (int i = 0, j = 0; i < a->ndims; i++) 
-            if (i != axis) new_dims[j++] = a->dims[i];
-        Tensor* final = tensor_reshape(result, new_ndims, new_dims);
-        free(new_dims);
-        return final;
-    }
-    
-    return result;
-}
-
 int main() {
-    // Test data setup
-    float data1[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f};
-    float data2[] = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
-    int dims[] = {2, 2, 2};
-
-    // Create tensors
-    Tensor *a = tensor_new(3, dims, data1, 1);
-    Tensor *b = tensor_new(3, dims, data2, 1);
-
-    printf("Initial tensors:\n");
-    printf("A (2x2x2):\n");
-    for (int i = 0; i < 8; i++) {
-        printf("%.2f ", a->data[i]);
-        if (i == 3) printf("\n");
+    // Create 4D tensors (batch, channels, height, width)
+    int dims4d[] = {2, 3, 4, 5};  // 2 batches, 3 channels, 4x5 spatial dims
+    float data1[120] = {0};  // 2*3*4*5 = 120
+    float data2[120] = {0};
+    float matrix_data[1800] = {0};  // 60*30 = 1800
+    
+    // Initialize with interesting patterns
+    for(int i = 0; i < 120; i++) {
+        data1[i] = sinf(i * 0.1f) + 1.0f;  // ensure positive for log
+        data2[i] = cosf(i * 0.1f) + 1.0f;
     }
-    printf("\n\nB (2x2x2):\n");
-    for (int i = 0; i < 8; i++) {
-        printf("%.2f ", b->data[i]);
-        if (i == 3) printf("\n");
+    for(int i = 0; i < 1800; i++) {
+        matrix_data[i] = sinf(i * 0.05f) * 0.1f;
     }
-    printf("\n");
 
-    // Hadamard product
-    Tensor *c = tensor_hadamard(a, b);
-    printf("\nAfter Hadamard product (c = a ⊙ b):\n");
-    for (int i = 0; i < 8; i++) {
-        printf("%.2f ", c->data[i]);
-        if (i == 3) printf("\n");
-    }
-    printf("\n");
+    Tensor* a = tensor_new(4, dims4d, data1, 1);
+    Tensor* b = tensor_new(4, dims4d, data2, 1);
 
-    // Reduce sum
-    Tensor *d = tensor_reduce_sum(c, 1);
-    printf("\nAfter reduce_sum along axis 1:\n");
-    for (int i = 0; i < d->size; i++) {
-        printf("%.2f ", d->data[i]);
-    }
-    printf("\n");
+    // Test all operations in a complex computation graph
+    Tensor* c = tensor_add(a, b);                    // Add
+    
+    int reshape_dims[] = {2, 60};                    // Reshape to 2x60
+    Tensor* d = tensor_reshape(c, 2, reshape_dims);
+    
+    int matrix_dims[] = {60, 30};                    // Create matrix for matmul
+    Tensor* matrix = tensor_new(2, matrix_dims, matrix_data, 1);
+    
+    Tensor* e = tensor_matmul(d, matrix);            // MatMul
+    Tensor* f = tensor_exp(e);                       // Exp
+    Tensor* g = tensor_log(f);                       // Log
+    Tensor* h = tensor_hadamard(g, g);               // Hadamard
 
-    // Exponential
-    Tensor *e = tensor_exp(d);
-    printf("\nAfter exponential:\n");
-    for (int i = 0; i < e->size; i++) {
-        printf("%.2f ", e->data[i]);
-    }
-    printf("\n");
-
-    // Reshape
-    int reshape_dims[] = {2, 2, 1};
-    Tensor *e_reshaped = tensor_reshape(e, 3, reshape_dims);
-    printf("\nAfter reshape to (2,2,1):\n");
-    for (int i = 0; i < e_reshaped->size; i++) {
-        printf("%.2f ", e_reshaped->data[i]);
-    }
-    printf("\n");
-
-    // Final matrix multiplication
-    Tensor *f = tensor_matmul(a, e_reshaped);
-    printf("\nFinal output (matrix multiplication):\n");
-    for (int i = 0; i < f->size; i++) {
-        printf("%.2f ", f->data[i]);
-    }
-    printf("\n");
+    // Set gradient at output
+    for(int i = 0; i < h->size; i++) h->grad[i] = 1.0f;
 
     // Backward pass
-    for (int i = 0; i < f->size; i++) {
-        f->grad[i] = 1.0f;
-    }
-    printf("\nSetting gradients to 1.0\n");
     backward();
 
-    printf("\nFinal gradients of A:\n");
-    for (int i = 0; i < 8; i++) {
-        printf("%.2f ", a->grad[i]);
-        if (i == 3) printf("\n");
-    }
-    printf("\n");
+    // Print some statistics to verify results
+    printf("Input tensor dims: %dx%dx%dx%d\n", dims4d[0], dims4d[1], dims4d[2], dims4d[3]);
+    printf("Final tensor dims: %dx%d\n", h->dims[0], h->dims[1]);
+    
+    float sum_grad_a = 0, sum_grad_matrix = 0;
+    for(int i = 0; i < a->size; i++) sum_grad_a += a->grad[i];
+    for(int i = 0; i < matrix->size; i++) sum_grad_matrix += matrix->grad[i];
+    
+    printf("Sum of gradients in first tensor: %f\n", sum_grad_a);
+    printf("Sum of gradients in matrix: %f\n", sum_grad_matrix);
+    printf("Sample of final output: %f %f %f\n", 
+           h->data[0], h->data[h->size/2], h->data[h->size-1]);
 
     clean_registry();
     return 0;
