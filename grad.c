@@ -206,58 +206,22 @@ void backward() {
 
 Tensor* tensor_hadamard(Tensor* a, Tensor* b) {
     if (a->ndims != b->ndims) return NULL;
-    for (int i = 0; i < a->ndims; i++) 
-        if (a->dims[i] != b->dims[i]) return NULL;
+    for (int i = 0; i < a->ndims; i++) if (a->dims[i] != b->dims[i]) return NULL;
     return tensor_exp(tensor_add(tensor_log(a), tensor_log(b)));
 }
 
 Tensor* tensor_ones(int ndims, const int* dims) {
-    Tensor* t = tensor_new(ndims, dims, NULL, 0);  // no grad needed for ones
-    for (int i = 0; i < t->size; i++) 
-        t->data[i] = 1.0f;
+    Tensor* t = tensor_new(ndims, dims, NULL, 0);
+    for (int i = 0; i < t->size; i++) t->data[i] = 1.0f;
     return t;
 }
 
 Tensor* tensor_reduce_sum(Tensor* a, int axis) {
-    if (axis < 0 || axis >= a->ndims) return NULL;
-    
-    // Create permutation to move the reduction axis to the end
-    int* perm = malloc(a->ndims * sizeof(int));
-    int j = 0;
-    for (int i = 0; i < a->ndims; i++)
-        if (i != axis) perm[j++] = i;
-    perm[a->ndims-1] = axis;
-    
-    // Permute the tensor to move reduction axis to the end
-    Tensor* permuted = tensor_permute(a, perm);
-    free(perm);
-    
-    // Reshape to 2D tensor where the last dimension is the reduction axis
-    int new_rows = 1;
-    for (int i = 0; i < a->ndims-1; i++)
-        new_rows *= permuted->dims[i];
-    int new_cols = permuted->dims[a->ndims-1];
-    
-    int reshape_dims[] = {new_rows, new_cols};
-    Tensor* reshaped = tensor_reshape(permuted, 2, reshape_dims);
-    
-    // Create a column vector of ones with shape (new_cols, 1)
-    int ones_dims[] = {new_cols, 1};
-    Tensor* ones = tensor_ones(2, ones_dims);
-    
-    // Matmul will sum along the reduction axis
-    Tensor* result = tensor_matmul(reshaped, ones);
-    
-    // Reshape back to original dimensions minus the reduced axis
-    int* final_dims = malloc((a->ndims-1) * sizeof(int));
-    j = 0;
-    for (int i = 0; i < a->ndims; i++)
-        if (i != axis) final_dims[j++] = a->dims[i];
-    
-    Tensor* final_result = tensor_reshape(result, a->ndims-1, final_dims);
-    free(final_dims);
-    
-    return final_result;
+    if (!a || axis < 0 || axis >= a->ndims) return NULL;
+    return tensor_matmul(
+        tensor_reshape(a, 2, (int[]){a->size / a->dims[axis], a->dims[axis]}),
+        tensor_reshape(tensor_ones(2, (int[]){1, a->dims[axis]}), 2, (int[]){a->dims[axis], 1})
+    );
 }
 
 void print_tensor(Tensor* t, const char* name) {
