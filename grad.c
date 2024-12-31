@@ -25,6 +25,13 @@ static struct {
     int len;
 } tape = {0};
 
+#define MAX_TENSORS 1000
+
+static struct {
+    Tensor* tensors[MAX_TENSORS];
+    int len;
+} tensor_registry = {0};
+
 Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_grad) {
     Tensor* t = calloc(1, sizeof(Tensor));
     t->ndims = ndims;
@@ -35,6 +42,12 @@ Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_g
     t->data = malloc(t->size * sizeof(float));
     if (data) memcpy(t->data, data, t->size * sizeof(float));
     if ((t->requires_grad = requires_grad)) t->grad = calloc(t->size, sizeof(float));
+    
+    // Register the tensor
+    if (tensor_registry.len < MAX_TENSORS) {
+        tensor_registry.tensors[tensor_registry.len++] = t;
+    }
+    
     return t;
 }
 
@@ -44,6 +57,17 @@ void tensor_free(Tensor* t) {
     free(t->grad);
     free(t->dims);
     free(t);
+}
+
+void clean_registry() {
+    // Free all tensors in the registry
+    for (int i = 0; i < tensor_registry.len; i++) {
+        if (tensor_registry.tensors[i]) {
+            tensor_free(tensor_registry.tensors[i]);
+            tensor_registry.tensors[i] = NULL;
+        }
+    }
+    tensor_registry.len = 0;
 }
 
 Tensor* tensor_add(Tensor* a, Tensor* b) {
@@ -272,6 +296,8 @@ int main() {
         print_tensor(a, "A");
         print_tensor(b, "B");
     }
+
+    clean_registry();
     
     return 0;
 }
