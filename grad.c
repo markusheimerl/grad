@@ -115,6 +115,13 @@ Tensor* tensor_hadamard(Tensor* a, Tensor* b) {
     return tensor_exp(tensor_add(tensor_log(a), tensor_log(b)));
 }
 
+Tensor* tensor_reduce_sum(Tensor* a, int dim) {
+    if (dim < 0 || dim >= a->ndims) return NULL;
+    float ones_data[a->dims[dim]];
+    for (int i = 0; i < a->dims[dim]; i++) ones_data[i] = 1.0f;
+    return tensor_matmul(a, tensor_new(2, (int[2]){a->dims[dim], 1}, ones_data, 0));
+}
+
 void backward() {
     if (!tape.len) return;
     
@@ -275,6 +282,25 @@ int main() {
         printf("After backward:\n");
         print_tensor(a, "A");
         print_tensor(b, "B");
+    }
+
+    // Test 4: Reduce Sum
+    {
+        printf("\nTest 4: Reduce Sum\n");
+        float data[] = {1, 2, 3, 4, 5, 6};
+        int dims[] = {2, 3};
+        
+        Tensor *a = tensor_new(2, dims, data, 1);
+        Tensor *b = tensor_reduce_sum(a, 1);  // Sum along columns
+
+        for (int i = 0; i < b->size; i++) b->grad[i] = 1.0f;
+        
+        print_tensor(a, "A");
+        print_tensor(b, "B = reduce_sum(A, dim=1)");
+        
+        backward();
+        printf("After backward:\n");
+        print_tensor(a, "A");
     }
 
     clean_registry();
