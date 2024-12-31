@@ -115,6 +115,17 @@ Tensor* tensor_hadamard(Tensor* a, Tensor* b) {
     return tensor_exp(tensor_add(tensor_log(a), tensor_log(b)));
 }
 
+Tensor* tensor_reshape(Tensor* a, int ndims, const int* new_dims) {
+    int new_size = 1;
+    for (int i = 0; i < ndims; i++) new_size *= new_dims[i];
+    if (new_size != a->size) return NULL;
+    Tensor* intermediate = tensor_new(ndims, new_dims, a->data, a->requires_grad);
+    float zeros[new_size];
+    memset(zeros, 0, new_size * sizeof(float));
+    Tensor* zero_tensor = tensor_new(ndims, new_dims, zeros, 0);
+    return tensor_add(intermediate, zero_tensor);
+}
+
 void backward() {
     if (!tape.len) return;
     
