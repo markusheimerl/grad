@@ -182,6 +182,28 @@ void backward() {
     }
 }
 
+// Compositions of operations
+Tensor* tensor_hadamard(Tensor* a, Tensor* b) {
+    // Check if dimensions match
+    if (a->ndims != b->ndims) return NULL;
+    for (int i = 0; i < a->ndims; i++) {
+        if (a->dims[i] != b->dims[i]) return NULL;
+    }
+    
+    // Implement a ⊙ b as exp(log(a) + log(b))
+    Tensor* log_a = tensor_log(a);
+    Tensor* log_b = tensor_log(b);
+    Tensor* sum_logs = tensor_add(log_a, log_b);
+    Tensor* result = tensor_exp(sum_logs);
+    
+    // Clean up intermediate tensors
+    tensor_free(log_a);
+    tensor_free(log_b);
+    tensor_free(sum_logs);
+    
+    return result;
+}
+
 void print_tensor(const Tensor* t, const char* name) {
     printf("%s: dims=[", name);
     for (int i = 0; i < t->ndims; i++) printf("%d%s", t->dims[i], i < t->ndims-1 ? "," : "");
@@ -326,7 +348,7 @@ int main() {
 
     // Test 5: Hadamard Product using Addition
     {
-        printf("\nTest 5: Hadamard Product using Addition (implemented via exp(log(a) + log(b)))\n");
+        printf("\nTest 5: Hadamard Product using helper function\n");
         float data1[] = {1.0f, 2.0f, 3.0f, 4.0f};
         float data2[] = {0.5f, 1.5f, 2.5f, 3.5f};
         int dims[] = {2, 2};
@@ -334,11 +356,8 @@ int main() {
         Tensor *a = tensor_new(2, dims, data1, 1);
         Tensor *b = tensor_new(2, dims, data2, 1);
         
-        // Implement a * b as exp(log(a) + log(b))
-        Tensor *log_a = tensor_log(a);
-        Tensor *log_b = tensor_log(b);
-        Tensor *sum_logs = tensor_add(log_a, log_b);
-        Tensor *hadamard = tensor_exp(sum_logs);
+        // Use the helper function
+        Tensor *hadamard = tensor_hadamard(a, b);
         
         hadamard->grad = calloc(hadamard->size, sizeof(float));
         for (int i = 0; i < hadamard->size; i++) hadamard->grad[i] = 1.0f;
@@ -361,9 +380,6 @@ int main() {
         
         tensor_free(a);
         tensor_free(b);
-        tensor_free(log_a);
-        tensor_free(log_b);
-        tensor_free(sum_logs);
         tensor_free(hadamard);
         tape.len = 0;
     }
