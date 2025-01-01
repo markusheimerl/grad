@@ -11,7 +11,7 @@
 #define MIN_LOG 1e-7f
 #define MAX_EXP 88.0f
 
-typedef enum { MATMUL, ADD, SUB, RESHAPE, SOFTMAX, PERMUTE, RMSNORM, HADAMARD } OpType;
+typedef enum { MATMUL, ADD, SUB, RESHAPE, SOFTMAX, PERMUTE, RMSNORM, HADAMARD, GELU } OpType;
 typedef struct Tensor { float *data, *grad; int *dims, ndims, size, requires_grad; } Tensor;
 typedef struct { OpType op; Tensor *result, *input1, *input2; int *aux_data; } TapeEntry;
 
@@ -158,6 +158,28 @@ Tensor* tensor_permute(Tensor* a, const int* perm, int perm_size) {
     return r;
 }
 
+Tensor* tensor_gelu(Tensor* x) {
+    if (!x) return NULL;
+    Tensor* out = tensor_new(x->ndims, x->dims, NULL, x->requires_grad);
+    
+    // GELU approximation: 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x^3)))
+    const float sqrt_2_pi = 0.7978845608028654f;  // sqrt(2/π)
+    
+    for (int i = 0; i < x->size; i++) {
+        float val = x->data[i];
+        float cube = val * val * val;
+        float inner = sqrt_2_pi * (val + 0.044715f * cube);
+        float tanh_inner = tanhf(inner);
+        out->data[i] = 0.5f * val * (1.0f + tanh_inner);
+    }
+    
+    if (out->requires_grad) {
+        tape[tape_len++] = (TapeEntry){GELU, out, x, NULL, NULL};
+    }
+    
+    return out;
+}
+
 void backward() {
     for (int t = tape_len-1; t >= 0; t--) {
         TapeEntry* e = &tape[t]; Tensor *r = e->result, *a = e->input1, *b = e->input2;
@@ -233,6 +255,22 @@ void backward() {
                         for (int i = 0; i < last_dim; i++) sum_grad_times_val += r->grad[b*last_dim+i] * a->data[b*last_dim+i];
                         for (int i = 0; i < last_dim; i++)
                             a->grad[b*last_dim+i] += scale * r->grad[b*last_dim+i] - (scale*scale*scale) * a->data[b*last_dim+i] * sum_grad_times_val/last_dim;
+                    }
+                }
+                break;
+            case GELU:
+                if (a->requires_grad) {
+                    const float sqrt_2_pi = 0.7978845608028654f;
+                    for (int i = 0; i < a->size; i++) {
+                        float x = a->data[i];
+                        float cube = x * x * x;
+                        float inner = sqrt_2_pi * (x + 0.044715f * cube);
+                        float tanh_inner = tanhf(inner);
+                        float sech_squared = 1.0f - tanh_inner * tanh_inner;
+                        float derivative = 0.5f * (1.0f + tanh_inner + 
+                                                x * sech_squared * sqrt_2_pi * 
+                                                (1.0f + 0.134145f * cube));
+                        a->grad[i] += r->grad[i] * derivative;
                     }
                 }
                 break;
