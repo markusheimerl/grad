@@ -9,7 +9,7 @@
 #define MAX_EXP 88.0f
 #define MAX_DIMS 32
 
-typedef enum { MATMUL, EXP, LOG, ADD, RESHAPE, PERMUTE } OpType;
+typedef enum { MATMUL, EXP, LOG, ADD, RESHAPE } OpType;
 
 typedef struct Tensor {
     float *data, *grad;
@@ -20,7 +20,6 @@ typedef struct Tensor {
 typedef struct {
     OpType op;
     Tensor *result, *input1, *input2;
-    int* perm;
 } TapeEntry;
 
 static TapeEntry tape[MAX_TAPE];
@@ -52,7 +51,7 @@ Tensor* tensor_add(Tensor* a, Tensor* b) {
     for (int i = 0; i < a->ndims; i++) if (a->dims[i] != b->dims[i]) return NULL;
     Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad || b->requires_grad);
     for (int i = 0; i < a->size; i++) result->data[i] = a->data[i] + b->data[i];
-    if (result->requires_grad) tape[tape_len++] = (TapeEntry){ADD, result, a, b, NULL};
+    if (result->requires_grad) tape[tape_len++] = (TapeEntry){ADD, result, a, b};
     return result;
 }
 
@@ -74,21 +73,21 @@ Tensor* tensor_matmul(Tensor* a, Tensor* b) {
                 for (int k = 0; k < K; k++) sum += a->data[n*M*K + i*K + k] * b->data[n*K*N + k*N + j];
                 result->data[n*M*N + i*N + j] = sum;
             }
-    if (result->requires_grad) tape[tape_len++] = (TapeEntry){MATMUL, result, a, b, NULL};
+    if (result->requires_grad) tape[tape_len++] = (TapeEntry){MATMUL, result, a, b};
     return result;
 }
 
 Tensor* tensor_exp(Tensor* a) {
     Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
     for (int i = 0; i < a->size; i++) result->data[i] = expf(fminf(a->data[i], MAX_EXP));
-    if (result->requires_grad) tape[tape_len++] = (TapeEntry){EXP, result, a, NULL, NULL};
+    if (result->requires_grad) tape[tape_len++] = (TapeEntry){EXP, result, a, NULL};
     return result;
 }
 
 Tensor* tensor_log(Tensor* a) {
     Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
     for (int i = 0; i < a->size; i++) result->data[i] = logf(fmaxf(a->data[i], MIN_LOG));
-    if (result->requires_grad) tape[tape_len++] = (TapeEntry){LOG, result, a, NULL, NULL};
+    if (result->requires_grad) tape[tape_len++] = (TapeEntry){LOG, result, a, NULL};
     return result;
 }
 
@@ -97,29 +96,10 @@ Tensor* tensor_reshape(Tensor* a, int ndims, const int* new_dims) {
     for (int i = 0; i < ndims; i++) size *= new_dims[i];
     if (size != a->size) return NULL;
     Tensor* result = tensor_new(ndims, new_dims, a->data, a->requires_grad);
-    if (result->requires_grad) tape[tape_len++] = (TapeEntry){RESHAPE, result, a, NULL, NULL};
+    if (result->requires_grad) tape[tape_len++] = (TapeEntry){RESHAPE, result, a, NULL};
     return result;
 }
 
-Tensor* tensor_permute(Tensor* a, const int* perm) {
-    if (!a || !perm || a->ndims <= 1) return a ? tensor_new(a->ndims, a->dims, a->data, a->requires_grad) : NULL;
-    char u[MAX_DIMS] = {0}; int d[MAX_DIMS], o[MAX_DIMS], n[MAX_DIMS], j, t;
-    for (int i = 0; i < a->ndims; i++) if (perm[i] < 0 || perm[i] >= a->ndims || u[perm[i]]) return NULL; else u[perm[i]] = 1;
-    for (int i = 0; i < a->ndims; i++) d[i] = a->dims[perm[i]];
-    Tensor* r = tensor_new(a->ndims, d, NULL, a->requires_grad);
-    for (int i = 0; i < a->size; i++) {
-        for (t = i, j = a->ndims-1; j >= 0; j--) { o[j] = t % a->dims[j]; t /= a->dims[j]; }
-        for (j = 0; j < a->ndims; j++) n[j] = o[perm[j]];
-        for (t = 0, j = 0; j < a->ndims; j++) t = t * d[j] + n[j];
-        r->data[t] = a->data[i];
-    }
-    if (r->requires_grad) {
-        int* p = malloc(a->ndims * sizeof(int));
-        for (int i = 0; i < a->ndims; i++) p[perm[i]] = i;
-        tape[tape_len++] = (TapeEntry){PERMUTE, r, a, NULL, p};
-    }
-    return r;
-}
 
 void backward() {
     for (int t = tape_len-1; t >= 0; t--) {
@@ -154,13 +134,6 @@ void backward() {
             case RESHAPE:
                 if (a->requires_grad) for (int i = 0; i < a->size; i++) a->grad[i] += result->grad[i];
                 break;
-            case PERMUTE:
-                if (a->requires_grad) {
-                    Tensor* permuted_grad = tensor_permute(tensor_new(result->ndims, result->dims, result->grad, 0), entry->perm);
-                    for (int i = 0; i < a->size; i++) a->grad[i] += permuted_grad->data[i];
-                }
-                free(entry->perm);
-                break;
         }
     }
     tape_len = 0;
@@ -178,6 +151,26 @@ Tensor* tensor_ones(int ndims, const int* dims) {
     return t;
 }
 
+Tensor* tensor_permute(Tensor* a, const int* p) {
+    if (!a || !p || a->ndims <= 1) return a ? tensor_new(a->ndims, a->dims, a->data, a->requires_grad) : NULL;
+    char u[MAX_DIMS] = {0}; int n[MAX_DIMS], s = a->size, t[2][MAX_DIMS];
+    for (int i = 0; i < a->ndims; i++) {
+        if (p[i] < 0 || p[i] >= a->ndims || u[p[i]]) return NULL;
+        u[p[i]] = 1; n[i] = a->dims[p[i]];
+    }
+    float* m = calloc(s * s, sizeof(float));
+    t[0][a->ndims-1] = t[1][a->ndims-1] = 1;
+    for (int i = a->ndims-2; i >= 0; i--) t[0][i] = t[0][i+1] * a->dims[i+1], t[1][i] = t[1][i+1] * n[i+1];
+    for (int i = 0; i < s; i++) {
+        int x = i, y = 0;
+        for (int d = 0; d < a->ndims; d++) y += (x / t[0][d]) * t[1][p[d]], x %= t[0][d];
+        m[y * s + i] = 1;
+    }
+    Tensor* r = tensor_reshape(tensor_matmul(tensor_new(2, (int[]){s,s}, m, 0), tensor_reshape(a, 2, (int[]){s,1})), a->ndims, n);
+    free(m);
+    return r;
+}
+
 void print_tensor(Tensor* t, const char* name) {
     printf("%s: shape(", name);
     for (int i = 0; i < t->ndims; i++) printf("%d%s", t->dims[i], i < t->ndims - 1 ? "," : ")");
@@ -185,6 +178,78 @@ void print_tensor(Tensor* t, const char* name) {
 }
 
 int main() {
+    // Test 1: Simple 2D permutation
+    printf("\nTest 1: Simple 2D permutation [1,0]\n");
+    float data1[] = {1,2,3,4,5,6};
+    Tensor* t1 = tensor_new(2, (int[]){2,3}, data1, 1);
+    int perm1[] = {1,0};  // Define permutation array with longer lifetime
+    Tensor* p1 = tensor_permute(t1, perm1);
+    print_tensor(t1, "Original");
+    print_tensor(p1, "Permuted");
+    
+    // Test 2: 3D permutation
+    printf("\nTest 2: 3D permutation [2,0,1]\n");
+    float data2[] = {1,2,3,4,5,6,7,8,9,10,11,12};
+    Tensor* t2 = tensor_new(3, (int[]){2,2,3}, data2, 1);
+    int perm2[] = {2,0,1};  // Define permutation array with longer lifetime
+    Tensor* p2 = tensor_permute(t2, perm2);
+    print_tensor(t2, "Original");
+    print_tensor(p2, "Permuted");
+
+    // Test 3: Identity permutation
+    printf("\nTest 3: Identity permutation [0,1,2]\n");
+    int perm3[] = {0,1,2};  // Define permutation array with longer lifetime
+    Tensor* p3 = tensor_permute(t2, perm3);
+    print_tensor(t2, "Original");
+    if (p3) print_tensor(p3, "Permuted");
+
+    // Test 4: Gradient propagation
+    printf("\nTest 4: Gradient propagation\n");
+    float data4[] = {1,2,3,4};
+    Tensor* t4 = tensor_new(2, (int[]){2,2}, data4, 1);
+    int perm4[] = {1,0};  // Define permutation array with longer lifetime
+    Tensor* p4 = tensor_permute(t4, perm4);
+    if (p4) {
+        p4->grad[0] = 1.0f;
+        p4->grad[1] = 2.0f;
+        p4->grad[2] = 3.0f;
+        p4->grad[3] = 4.0f;
+        backward();
+        print_tensor(t4, "Original with grad");
+        print_tensor(p4, "Permuted with grad");
+    }
+
+    // Test 5: Invalid permutations
+    printf("\nTest 5: Invalid permutations\n");
+    int invalid_perm1[] = {0,0,1};
+    int invalid_perm2[] = {0,1,3};
+    Tensor* invalid1 = tensor_permute(t2, invalid_perm1);
+    Tensor* invalid2 = tensor_permute(t2, invalid_perm2);
+    printf("Invalid permutation 1 (duplicate): %s\n", invalid1 ? "Failed" : "Passed");
+    printf("Invalid permutation 2 (out of range): %s\n", invalid2 ? "Failed" : "Passed");
+
+    // Test 6: Chained permutations
+    printf("\nTest 6: Chained permutations\n");
+    Tensor* t6 = tensor_new(3, (int[]){2,3,4}, NULL, 1);
+    for(int i = 0; i < t6->size; i++) t6->data[i] = i;
+    int perm6a[] = {1,0,2};
+    int perm6b[] = {2,1,0};
+    Tensor* p6a = tensor_permute(t6, perm6a);
+    Tensor* p6b = p6a ? tensor_permute(p6a, perm6b) : NULL;
+    print_tensor(t6, "Original");
+    if (p6a) print_tensor(p6a, "First permutation");
+    if (p6b) print_tensor(p6b, "Second permutation");
+
+    // Test 7: Edge cases
+    printf("\nTest 7: Edge cases\n");
+    float data7[] = {1,2,3};
+    Tensor* t7a = tensor_new(1, (int[]){3}, data7, 1);
+    int perm7[] = {0};
+    Tensor* p7a = tensor_permute(t7a, perm7);
+    Tensor* p7b = tensor_permute(NULL, perm7);
+    if (t7a) print_tensor(t7a, "1D tensor");
+    if (p7a) print_tensor(p7a, "1D permuted");
+    printf("NULL tensor permutation: %s\n", p7b ? "Failed" : "Passed");
 
     clean_registry();
     return 0;
