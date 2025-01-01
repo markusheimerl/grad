@@ -53,14 +53,11 @@ d) result = γ * normalized + β
 ```
 
 3. Masked Attention
-```c
-// Can be implemented using:
-a) Q @ K.T  // matrix multiplication
+a) Q @ K.T
 b) mask addition
 c) softmax
-d) dropout (optional)
-e) result @ V
-```
+d) result @ V
+
 
 4. Feed Forward Network
 ```c
