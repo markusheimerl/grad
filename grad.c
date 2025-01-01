@@ -27,6 +27,17 @@ static int tape_len = 0;
 static Tensor* registry[MAX_TENSORS];
 static int registry_len = 0;
 
+static int get_broadcasted_index(int flat_idx, const int* dims, int ndims, const int* ref_dims, int ref_ndims) {
+    int idx = 0, stride = 1;
+    for (int d = ndims - 1; d >= 0; d--) {
+        int ref_d = d + (ref_ndims - ndims);
+        int coord = (flat_idx / stride) % ref_dims[ref_d];
+        idx += (dims[d] == 1 ? 0 : coord) * stride;
+        stride *= dims[d];
+    }
+    return idx;
+}
+
 Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_grad) {
     Tensor* t = calloc(1, sizeof(Tensor));
     t->ndims = ndims;
@@ -42,9 +53,40 @@ Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_g
 }
 
 void clean_registry() {
-    for (int i = 0; i < registry_len; i++) free(registry[i]->data), free(registry[i]->grad), free(registry[i]->dims), free(registry[i]);
+    for (int i = 0; i < registry_len; i++) {
+        free(registry[i]->data);
+        free(registry[i]->grad);
+        free(registry[i]->dims);
+        free(registry[i]);
+    }
     registry_len = 0;
 }
+
+static Tensor* binary_op(Tensor* a, Tensor* b, OpType op) {
+    if (!a || !b) return NULL;
+    int max_d = fmax(a->ndims, b->ndims), rd[MAX_DIMS];
+    
+    for (int i = 0; i < max_d; i++) {
+        int d1 = i < a->ndims ? a->dims[a->ndims-1-i] : 1;
+        int d2 = i < b->ndims ? b->dims[b->ndims-1-i] : 1;
+        if (d1 != d2 && d1 != 1 && d2 != 1) return NULL;
+        rd[max_d-1-i] = fmax(d1, d2);
+    }
+
+    Tensor* r = tensor_new(max_d, rd, NULL, a->requires_grad || b->requires_grad);
+    
+    for (int i = 0; i < r->size; i++) {
+        int ai = get_broadcasted_index(i, a->dims, a->ndims, rd, max_d);
+        int bi = get_broadcasted_index(i, b->dims, b->ndims, rd, max_d);
+        r->data[i] = op == ADD ? a->data[ai] + b->data[bi] : a->data[ai] - b->data[bi];
+    }
+    
+    if (r->requires_grad) tape[tape_len++] = (TapeEntry){op, r, a, b};
+    return r;
+}
+
+Tensor* tensor_add(Tensor* a, Tensor* b) { return binary_op(a, b, ADD); }
+Tensor* tensor_sub(Tensor* a, Tensor* b) { return binary_op(a, b, SUB); }
 
 Tensor* tensor_matmul(Tensor* a, Tensor* b) {
     if (a->ndims < 1 || b->ndims < 1 || a->dims[a->ndims-1] != b->dims[b->ndims-2]) return NULL;
@@ -91,86 +133,50 @@ Tensor* tensor_reshape(Tensor* a, int ndims, const int* new_dims) {
     return result;
 }
 
-Tensor* tensor_add(Tensor* a, Tensor* b) {
-    if (!a || !b) return NULL;
-    int max_d = fmax(a->ndims, b->ndims), rd[MAX_DIMS];
-    for (int i = 0; i < max_d; i++) {
-        int d1 = i < a->ndims ? a->dims[a->ndims-1-i] : 1;
-        int d2 = i < b->ndims ? b->dims[b->ndims-1-i] : 1;
-        if (d1 != d2 && d1 != 1 && d2 != 1) return NULL;
-        rd[max_d-1-i] = fmax(d1, d2);
+Tensor* tensor_permute(Tensor* a, const int* p) {
+    if (!a || !p || a->ndims <= 1) 
+        return a ? tensor_new(a->ndims, a->dims, a->data, a->requires_grad) : NULL;
+    
+    // Validate permutation
+    char used[MAX_DIMS] = {0};
+    int new_dims[MAX_DIMS];
+    for (int i = 0; i < a->ndims; i++) {
+        if (p[i] < 0 || p[i] >= a->ndims || used[p[i]]) return NULL;
+        used[p[i]] = 1;
+        new_dims[i] = a->dims[p[i]];
     }
-    Tensor* r = tensor_new(max_d, rd, NULL, a->requires_grad || b->requires_grad);
-    if (!r) return NULL;
 
-    for (int i = 0; i < r->size; i++) {
-        int coords[MAX_DIMS], temp = i;
-        for (int d = max_d-1; d >= 0; d--) {
-            coords[d] = temp % rd[d];
-            temp /= rd[d];
-        }
-        
-        // Calculate indices for a
-        int ai = 0, astride = 1;
-        for (int d = a->ndims-1; d >= 0; d--) {
-            int rd_idx = d + (max_d - a->ndims);
-            ai += (a->dims[d] == 1 ? 0 : coords[rd_idx]) * astride;
-            astride *= a->dims[d];
-        }
-        
-        // Calculate indices for b
-        int bi = 0, bstride = 1;
-        for (int d = b->ndims-1; d >= 0; d--) {
-            int rd_idx = d + (max_d - b->ndims);
-            bi += (b->dims[d] == 1 ? 0 : coords[rd_idx]) * bstride;
-            bstride *= b->dims[d];
-        }
-        
-        r->data[i] = a->data[ai] + b->data[bi];
+    // Create permutation matrix
+    int s = a->size;
+    float* pmat = calloc(s * s, sizeof(float));
+    int stride[2][MAX_DIMS];
+    stride[0][a->ndims-1] = stride[1][a->ndims-1] = 1;
+    
+    for (int i = a->ndims-2; i >= 0; i--) {
+        stride[0][i] = stride[0][i+1] * a->dims[i+1];
+        stride[1][i] = stride[1][i+1] * new_dims[i+1];
     }
-    if (r->requires_grad) tape[tape_len++] = (TapeEntry){ADD, r, a, b};
-    return r;
-}
 
-Tensor* tensor_sub(Tensor* a, Tensor* b) {
-    if (!a || !b) return NULL;
-    int max_d = fmax(a->ndims, b->ndims), rd[MAX_DIMS];
-    for (int i = 0; i < max_d; i++) {
-        int d1 = i < a->ndims ? a->dims[a->ndims-1-i] : 1;
-        int d2 = i < b->ndims ? b->dims[b->ndims-1-i] : 1;
-        if (d1 != d2 && d1 != 1 && d2 != 1) return NULL;
-        rd[max_d-1-i] = fmax(d1, d2);
+    for (int i = 0; i < s; i++) {
+        int coords[MAX_DIMS], x = i, y = 0;
+        for (int d = 0; d < a->ndims; d++) 
+            coords[d] = (x / stride[0][d]) % a->dims[d];
+        for (int d = 0; d < a->ndims; d++) 
+            y += coords[p[d]] * stride[1][d];
+        pmat[y * s + i] = 1;
     }
-    Tensor* r = tensor_new(max_d, rd, NULL, a->requires_grad || b->requires_grad);
-    if (!r) return NULL;
 
-    for (int i = 0; i < r->size; i++) {
-        int coords[MAX_DIMS], temp = i;
-        for (int d = max_d-1; d >= 0; d--) {
-            coords[d] = temp % rd[d];
-            temp /= rd[d];
-        }
-        
-        // Calculate indices for a
-        int ai = 0, astride = 1;
-        for (int d = a->ndims-1; d >= 0; d--) {
-            int rd_idx = d + (max_d - a->ndims);
-            ai += (a->dims[d] == 1 ? 0 : coords[rd_idx]) * astride;
-            astride *= a->dims[d];
-        }
-        
-        // Calculate indices for b
-        int bi = 0, bstride = 1;
-        for (int d = b->ndims-1; d >= 0; d--) {
-            int rd_idx = d + (max_d - b->ndims);
-            bi += (b->dims[d] == 1 ? 0 : coords[rd_idx]) * bstride;
-            bstride *= b->dims[d];
-        }
-        
-        r->data[i] = a->data[ai] - b->data[bi];
-    }
-    if (r->requires_grad) tape[tape_len++] = (TapeEntry){SUB, r, a, b};
-    return r;
+    Tensor* result = tensor_reshape(
+        tensor_matmul(
+            tensor_new(2, (int[]){s,s}, pmat, 0),
+            tensor_reshape(a, 2, (int[]){s,1})
+        ),
+        a->ndims,
+        new_dims
+    );
+    
+    free(pmat);
+    return result;
 }
 
 void backward() {
@@ -178,6 +184,15 @@ void backward() {
         TapeEntry* e = &tape[t];
         Tensor *r = e->result, *a = e->input1, *b = e->input2;
         switch (e->op) {
+            case ADD: case SUB:
+                if (a->requires_grad || b->requires_grad)
+                    for (int i = 0; i < r->size; i++) {
+                        int ai = get_broadcasted_index(i, a->dims, a->ndims, r->dims, r->ndims);
+                        int bi = get_broadcasted_index(i, b->dims, b->ndims, r->dims, r->ndims);
+                        if (a->requires_grad) a->grad[ai] += r->grad[i];
+                        if (b->requires_grad) b->grad[bi] += (e->op == ADD ? 1 : -1) * r->grad[i];
+                    }
+                break;
             case MATMUL: {
                 if (!a->requires_grad && !b->requires_grad) break;
                 int M = a->dims[a->ndims-2], K = a->dims[a->ndims-1], N = b->dims[b->ndims-1];
@@ -193,73 +208,18 @@ void backward() {
                         }
                 break;
             }
-            case ADD: case SUB: {
-                if (!a->requires_grad && !b->requires_grad) break;
-                for (int i = 0; i < r->size; i++) {
-                    int coords[MAX_DIMS], temp = i;
-                    for (int d = r->ndims-1; d >= 0; d--) {
-                        coords[d] = temp % r->dims[d];
-                        temp /= r->dims[d];
-                    }
-                    
-                    if (a->requires_grad) {
-                        int ai = 0, astride = 1;
-                        for (int d = a->ndims-1; d >= 0; d--) {
-                            int rd_idx = d + (r->ndims - a->ndims);
-                            ai += (a->dims[d] == 1 ? 0 : coords[rd_idx]) * astride;
-                            astride *= a->dims[d];
-                        }
-                        a->grad[ai] += r->grad[i];
-                    }
-                    
-                    if (b->requires_grad) {
-                        int bi = 0, bstride = 1;
-                        for (int d = b->ndims-1; d >= 0; d--) {
-                            int rd_idx = d + (r->ndims - b->ndims);
-                            bi += (b->dims[d] == 1 ? 0 : coords[rd_idx]) * bstride;
-                            bstride *= b->dims[d];
-                        }
-                        b->grad[bi] += (e->op == ADD ? 1 : -1) * r->grad[i];
-                    }
-                }
-                break;
-            }
             case EXP:
-                if (a->requires_grad) for (int i = 0; i < a->size; i++) 
-                    a->grad[i] += r->grad[i] * r->data[i];
+                if (a->requires_grad) for (int i = 0; i < a->size; i++) a->grad[i] += r->grad[i] * r->data[i];
                 break;
             case LOG:
-                if (a->requires_grad) for (int i = 0; i < a->size; i++) 
-                    a->grad[i] += r->grad[i] / fmaxf(a->data[i], MIN_LOG);
+                if (a->requires_grad) for (int i = 0; i < a->size; i++) a->grad[i] += r->grad[i] / fmaxf(a->data[i], MIN_LOG);
                 break;
             case RESHAPE:
-                if (a->requires_grad) for (int i = 0; i < a->size; i++) 
-                    a->grad[i] += r->grad[i];
+                if (a->requires_grad) for (int i = 0; i < a->size; i++) a->grad[i] += r->grad[i];
                 break;
         }
     }
     tape_len = 0;
-}
-
-Tensor* tensor_permute(Tensor* a, const int* p) {
-    if (!a || !p || a->ndims <= 1) return a ? tensor_new(a->ndims, a->dims, a->data, a->requires_grad) : NULL;
-    char u[MAX_DIMS] = {0}; int n[MAX_DIMS], s = a->size, t[2][MAX_DIMS];
-    for (int i = 0; i < a->ndims; i++) {
-        if (p[i] < 0 || p[i] >= a->ndims || u[p[i]]) return NULL;
-        u[p[i]] = 1; n[i] = a->dims[p[i]];
-    }
-    float* m = calloc(s * s, sizeof(float));
-    t[0][a->ndims-1] = t[1][a->ndims-1] = 1;
-    for (int i = a->ndims-2; i >= 0; i--) t[0][i] = t[0][i+1] * a->dims[i+1], t[1][i] = t[1][i+1] * n[i+1];
-    for (int i = 0; i < s; i++) {
-        int x = i, y = 0, c[MAX_DIMS];
-        for (int d = 0; d < a->ndims; d++) c[d] = (x / t[0][d]) % a->dims[d];
-        for (int d = 0; d < a->ndims; d++) y += c[p[d]] * t[1][d];
-        m[y * s + i] = 1;
-    }
-    Tensor* r = tensor_reshape(tensor_matmul(tensor_new(2, (int[]){s,s}, m, 0), tensor_reshape(a, 2, (int[]){s,1})), a->ndims, n);
-    free(m);
-    return r;
 }
 
 int main() {
