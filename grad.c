@@ -544,51 +544,20 @@ void test_hadamard() {
 Tensor* tensor_reduce_sum(Tensor* a, int axis) {
     if (!a || axis < 0 || axis >= a->ndims) return NULL;
     
-    int pre_size = 1;
-    int axis_size = a->dims[axis];
-    int post_size = 1;
-    
+    int pre_size = 1, post_size = 1;
     for (int i = 0; i < axis; i++) pre_size *= a->dims[i];
     for (int i = axis + 1; i < a->ndims; i++) post_size *= a->dims[i];
     
-    // Create ones vector
-    float* ones_data = malloc(axis_size * sizeof(float));
-    for (int i = 0; i < axis_size; i++) ones_data[i] = 1.0f;
+    Tensor* ones = tensor_new(2, (int[]){axis == 0 ? 1 : a->dims[axis], axis == 0 ? a->dims[axis] : 1}, (float[]){[0 ... MAX_DIMS-1] = 1.0f}, 0);
+    Tensor* reshaped = tensor_reshape(a, 2, (int[]){axis == 0 ? a->dims[axis] : pre_size * post_size, axis == 0 ? pre_size * post_size : a->dims[axis]});
+    Tensor* result = tensor_matmul(axis == 0 ? ones : reshaped, axis == 0 ? reshaped : ones);
     
-    // Shape the ones vector based on the reduction axis
-    Tensor* ones;
-    Tensor* reshaped;
-    if (axis == 0) {
-        // For axis 0, we want (1, axis_size) × (axis_size, pre_size * post_size)
-        ones = tensor_new(2, (int[]){1, axis_size}, ones_data, 0);
-        reshaped = tensor_reshape(a, 2, (int[]){axis_size, pre_size * post_size});
-        
-    } else {
-        // For other axes, we want (pre_size * post_size, axis_size) × (axis_size, 1)
-        ones = tensor_new(2, (int[]){axis_size, 1}, ones_data, 0);
-        reshaped = tensor_reshape(a, 2, (int[]){pre_size * post_size, axis_size});
-    }
-    free(ones_data);
+    int final_ndims = a->ndims - 1 ?: 1;
+    int final_dims[MAX_DIMS], j = 0;
+    for (int i = 0; i < a->ndims; i++) if (i != axis) final_dims[j++] = a->dims[i];
+    if (!j) final_dims[0] = 1;
     
-    // Perform matrix multiplication in the correct order
-    Tensor* result = axis == 0 ? tensor_matmul(ones, reshaped) : tensor_matmul(reshaped, ones);
-    
-    // Calculate final shape
-    int final_ndims = a->ndims - 1;
-    if (final_ndims == 0) final_ndims = 1;
-    
-    int* final_dims = malloc(final_ndims * sizeof(int));
-    int j = 0;
-    for (int i = 0; i < a->ndims; i++) {
-        if (i != axis) final_dims[j++] = a->dims[i];
-    }
-    if (j == 0) final_dims[0] = 1;  // Handle scalar result
-    
-    // Reshape to final shape
-    Tensor* final_result = tensor_reshape(result, final_ndims, final_dims);
-    free(final_dims);
-    
-    return final_result;
+    return tensor_reshape(result, final_ndims, final_dims);
 }
 
 void test_reduce_sum() {
