@@ -138,13 +138,6 @@ void backward() {
     tape_len = 0;
 }
 
-// Only works for positive numbers
-Tensor* tensor_hadamard(Tensor* a, Tensor* b) {
-    if (a->ndims != b->ndims) return NULL;
-    for (int i = 0; i < a->ndims; i++) if (a->dims[i] != b->dims[i]) return NULL;
-    return tensor_exp(tensor_add(tensor_log(a), tensor_log(b)));
-}
-
 Tensor* tensor_permute(Tensor* a, const int* p) {
     if (!a || !p || a->ndims <= 1) return a ? tensor_new(a->ndims, a->dims, a->data, a->requires_grad) : NULL;
     char u[MAX_DIMS] = {0}; int n[MAX_DIMS], s = a->size, t[2][MAX_DIMS];
@@ -459,88 +452,6 @@ void test_permute() {
     free(data3d);
 }
 
-void test_hadamard() {
-    printf("\n=== Advanced Hadamard Product Tests ===\n");
-    
-    // Test 1: Basic Hadamard product with positive numbers
-    printf("Test 1: Basic Hadamard product with positive numbers\n");
-    float data1[] = {0.5f, 1.0f, 1.5f, 2.0f};  // Using positive numbers
-    float data2[] = {1.0f, 1.5f, 2.0f, 2.5f};  // Using positive numbers
-    Tensor* h1 = tensor_new(2, (int[]){2,2}, data1, 1);
-    Tensor* h2 = tensor_new(2, (int[]){2,2}, data2, 1);
-    Tensor* h_result = tensor_hadamard(h1, h2);
-    
-    printf("Results:\n");
-    for(int i = 0; i < 4; i++) {
-        float expected = data1[i] * data2[i];
-        printf("%.2f * %.2f = %.2f (expected: %.2f)\n", 
-               data1[i], data2[i], h_result->data[i], expected);
-        assert_close(h_result->data[i], expected, 1e-4, "Basic hadamard");
-    }
-    
-    // Test 2: Chain of Hadamard products
-    printf("\nTest 2: Chain of Hadamard products\n");
-    float data3[] = {1.0f, 1.2f, 1.4f, 1.6f};
-    Tensor* h3 = tensor_new(2, (int[]){2,2}, data3, 1);
-    Tensor* chain1 = tensor_hadamard(h3, h3);  // square
-    Tensor* chain2 = tensor_hadamard(chain1, h3);  // cube
-    
-    printf("Original -> Square -> Cube:\n");
-    for(int i = 0; i < 4; i++) {
-        float expected = data3[i] * data3[i] * data3[i];
-        printf("%.2f -> %.2f -> %.2f (expected: %.2f)\n", 
-               data3[i], chain1->data[i], chain2->data[i], expected);
-        assert_close(chain2->data[i], expected, 1e-4, "Chained hadamard");
-    }
-    
-    // Test 3: Hadamard with ones (identity)
-    printf("\nTest 3: Hadamard with ones (identity)\n");
-    float ones_data[] = {1.0f, 1.0f, 1.0f, 1.0f};
-    float test_data[] = {1.5f, 2.0f, 2.5f, 3.0f};
-    Tensor* ones = tensor_new(2, (int[]){2,2}, ones_data, 1);
-    Tensor* test = tensor_new(2, (int[]){2,2}, test_data, 1);
-    Tensor* id_result = tensor_hadamard(test, ones);
-    
-    printf("Testing identity property (x * 1 = x):\n");
-    for(int i = 0; i < 4; i++) {
-        printf("%.2f * 1.00 = %.2f\n", test_data[i], id_result->data[i]);
-        assert_close(id_result->data[i], test_data[i], 1e-4, "Identity hadamard");
-    }
-    
-    // Test 4: Gradient verification
-    printf("\nTest 4: Gradient verification\n");
-    Tensor* a = tensor_new(2, (int[]){2,2}, (float[]){1.5f, 2.0f, 2.5f, 3.0f}, 1);
-    Tensor* b = tensor_new(2, (int[]){2,2}, (float[]){2.0f, 2.5f, 3.0f, 3.5f}, 1);
-    Tensor* c = tensor_hadamard(a, b);
-    
-    // Set all gradients to 1.0
-    for(int i = 0; i < 4; i++) c->grad[i] = 1.0f;
-    backward();
-    
-    printf("Gradients:\n");
-    printf("dC/dA (should be equal to B):\n");
-    for(int i = 0; i < 4; i++) {
-        printf("%.2f ", a->grad[i]);
-        assert_close(a->grad[i], b->data[i], 1e-4, "Gradient wrt A");
-    }
-    printf("\ndC/dB (should be equal to A):\n");
-    for(int i = 0; i < 4; i++) {
-        printf("%.2f ", b->grad[i]);
-        assert_close(b->grad[i], a->data[i], 1e-4, "Gradient wrt B");
-    }
-    printf("\n");
-    
-    // Test 5: Commutativity
-    printf("\nTest 5: Testing commutativity (a * b = b * a)\n");
-    Tensor* h_ab = tensor_hadamard(a, b);
-    Tensor* h_ba = tensor_hadamard(b, a);
-    
-    for(int i = 0; i < 4; i++) {
-        printf("%.2f = %.2f\n", h_ab->data[i], h_ba->data[i]);
-        assert_close(h_ab->data[i], h_ba->data[i], 1e-4, "Commutativity");
-    }
-}
-
 Tensor* tensor_reduce_sum(Tensor* a, int axis) {
     if (!a || axis < 0 || axis >= a->ndims) return NULL;
     
@@ -671,7 +582,6 @@ int main() {
     test_reshape();
     test_numerical_gradient();
     test_permute();
-    test_hadamard();
     test_reduce_sum();
     
     printf("\nAll tests passed successfully!\n");
