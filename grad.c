@@ -165,8 +165,243 @@ Tensor* tensor_permute(Tensor* a, const int* p) {
     return r;
 }
 
-int main() {
+float relative_error(float a, float b) {
+    return fabsf(a - b) / (fabsf(a) + fabsf(b) + 1e-8);
+}
 
+void assert_close(float a, float b, float tolerance, const char* message) {
+    if (relative_error(a, b) > tolerance) {
+        printf("ASSERTION FAILED: %s\n", message);
+        printf("Expected: %.7f, Got: %.7f, Relative Error: %.7f\n", a, b, relative_error(a, b));
+        exit(1);
+    }
+}
+
+void test_matmul() {
+    printf("\n=== Advanced Matrix Multiplication Tests ===\n");
+    
+    // Test 1: 3D batch matrix multiplication
+    float a_data[] = {
+        1,2,3,  // First batch
+        4,5,6,
+        7,8,9,
+        
+        9,8,7,  // Second batch
+        6,5,4,
+        3,2,1
+    };
+    float b_data[] = {
+        1,2,    // First batch
+        3,4,
+        5,6,
+        
+        6,5,    // Second batch
+        4,3,
+        2,1
+    };
+    
+    Tensor* a = tensor_new(3, (int[]){2,3,3}, a_data, 1);
+    Tensor* b = tensor_new(3, (int[]){2,3,2}, b_data, 1);
+    Tensor* c = tensor_matmul(a, b);
+
+    // Manual verification of calculations:
+    // First batch:
+    // [1,2,3] · [[1,2], [3,4], [5,6]] = [1×1 + 2×3 + 3×5, 1×2 + 2×4 + 3×6] = [22,28]
+    // [4,5,6] · [[1,2], [3,4], [5,6]] = [4×1 + 5×3 + 6×5, 4×2 + 5×4 + 6×6] = [49,64]
+    // [7,8,9] · [[1,2], [3,4], [5,6]] = [7×1 + 8×3 + 9×5, 7×2 + 8×4 + 9×6] = [76,100]
+
+    // Second batch:
+    // [9,8,7] · [[6,5], [4,3], [2,1]] = [9×6 + 8×4 + 7×2, 9×5 + 8×3 + 7×1] = [100,76]
+    // [6,5,4] · [[6,5], [4,3], [2,1]] = [6×6 + 5×4 + 4×2, 6×5 + 5×3 + 4×1] = [64,49]
+    // [3,2,1] · [[6,5], [4,3], [2,1]] = [3×6 + 2×4 + 1×2, 3×5 + 2×3 + 1×1] = [28,22]
+    
+    printf("First batch results:\n");
+    printf("Expected: [22,28] [49,64] [76,100]\n");
+    printf("Got: [%.1f,%.1f] [%.1f,%.1f] [%.1f,%.1f]\n", 
+           c->data[0], c->data[1], c->data[2], c->data[3], c->data[4], c->data[5]);
+    
+    printf("\nSecond batch results:\n");
+    printf("Expected: [100,76] [64,49] [28,22]\n");
+    printf("Got: [%.1f,%.1f] [%.1f,%.1f] [%.1f,%.1f]\n", 
+           c->data[6], c->data[7], c->data[8], c->data[9], c->data[10], c->data[11]);
+
+    // First batch verifications
+    assert_close(c->data[0], 22, 1e-5, "Batch 1, position (0,0)");
+    assert_close(c->data[1], 28, 1e-5, "Batch 1, position (0,1)");
+    assert_close(c->data[2], 49, 1e-5, "Batch 1, position (1,0)");
+    assert_close(c->data[3], 64, 1e-5, "Batch 1, position (1,1)");
+    assert_close(c->data[4], 76, 1e-5, "Batch 1, position (2,0)");
+    assert_close(c->data[5], 100, 1e-5, "Batch 1, position (2,1)");
+
+    // Second batch verifications
+    assert_close(c->data[6], 100, 1e-5, "Batch 2, position (0,0)");
+    assert_close(c->data[7], 76, 1e-5, "Batch 2, position (0,1)");
+    assert_close(c->data[8], 64, 1e-5, "Batch 2, position (1,0)");
+    assert_close(c->data[9], 49, 1e-5, "Batch 2, position (1,1)");
+    assert_close(c->data[10], 28, 1e-5, "Batch 2, position (2,0)");
+    assert_close(c->data[11], 22, 1e-5, "Batch 2, position (2,1)");
+    
+    // Test gradient propagation
+    for(int i = 0; i < c->size; i++) c->grad[i] = 1.0f;
+    backward();
+    
+    printf("\nGradient verification:\n");
+    printf("A gradients:\n");
+    for(int i = 0; i < a->size; i++) {
+        printf("%.1f ", a->grad[i]);
+        if((i+1) % 3 == 0) printf("\n");
+    }
+    printf("\nB gradients:\n");
+    for(int i = 0; i < b->size; i++) {
+        printf("%.1f ", b->grad[i]);
+        if((i+1) % 2 == 0) printf("\n");
+    }
+}
+
+void test_exp_log() {
+    printf("\n=== Advanced Exp and Log Tests ===\n");
+    
+    // Test values within stable numerical range
+    float data[] = {-10.0f, -1.0f, -0.1f, 0.0f, 0.1f, 1.0f, 10.0f};
+    Tensor* x = tensor_new(1, (int[]){7}, data, 1);
+    
+    printf("Testing exp with various values:\n");
+    Tensor* exp_x = tensor_exp(x);
+    for(int i = 0; i < x->size; i++) {
+        float expected = expf(fminf(data[i], MAX_EXP));
+        printf("exp(%.1f) = %.6f (expected: %.6f)\n", 
+               data[i], exp_x->data[i], expected);
+        assert_close(exp_x->data[i], expected, 1e-5, "Exp computation");
+    }
+    
+    printf("\nTesting log with positive values:\n");
+    float log_data[] = {0.1f, 1.0f, 2.0f, 10.0f, 100.0f};
+    Tensor* y = tensor_new(1, (int[]){5}, log_data, 1);
+    Tensor* log_y = tensor_log(y);
+    for(int i = 0; i < y->size; i++) {
+        float expected = logf(fmaxf(log_data[i], MIN_LOG));
+        printf("log(%.1f) = %.6f (expected: %.6f)\n", 
+               log_data[i], log_y->data[i], expected);
+        assert_close(log_y->data[i], expected, 1e-5, "Log computation");
+    }
+    
+    printf("\nTesting log(exp(x)) composition for stable range:\n");
+    // Test composition for a single value to verify gradient
+    float comp_data[] = {0.5f};
+    Tensor* z = tensor_new(1, (int[]){1}, comp_data, 1);
+    Tensor* exp_z = tensor_exp(z);
+    Tensor* log_exp_z = tensor_log(exp_z);
+    
+    printf("Forward pass:\n");
+    printf("x = %.6f\n", comp_data[0]);
+    printf("exp(x) = %.6f\n", exp_z->data[0]);
+    printf("log(exp(x)) = %.6f\n", log_exp_z->data[0]);
+    assert_close(log_exp_z->data[0], comp_data[0], 1e-5, "Log-Exp composition");
+    
+    // Test gradient propagation
+    printf("\nTesting gradient propagation:\n");
+    printf("Setting output gradient to 1.0\n");
+    log_exp_z->grad[0] = 1.0f;
+    backward();
+    
+    // For log(exp(x)), the gradient should be 1.0
+    printf("Input gradient = %.6f (expected: 1.0)\n", z->grad[0]);
+    assert_close(z->grad[0], 1.0f, 1e-5, "Gradient through log-exp");
+    
+    // Additional gradient test with exp only
+    printf("\nTesting exp gradient separately:\n");
+    Tensor* a = tensor_new(1, (int[]){1}, (float[]){1.0f}, 1);
+    Tensor* exp_a = tensor_exp(a);
+    exp_a->grad[0] = 1.0f;
+    backward();
+    printf("exp'(1.0) = %.6f (expected: %.6f)\n", a->grad[0], expf(1.0f));
+    assert_close(a->grad[0], expf(1.0f), 1e-5, "Exp gradient");
+    
+    // Test log gradient separately
+    printf("\nTesting log gradient separately:\n");
+    Tensor* b = tensor_new(1, (int[]){1}, (float[]){2.0f}, 1);
+    Tensor* log_b = tensor_log(b);
+    log_b->grad[0] = 1.0f;
+    backward();
+    printf("log'(2.0) = %.6f (expected: %.6f)\n", b->grad[0], 1.0f/2.0f);
+    assert_close(b->grad[0], 1.0f/2.0f, 1e-5, "Log gradient");
+}
+
+void test_add() {
+    printf("\n=== Advanced Addition Tests ===\n");
+    
+    // Test 3D tensor addition with various patterns
+    int dims[] = {2,2,3};
+    float a_data[] = {
+        1.0f, -2.0f, 3.0f,
+        -4.0f, 5.0f, -6.0f,
+        7.0f, -8.0f, 9.0f,
+        -10.0f, 11.0f, -12.0f
+    };
+    float b_data[] = {
+        -1.0f, 2.0f, -3.0f,
+        4.0f, -5.0f, 6.0f,
+        -7.0f, 8.0f, -9.0f,
+        10.0f, -11.0f, 12.0f
+    };
+    
+    Tensor* a = tensor_new(3, dims, a_data, 1);
+    Tensor* b = tensor_new(3, dims, b_data, 1);
+    Tensor* c = tensor_add(a, b);
+    
+    printf("Testing addition with positive/negative patterns:\n");
+    for(int i = 0; i < 12; i++) {
+        printf("%.1f + %.1f = %.1f\n", a_data[i], b_data[i], c->data[i]);
+        assert_close(c->data[i], a_data[i] + b_data[i], 1e-5, "Addition verification");
+    }
+}
+
+void test_reshape() {
+    printf("\n=== Advanced Reshape Tests ===\n");
+    
+    // Test complex reshape chain
+    int dims[] = {2,3,2};
+    float data[] = {1,2,3,4,5,6,7,8,9,10,11,12};
+    Tensor* x = tensor_new(3, dims, data, 1);
+    
+    printf("Original shape: (2,3,2)\n");
+    Tensor* r1 = tensor_reshape(x, 2, (int[]){3,4});
+    Tensor* r2 = tensor_reshape(r1, 1, (int[]){12});
+    Tensor* r3 = tensor_reshape(r2, 4, (int[]){2,2,1,3});
+    
+    printf("Reshape chain: (2,3,2) -> (3,4) -> (12) -> (2,2,1,3)\n");
+    printf("Verifying data continuity through reshapes:\n");
+    for(int i = 0; i < 12; i++) {
+        printf("Position %d: %.1f\n", i, r3->data[i]);
+        assert_close(r3->data[i], data[i], 1e-5, "Reshape data continuity");
+    }
+}
+
+void test_numerical_gradient() {
+    printf("\n=== Numerical Gradient Verification ===\n");
+    
+    float eps = 1e-4;
+    float data[] = {1.0f, 2.0f, 3.0f, 4.0f};
+    Tensor* x = tensor_new(2, (int[]){2,2}, data, 1);
+    
+    // Test exp gradient
+    Tensor* exp_x = tensor_exp(x);
+    exp_x->grad[0] = 1.0f;
+    backward();
+    
+    // Compute numerical gradient
+    float numerical_grad = (expf(data[0] + eps) - expf(data[0])) / eps;
+    assert_close(x->grad[0], numerical_grad, 1e-3, "Exp numerical gradient");
+}
+
+int main() {
+    test_matmul();
+    test_exp_log();
+    test_add();
+    test_reshape();
+    test_numerical_gradient();
+    
+    printf("\nAll tests passed successfully!\n");
     clean_registry();
     return 0;
 }
