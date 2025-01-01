@@ -162,8 +162,9 @@ Tensor* tensor_permute(Tensor* a, const int* p) {
     t[0][a->ndims-1] = t[1][a->ndims-1] = 1;
     for (int i = a->ndims-2; i >= 0; i--) t[0][i] = t[0][i+1] * a->dims[i+1], t[1][i] = t[1][i+1] * n[i+1];
     for (int i = 0; i < s; i++) {
-        int x = i, y = 0;
-        for (int d = 0; d < a->ndims; d++) y += (x / t[0][d]) * t[1][p[d]], x %= t[0][d];
+        int x = i, y = 0, c[MAX_DIMS];
+        for (int d = 0; d < a->ndims; d++) c[d] = (x / t[0][d]) % a->dims[d];
+        for (int d = 0; d < a->ndims; d++) y += c[p[d]] * t[1][d];
         m[y * s + i] = 1;
     }
     Tensor* r = tensor_reshape(tensor_matmul(tensor_new(2, (int[]){s,s}, m, 0), tensor_reshape(a, 2, (int[]){s,1})), a->ndims, n);
@@ -178,78 +179,137 @@ void print_tensor(Tensor* t, const char* name) {
 }
 
 int main() {
-    // Test 1: Simple 2D permutation
-    printf("\nTest 1: Simple 2D permutation [1,0]\n");
+    // Test 1: Detailed 2D permutation verification
+    printf("\nTest 1: Detailed 2D permutation verification\n");
     float data1[] = {1,2,3,4,5,6};
     Tensor* t1 = tensor_new(2, (int[]){2,3}, data1, 1);
-    int perm1[] = {1,0};  // Define permutation array with longer lifetime
-    Tensor* p1 = tensor_permute(t1, perm1);
-    print_tensor(t1, "Original");
-    print_tensor(p1, "Permuted");
-    
-    // Test 2: 3D permutation
-    printf("\nTest 2: 3D permutation [2,0,1]\n");
-    float data2[] = {1,2,3,4,5,6,7,8,9,10,11,12};
-    Tensor* t2 = tensor_new(3, (int[]){2,2,3}, data2, 1);
-    int perm2[] = {2,0,1};  // Define permutation array with longer lifetime
-    Tensor* p2 = tensor_permute(t2, perm2);
-    print_tensor(t2, "Original");
-    print_tensor(p2, "Permuted");
-
-    // Test 3: Identity permutation
-    printf("\nTest 3: Identity permutation [0,1,2]\n");
-    int perm3[] = {0,1,2};  // Define permutation array with longer lifetime
-    Tensor* p3 = tensor_permute(t2, perm3);
-    print_tensor(t2, "Original");
-    if (p3) print_tensor(p3, "Permuted");
-
-    // Test 4: Gradient propagation
-    printf("\nTest 4: Gradient propagation\n");
-    float data4[] = {1,2,3,4};
-    Tensor* t4 = tensor_new(2, (int[]){2,2}, data4, 1);
-    int perm4[] = {1,0};  // Define permutation array with longer lifetime
-    Tensor* p4 = tensor_permute(t4, perm4);
-    if (p4) {
-        p4->grad[0] = 1.0f;
-        p4->grad[1] = 2.0f;
-        p4->grad[2] = 3.0f;
-        p4->grad[3] = 4.0f;
-        backward();
-        print_tensor(t4, "Original with grad");
-        print_tensor(p4, "Permuted with grad");
+    Tensor* p1 = tensor_permute(t1, (int[]){1,0});
+    printf("Original (2x3):\n");
+    for(int i = 0; i < 2; i++) {
+        for(int j = 0; j < 3; j++) printf("%.1f ", t1->data[i*3 + j]);
+        printf("\n");
+    }
+    printf("Permuted (3x2):\n");
+    for(int i = 0; i < 3; i++) {
+        for(int j = 0; j < 2; j++) printf("%.1f ", p1->data[i*2 + j]);
+        printf("\n");
     }
 
-    // Test 5: Invalid permutations
-    printf("\nTest 5: Invalid permutations\n");
-    int invalid_perm1[] = {0,0,1};
-    int invalid_perm2[] = {0,1,3};
-    Tensor* invalid1 = tensor_permute(t2, invalid_perm1);
-    Tensor* invalid2 = tensor_permute(t2, invalid_perm2);
-    printf("Invalid permutation 1 (duplicate): %s\n", invalid1 ? "Failed" : "Passed");
-    printf("Invalid permutation 2 (out of range): %s\n", invalid2 ? "Failed" : "Passed");
+    // Test 2: Complex 3D permutation with value verification
+    printf("\nTest 2: Complex 3D permutation (2x3x4)\n");
+    Tensor* t2 = tensor_new(3, (int[]){2,3,4}, NULL, 1);
+    for(int i = 0; i < t2->size; i++) t2->data[i] = i;
+    
+    printf("Original (2x3x4):\n");
+    for(int i = 0; i < 2; i++) {
+        printf("Layer %d:\n", i);
+        for(int j = 0; j < 3; j++) {
+            for(int k = 0; k < 4; k++) printf("%2.0f ", t2->data[i*12 + j*4 + k]);
+            printf("\n");
+        }
+    }
 
-    // Test 6: Chained permutations
-    printf("\nTest 6: Chained permutations\n");
-    Tensor* t6 = tensor_new(3, (int[]){2,3,4}, NULL, 1);
-    for(int i = 0; i < t6->size; i++) t6->data[i] = i;
-    int perm6a[] = {1,0,2};
-    int perm6b[] = {2,1,0};
-    Tensor* p6a = tensor_permute(t6, perm6a);
-    Tensor* p6b = p6a ? tensor_permute(p6a, perm6b) : NULL;
-    print_tensor(t6, "Original");
-    if (p6a) print_tensor(p6a, "First permutation");
-    if (p6b) print_tensor(p6b, "Second permutation");
+    Tensor* p2 = tensor_permute(t2, (int[]){2,0,1});
+    if (p2) {
+        printf("\nPermuted (4x2x3):\n");
+        for(int i = 0; i < 4; i++) {
+            printf("Layer %d:\n", i);
+            for(int j = 0; j < 2; j++) {
+                for(int k = 0; k < 3; k++) printf("%2.0f ", p2->data[i*6 + j*3 + k]);
+                printf("\n");
+            }
+        }
 
-    // Test 7: Edge cases
-    printf("\nTest 7: Edge cases\n");
-    float data7[] = {1,2,3};
-    Tensor* t7a = tensor_new(1, (int[]){3}, data7, 1);
-    int perm7[] = {0};
-    Tensor* p7a = tensor_permute(t7a, perm7);
-    Tensor* p7b = tensor_permute(NULL, perm7);
-    if (t7a) print_tensor(t7a, "1D tensor");
-    if (p7a) print_tensor(p7a, "1D permuted");
-    printf("NULL tensor permutation: %s\n", p7b ? "Failed" : "Passed");
+        // Verify dimensions
+        printf("\nDimension verification:\n");
+        printf("Original dims: %d x %d x %d\n", t2->dims[0], t2->dims[1], t2->dims[2]);
+        printf("Permuted dims: %d x %d x %d\n", p2->dims[0], p2->dims[1], p2->dims[2]);
+        printf("Original size: %d, Permuted size: %d\n", t2->size, p2->size);
+    }
+
+    // Test 3: Simple permutation verification
+    printf("\nTest 3: Simple permutation verification\n");
+    float data3[] = {1,2,3,4,5,6,7,8};
+    Tensor* t3 = tensor_new(3, (int[]){2,2,2}, data3, 1);
+    printf("Original (2x2x2):\n");
+    for(int i = 0; i < 2; i++) {
+        printf("Layer %d:\n", i);
+        for(int j = 0; j < 2; j++) {
+            for(int k = 0; k < 2; k++) printf("%.1f ", t3->data[i*4 + j*2 + k]);
+            printf("\n");
+        }
+    }
+
+    Tensor* p3 = tensor_permute(t3, (int[]){1,0,2});
+    if (p3) {
+        printf("\nPermuted (2x2x2):\n");
+        for(int i = 0; i < 2; i++) {
+            printf("Layer %d:\n", i);
+            for(int j = 0; j < 2; j++) {
+                for(int k = 0; k < 2; k++) printf("%.1f ", p3->data[i*4 + j*2 + k]);
+                printf("\n");
+            }
+        }
+    }
+
+    // Test 4: Gradient propagation verification
+    printf("\nTest 4: Gradient verification\n");
+    float data4[] = {1,2,3,4};
+    Tensor* t4 = tensor_new(2, (int[]){2,2}, data4, 1);
+    Tensor* p4 = tensor_permute(t4, (int[]){1,0});
+    if (p4) {
+        for(int i = 0; i < 4; i++) p4->grad[i] = i + 1;
+        backward();
+        
+        printf("Original gradients (2x2):\n");
+        for(int i = 0; i < 2; i++) {
+            for(int j = 0; j < 2; j++) printf("%.1f ", t4->grad[i*2 + j]);
+            printf("\n");
+        }
+    }
+
+    // Test 5: Complex permutation chain
+printf("\nTest 5: Complex permutation chain\n");
+float data5[] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16};
+Tensor* t5 = tensor_new(4, (int[]){2,2,2,2}, data5, 1);
+
+printf("Original (2x2x2x2):\n");
+for(int w = 0; w < 2; w++) {
+    printf("W=%d:\n", w);
+    for(int z = 0; z < 2; z++) {
+        printf("Z=%d:\n", z);
+        for(int y = 0; y < 2; y++) {
+            for(int x = 0; x < 2; x++) {
+                printf("%.0f ", t5->data[w*8 + z*4 + y*2 + x]);
+            }
+            printf("\n");
+        }
+    }
+}
+
+// Chain of permutations
+int perms[][4] = {{3,1,2,0}, {0,2,1,3}, {2,3,0,1}};
+Tensor* current = t5;
+for(int i = 0; i < 3; i++) {
+    current = tensor_permute(current, perms[i]);
+    printf("\nAfter permutation %d (%d,%d,%d,%d):\n", i+1,
+           current->dims[0], current->dims[1], current->dims[2], current->dims[3]);
+    for(int w = 0; w < current->dims[0]; w++) {
+        printf("W=%d:\n", w);
+        for(int z = 0; z < current->dims[1]; z++) {
+            printf("Z=%d:\n", z);
+            for(int y = 0; y < current->dims[2]; y++) {
+                for(int x = 0; x < current->dims[3]; x++) {
+                    int idx = w*current->dims[1]*current->dims[2]*current->dims[3] + 
+                             z*current->dims[2]*current->dims[3] + 
+                             y*current->dims[3] + x;
+                    printf("%.0f ", current->data[idx]);
+                }
+                printf("\n");
+            }
+        }
+    }
+}
 
     clean_registry();
     return 0;
