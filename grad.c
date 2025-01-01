@@ -8,7 +8,7 @@
 #define MIN_LOG 1e-7f
 #define MAX_EXP 88.0f
 
-typedef enum { MATMUL, ADD, SUB, RESHAPE, SOFTMAX, PERMUTE } OpType;
+typedef enum { MATMUL, ADD, SUB, RESHAPE, SOFTMAX, PERMUTE, RMSNORM } OpType;
 
 typedef struct Tensor {
     float *data, *grad;
@@ -129,6 +129,45 @@ Tensor* tensor_permute(Tensor* a, const int* perm, int perm_size) {
     return r;
 }
 
+Tensor* tensor_rms_norm(Tensor* x, float eps) {
+    if (!x || x->ndims < 1) return NULL;
+    
+    // Create output tensor with same shape
+    Tensor* out = tensor_new(x->ndims, x->dims, NULL, x->requires_grad);
+    
+    // Calculate the size of the last dimension (normalization dimension)
+    int last_dim = x->dims[x->ndims - 1];
+    int batch_size = x->size / last_dim;
+    
+    // For each batch
+    for (int b = 0; b < batch_size; b++) {
+        float ms = 0.0f;  // mean square
+        
+        // Calculate mean square
+        for (int i = 0; i < last_dim; i++) {
+            float val = x->data[b * last_dim + i];
+            ms += val * val;
+        }
+        ms /= last_dim;
+        
+        // Calculate scaling factor
+        float scale = 1.0f / sqrt(ms + eps);
+        
+        // Apply normalization
+        for (int i = 0; i < last_dim; i++) {
+            out->data[b * last_dim + i] = x->data[b * last_dim + i] * scale;
+        }
+    }
+    
+    if (out->requires_grad) {
+        float* eps_ptr = malloc(sizeof(float));
+        *eps_ptr = eps;
+        tape[tape_len++] = (TapeEntry){RMSNORM, out, x, NULL, (int*)eps_ptr};
+    }
+    
+    return out;
+}
+
 static Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
     if (!a || !b) return NULL;
     int max_d = fmax(a->ndims, b->ndims), rd[32];
@@ -205,6 +244,31 @@ void backward() {
             }
             
             free(a_strides); free(r_strides); free(inv_perm);
+        }else if (e->op == RMSNORM && a->requires_grad) {
+            float eps = *(float*)e->aux_data;
+            int last_dim = a->dims[a->ndims - 1];
+            int batch_size = a->size / last_dim;
+            
+            for (int b = 0; b < batch_size; b++) {
+                float ms = 0.0f;
+                for (int i = 0; i < last_dim; i++) {
+                    float val = a->data[b * last_dim + i];
+                    ms += val * val;
+                }
+                ms /= last_dim;
+                float scale = 1.0f / sqrt(ms + eps);
+                
+                float sum_grad_times_val = 0.0f;
+                for (int i = 0; i < last_dim; i++) {
+                    sum_grad_times_val += r->grad[b * last_dim + i] * a->data[b * last_dim + i];
+                }
+                
+                for (int i = 0; i < last_dim; i++) {
+                    float val = a->data[b * last_dim + i];
+                    a->grad[b * last_dim + i] += scale * r->grad[b * last_dim + i] -
+                        (scale * scale * scale) * val * sum_grad_times_val / last_dim;
+                }
+            }
         }
         
         if (e->aux_data) {
@@ -216,146 +280,122 @@ void backward() {
 }
 
 int main() {
-    printf("=== Comprehensive Matrix Operations Test Suite ===\n\n");
+    printf("=== Comprehensive RMSNorm Test Suite ===\n\n");
 
-    // Test 1: Basic matrix multiplication with 2D matrices
-    printf("Test 1: Basic 2D Matrix Multiplication\n");
+    // Test 1: Verify RMS of output is ~1.0
+    printf("Test 1: Verify RMS of output equals 1.0\n");
     {
-        int dims1[] = {3, 4};
-        int dims2[] = {4, 2};
-        float data1[] = {
-            1, 2, 3, 4,
-            5, 6, 7, 8,
-            9, 10, 11, 12
-        };
-        float data2[] = {
-            1, 2,
-            3, 4,
-            5, 6,
-            7, 8
-        };
+        int dims[] = {4};
+        float data[] = {1.0f, 2.0f, 3.0f, 4.0f};
         
-        Tensor* a = tensor_new(2, dims1, data1, 1);
-        Tensor* b = tensor_new(2, dims2, data2, 1);
-        Tensor* c = tensor_matmul(a, b);
+        Tensor* x = tensor_new(1, dims, data, 1);
+        Tensor* normalized = tensor_rms_norm(x, 1e-6f);
         
-        printf("Matrix A (3x4):\n");
-        for(int i = 0; i < 3; i++) {
-            for(int j = 0; j < 4; j++) printf("%4.0f ", data1[i*4 + j]);
-            printf("\n");
-        }
-        
-        printf("\nMatrix B (4x2):\n");
+        // Calculate RMS of output
+        float rms = 0.0f;
         for(int i = 0; i < 4; i++) {
-            for(int j = 0; j < 2; j++) printf("%4.0f ", data2[i*2 + j]);
-            printf("\n");
+            rms += normalized->data[i] * normalized->data[i];
         }
+        rms = sqrt(rms / 4);
         
-        printf("\nResult C (3x2):\n");
-        for(int i = 0; i < 3; i++) {
-            for(int j = 0; j < 2; j++) printf("%4.0f ", c->data[i*2 + j]);
-            printf("\n");
-        }
+        printf("Input: [%.2f %.2f %.2f %.2f]\n", data[0], data[1], data[2], data[3]);
+        printf("Output: [%.6f %.6f %.6f %.6f]\n", 
+               normalized->data[0], normalized->data[1], 
+               normalized->data[2], normalized->data[3]);
+        printf("RMS of output: %.9f (should be very close to 1.0)\n", rms);
     }
     printf("\n");
 
-    // Test 2: 3D batch matrix multiplication
-    printf("Test 2: 3D Batch Matrix Multiplication\n");
+    // Test 2: Scale invariance
+    printf("Test 2: Scale Invariance\n");
     {
-        int dims1[] = {2, 2, 3};  // 2 batches of 2x3 matrices
-        int dims2[] = {2, 3, 2};  // 2 batches of 3x2 matrices
-        float data1[] = {
-            1, 2, 3,
-            4, 5, 6,
-            
-            7, 8, 9,
-            10, 11, 12
-        };
-        float data2[] = {
-            1, 2,
-            3, 4,
-            5, 6,
-            
-            7, 8,
-            9, 10,
-            11, 12
-        };
+        int dims[] = {4};
+        float data1[] = {1.0f, 2.0f, 3.0f, 4.0f};
+        float data2[] = {2.0f, 4.0f, 6.0f, 8.0f};  // scaled by 2
         
-        Tensor* a = tensor_new(3, dims1, data1, 1);
-        Tensor* b = tensor_new(3, dims2, data2, 1);
-        Tensor* c = tensor_matmul(a, b);
+        Tensor* x1 = tensor_new(1, dims, data1, 1);
+        Tensor* x2 = tensor_new(1, dims, data2, 1);
+        Tensor* norm1 = tensor_rms_norm(x1, 1e-6f);
+        Tensor* norm2 = tensor_rms_norm(x2, 1e-6f);
         
-        printf("Batch 1 Result:\n");
-        for(int i = 0; i < 2; i++) {
-            for(int j = 0; j < 2; j++) printf("%4.0f ", c->data[i*2 + j]);
-            printf("\n");
-        }
-        
-        printf("\nBatch 2 Result:\n");
-        for(int i = 0; i < 2; i++) {
-            for(int j = 0; j < 2; j++) printf("%4.0f ", c->data[4 + i*2 + j]);
-            printf("\n");
-        }
+        printf("Original normalized: [%.6f %.6f %.6f %.6f]\n",
+               norm1->data[0], norm1->data[1], norm1->data[2], norm1->data[3]);
+        printf("Scaled normalized:   [%.6f %.6f %.6f %.6f]\n",
+               norm2->data[0], norm2->data[1], norm2->data[2], norm2->data[3]);
     }
     printf("\n");
 
-    // Test 3: Complex operation chain with gradients
-    printf("Test 3: Complex Operation Chain with Gradients\n");
+    // Test 3: Edge cases
+    printf("Test 3: Edge Cases\n");
     {
-        int dims1[] = {2, 2};
-        int dims2[] = {2, 2};
-        float data1[] = {1, 2,
-                        3, 4};
-        float data2[] = {5, 6,
-                        7, 8};
+        int dims[] = {4};
+        // Test with very small values
+        float small_data[] = {1e-6f, 2e-6f, 3e-6f, 4e-6f};
+        // Test with very large values
+        float large_data[] = {1e6f, 2e6f, 3e6f, 4e6f};
+        // Test with zeros (with one non-zero to avoid division by zero)
+        float zero_data[] = {0.0f, 0.0f, 0.0f, 1e-5f};
         
-        Tensor* a = tensor_new(2, dims1, data1, 1);
-        Tensor* b = tensor_new(2, dims2, data2, 1);
+        Tensor* x_small = tensor_new(1, dims, small_data, 1);
+        Tensor* x_large = tensor_new(1, dims, large_data, 1);
+        Tensor* x_zero = tensor_new(1, dims, zero_data, 1);
         
-        // Perform: C = (A @ B).permute(1,0)
-        Tensor* c = tensor_matmul(a, b);
-        int perm[] = {1, 0};
-        Tensor* d = tensor_permute(c, perm, 2);
+        Tensor* norm_small = tensor_rms_norm(x_small, 1e-6f);
+        Tensor* norm_large = tensor_rms_norm(x_large, 1e-6f);
+        Tensor* norm_zero = tensor_rms_norm(x_zero, 1e-6f);
         
-        printf("Initial A:\n");
-        for(int i = 0; i < 2; i++) {
-            for(int j = 0; j < 2; j++) printf("%4.0f ", a->data[i*2 + j]);
-            printf("\n");
-        }
+        printf("Small values normalized: [%.6f %.6f %.6f %.6f]\n",
+               norm_small->data[0], norm_small->data[1], 
+               norm_small->data[2], norm_small->data[3]);
+        printf("Large values normalized: [%.6f %.6f %.6f %.6f]\n",
+               norm_large->data[0], norm_large->data[1], 
+               norm_large->data[2], norm_large->data[3]);
+        printf("Near-zero values normalized: [%.6f %.6f %.6f %.6f]\n",
+               norm_zero->data[0], norm_zero->data[1], 
+               norm_zero->data[2], norm_zero->data[3]);
+    }
+    printf("\n");
+
+    // Test 4: Gradient verification
+    printf("Test 4: Gradient Verification\n");
+    {
+        int dims[] = {3};
+        float data[] = {1.0f, 2.0f, 3.0f};
         
-        printf("\nInitial B:\n");
-        for(int i = 0; i < 2; i++) {
-            for(int j = 0; j < 2; j++) printf("%4.0f ", b->data[i*2 + j]);
-            printf("\n");
-        }
+        Tensor* x = tensor_new(1, dims, data, 1);
+        Tensor* normalized = tensor_rms_norm(x, 1e-6f);
         
-        printf("\nResult before permute:\n");
-        for(int i = 0; i < 2; i++) {
-            for(int j = 0; j < 2; j++) printf("%4.0f ", c->data[i*2 + j]);
-            printf("\n");
-        }
+        // Set gradient to [1, 1, 1]
+        for(int i = 0; i < 3; i++) normalized->grad[i] = 1.0f;
         
-        printf("\nFinal result after permute:\n");
-        for(int i = 0; i < 2; i++) {
-            for(int j = 0; j < 2; j++) printf("%4.0f ", d->data[i*2 + j]);
-            printf("\n");
-        }
-        
-        // Set gradient and backpropagate
-        d->grad[0] = 1.0f;
-        d->grad[1] = 0.5f;
         backward();
         
-        printf("\nGradients for A:\n");
-        for(int i = 0; i < 2; i++) {
-            for(int j = 0; j < 2; j++) printf("%4.1f ", a->grad[i*2 + j]);
-            printf("\n");
-        }
+        printf("Input: [%.2f %.2f %.2f]\n", data[0], data[1], data[2]);
+        printf("Normalized: [%.6f %.6f %.6f]\n",
+               normalized->data[0], normalized->data[1], normalized->data[2]);
+        printf("Gradients: [%.6f %.6f %.6f]\n",
+               x->grad[0], x->grad[1], x->grad[2]);
         
-        printf("\nGradients for B:\n");
-        for(int i = 0; i < 2; i++) {
-            for(int j = 0; j < 2; j++) printf("%4.1f ", b->grad[i*2 + j]);
-            printf("\n");
+        // Verify gradient using finite differences
+        float eps = 1e-4f;
+        printf("\nNumerical gradient check (should be close to analytical gradients):\n");
+        for(int i = 0; i < 3; i++) {
+            data[i] += eps;
+            Tensor* x_plus = tensor_new(1, dims, data, 0);
+            Tensor* norm_plus = tensor_rms_norm(x_plus, 1e-6f);
+            
+            data[i] -= 2*eps;
+            Tensor* x_minus = tensor_new(1, dims, data, 0);
+            Tensor* norm_minus = tensor_rms_norm(x_minus, 1e-6f);
+            
+            float numerical_grad = 0;
+            for(int j = 0; j < 3; j++) {
+                numerical_grad += (norm_plus->data[j] - norm_minus->data[j]) / (2*eps);
+            }
+            
+            printf("dim %d numerical grad: %.6f\n", i, numerical_grad);
+            
+            data[i] += eps;  // restore original value
         }
     }
 
