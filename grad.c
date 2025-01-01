@@ -9,7 +9,7 @@
 #define MAX_EXP 88.0f
 #define MAX_DIMS 32
 
-typedef enum { MATMUL, EXP, LOG, ADD, RESHAPE } OpType;
+typedef enum { MATMUL, EXP, LOG, ADD, SUB, RESHAPE } OpType;
 
 typedef struct Tensor {
     float *data, *grad;
@@ -91,6 +91,15 @@ Tensor* tensor_add(Tensor* a, Tensor* b) {
     return result;
 }
 
+Tensor* tensor_sub(Tensor* a, Tensor* b) {
+    if (!a || !b || a->ndims != b->ndims) return NULL;
+    for (int i = 0; i < a->ndims; i++) if (a->dims[i] != b->dims[i]) return NULL;
+    Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad || b->requires_grad);
+    for (int i = 0; i < a->size; i++) result->data[i] = a->data[i] - b->data[i];
+    if (result->requires_grad) tape[tape_len++] = (TapeEntry){SUB, result, a, b};
+    return result;
+}
+
 Tensor* tensor_reshape(Tensor* a, int ndims, const int* new_dims) {
     int size = 1;
     for (int i = 0; i < ndims; i++) size *= new_dims[i];
@@ -123,6 +132,10 @@ void backward() {
             case ADD:
                 if (a->requires_grad) for (int i = 0; i < a->size; i++) a->grad[i] += result->grad[i];
                 if (b->requires_grad) for (int i = 0; i < b->size; i++) b->grad[i] += result->grad[i];
+                break;
+            case SUB:
+                if (a->requires_grad) for (int i = 0; i < a->size; i++) a->grad[i] += result->grad[i];
+                if (b->requires_grad) for (int i = 0; i < b->size; i++) b->grad[i] -= result->grad[i];
                 break;
             case EXP:
                 if (a->requires_grad) for (int i = 0; i < a->size; i++) a->grad[i] += result->grad[i] * result->data[i];
@@ -350,6 +363,90 @@ void test_add() {
     }
 }
 
+void test_sub() {
+    printf("\n=== Advanced Subtraction Tests ===\n");
+    
+    // Test 1: Basic 2D tensor subtraction
+    printf("Test 1: Basic 2D tensor subtraction\n");
+    float a_data[] = {
+        1.0f, 2.0f, 1.5f,
+        4.0f, 5.0f, 6.0f
+    };
+    float b_data[] = {
+        0.5f, 1.0f, 3.0f,
+        2.0f, 2.5f, 3.0f
+    };
+    
+    Tensor* a = tensor_new(2, (int[]){2,3}, a_data, 1);
+    Tensor* b = tensor_new(2, (int[]){2,3}, b_data, 1);
+    Tensor* c = tensor_sub(a, b);
+    
+    printf("Matrix A:\n");
+    for(int i = 0; i < 2; i++) {
+        for(int j = 0; j < 3; j++) {
+            printf("%.1f ", a_data[i*3 + j]);
+        }
+        printf("\n");
+    }
+    
+    printf("\nMatrix B:\n");
+    for(int i = 0; i < 2; i++) {
+        for(int j = 0; j < 3; j++) {
+            printf("%.1f ", b_data[i*3 + j]);
+        }
+        printf("\n");
+    }
+    
+    printf("\nResult (A-B):\n");
+    for(int i = 0; i < 2; i++) {
+        for(int j = 0; j < 3; j++) {
+            printf("%.1f ", c->data[i*3 + j]);
+            assert_close(c->data[i*3 + j], 
+                        a_data[i*3 + j] - b_data[i*3 + j], 
+                        1e-5, "Basic subtraction");
+        }
+        printf("\n");
+    }
+    
+    // Test 2: Gradient computation
+    printf("\nTest 2: Gradient computation\n");
+    c->grad[0] = 1.0f;  // Set gradient for first element
+    backward();
+    
+    printf("Gradients for first element:\n");
+    printf("dL/da = %.1f (should be 1.0)\n", a->grad[0]);
+    printf("dL/db = %.1f (should be -1.0)\n", b->grad[0]);
+    assert_close(a->grad[0], 1.0f, 1e-5, "Gradient of first tensor");
+    assert_close(b->grad[0], -1.0f, 1e-5, "Gradient of second tensor");
+    
+    // Test 3: Chained operations
+    printf("\nTest 3: Chained operations\n");
+    Tensor* x = tensor_new(1, (int[]){1}, (float[]){2.0f}, 1);
+    Tensor* y = tensor_new(1, (int[]){1}, (float[]){1.0f}, 1);
+    Tensor* z = tensor_sub(x, y);  // z = x - y
+    Tensor* w = tensor_sub(z, y);  // w = (x - y) - y
+    
+    printf("Computing w = (x - y) - y where x = 2.0, y = 1.0\n");
+    printf("Result: %.1f (should be 0.0)\n", w->data[0]);
+    assert_close(w->data[0], 0.0f, 1e-5, "Chained subtraction");
+    
+    w->grad[0] = 1.0f;
+    backward();
+    printf("Gradients:\n");
+    printf("dw/dx = %.1f (should be 1.0)\n", x->grad[0]);
+    printf("dw/dy = %.1f (should be -2.0)\n", y->grad[0]);
+    assert_close(x->grad[0], 1.0f, 1e-5, "Chained gradient x");
+    assert_close(y->grad[0], -2.0f, 1e-5, "Chained gradient y");
+    
+    // Test 4: Broadcasting error handling
+    printf("\nTest 4: Error handling\n");
+    Tensor* a1 = tensor_new(2, (int[]){2,3}, NULL, 1);
+    Tensor* b1 = tensor_new(2, (int[]){2,2}, NULL, 1);
+    Tensor* c1 = tensor_sub(a1, b1);
+    printf("Attempting subtraction with incompatible shapes: %s\n", 
+           c1 == NULL ? "Correctly returned NULL" : "Failed to catch error");
+}
+
 void test_reshape() {
     printf("\n=== Advanced Reshape Tests ===\n");
     
@@ -485,8 +582,8 @@ void test_reduce_sum() {
     Tensor* t3d = tensor_new(3, (int[]){2,2,2}, data3d, 1);
     
     Tensor* sum0 = tensor_reduce_sum(t3d, 0);  // (2,2)
-    Tensor* sum1 = tensor_reduce_sum(t3d, 1);  // (2,2)
-    Tensor* sum2 = tensor_reduce_sum(t3d, 2);  // (2,2)
+    tensor_reduce_sum(t3d, 1);  // (2,2)
+    tensor_reduce_sum(t3d, 2);  // (2,2)
     
     printf("Original 3D tensor (2,2,2):\n");
     for(int i = 0; i < 2; i++) {
@@ -579,6 +676,7 @@ int main() {
     test_matmul();
     test_exp_log();
     test_add();
+    test_sub();
     test_reshape();
     test_numerical_gradient();
     test_permute();
