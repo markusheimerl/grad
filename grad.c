@@ -54,14 +54,10 @@ void clean_registry() {
 
 Tensor* tensor_add(Tensor* a, Tensor* b) {
     if (a->ndims != b->ndims) return NULL;
-    for (int i = 0; i < a->ndims; i++) 
-        if (a->dims[i] != b->dims[i]) return NULL;
-    
+    for (int i = 0; i < a->ndims; i++) if (a->dims[i] != b->dims[i]) return NULL;
     Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad || b->requires_grad);
-    for (int i = 0; i < a->size; i++) 
-        result->data[i] = a->data[i] + b->data[i];
-    if (result->requires_grad) 
-        tape[tape_len++] = (TapeEntry){ADD, result, a, b, NULL};
+    for (int i = 0; i < a->size; i++) result->data[i] = a->data[i] + b->data[i];
+    if (result->requires_grad) tape[tape_len++] = (TapeEntry){ADD, result, a, b, NULL};
     return result;
 }
 
@@ -97,19 +93,15 @@ Tensor* tensor_matmul(Tensor* a, Tensor* b) {
 
 Tensor* tensor_exp(Tensor* a) {
     Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
-    for (int i = 0; i < a->size; i++) 
-        result->data[i] = expf(fminf(a->data[i], MAX_EXP));
-    if (result->requires_grad) 
-        tape[tape_len++] = (TapeEntry){EXP, result, a, NULL, NULL};
+    for (int i = 0; i < a->size; i++) result->data[i] = expf(fminf(a->data[i], MAX_EXP));
+    if (result->requires_grad) tape[tape_len++] = (TapeEntry){EXP, result, a, NULL, NULL};
     return result;
 }
 
 Tensor* tensor_log(Tensor* a) {
     Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
-    for (int i = 0; i < a->size; i++) 
-        result->data[i] = logf(fmaxf(a->data[i], MIN_LOG));
-    if (result->requires_grad) 
-        tape[tape_len++] = (TapeEntry){LOG, result, a, NULL, NULL};
+    for (int i = 0; i < a->size; i++) result->data[i] = logf(fmaxf(a->data[i], MIN_LOG));
+    if (result->requires_grad) tape[tape_len++] = (TapeEntry){LOG, result, a, NULL, NULL};
     return result;
 }
 
@@ -117,10 +109,8 @@ Tensor* tensor_reshape(Tensor* a, int ndims, const int* new_dims) {
     int size = 1;
     for (int i = 0; i < ndims; i++) size *= new_dims[i];
     if (size != a->size) return NULL;
-    
     Tensor* result = tensor_new(ndims, new_dims, a->data, a->requires_grad);
-    if (result->requires_grad) 
-        tape[tape_len++] = (TapeEntry){RESHAPE, result, a, NULL, NULL};
+    if (result->requires_grad) tape[tape_len++] = (TapeEntry){RESHAPE, result, a, NULL, NULL};
     return result;
 }
 
