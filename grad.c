@@ -57,7 +57,7 @@ void clean_registry() {
     }
 }
 
-static Tensor* binary_op(Tensor* a, Tensor* b, OpType op) {
+static Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
     if (!a || !b) return NULL;
     int max_d = fmax(a->ndims, b->ndims), rd[32];
     
@@ -79,8 +79,8 @@ static Tensor* binary_op(Tensor* a, Tensor* b, OpType op) {
     return r;
 }
 
-Tensor* tensor_add(Tensor* a, Tensor* b) { return binary_op(a, b, ADD); }
-Tensor* tensor_sub(Tensor* a, Tensor* b) { return binary_op(a, b, SUB); }
+Tensor* tensor_add(Tensor* a, Tensor* b) { return tensor_op(a, b, ADD); }
+Tensor* tensor_sub(Tensor* a, Tensor* b) { return tensor_op(a, b, SUB); }
 
 Tensor* tensor_exp(Tensor* a) {
     Tensor* r = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
