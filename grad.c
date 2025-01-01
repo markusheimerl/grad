@@ -371,74 +371,74 @@ Tensor* tensor_multihead_attention(Tensor* Q, Tensor* K, Tensor* V, int num_head
 }
 
 int main() {
-{
-    printf("\nTest 1: Basic Multi-Head Attention with Simple Values\n");
-    int batch_size = 1;
-    int seq_len = 2;
-    int d_model = 4;
-    int num_heads = 2;
-    int qkv_dims[] = {batch_size, seq_len, d_model};
-    
-    float q_data[] = {
-        1.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 1.0f
-    };
-    float k_data[] = {
-        1.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 1.0f
-    };
-    float v_data[] = {
-        1.0f, 1.0f, 2.0f, 2.0f,
-        3.0f, 3.0f, 4.0f, 4.0f
-    };
+    {
+        printf("\nTest 1: Basic Multi-Head Attention with Simple Values\n");
+        int batch_size = 1;
+        int seq_len = 2;
+        int d_model = 4;
+        int num_heads = 2;
+        int qkv_dims[] = {batch_size, seq_len, d_model};
+        
+        float q_data[] = {
+            1.0f, 1.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 1.0f, 1.0f
+        };
+        float k_data[] = {
+            1.0f, 1.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 1.0f, 1.0f
+        };
+        float v_data[] = {
+            1.0f, 1.0f, 2.0f, 2.0f,
+            3.0f, 3.0f, 4.0f, 4.0f
+        };
 
-    Tensor* Q = tensor_new(3, qkv_dims, q_data, 1);
-    Tensor* K = tensor_new(3, qkv_dims, k_data, 1);
-    Tensor* V = tensor_new(3, qkv_dims, v_data, 1);
-    
-    printf("\nInput values:");
-    printf("\nQ:"); for(int i = 0; i < 8; i++) printf(" %f", q_data[i]);
-    printf("\nK:"); for(int i = 0; i < 8; i++) printf(" %f", k_data[i]);
-    printf("\nV:"); for(int i = 0; i < 8; i++) printf(" %f", v_data[i]);
-    printf("\n");
-    
-    Tensor* output = tensor_multihead_attention(Q, K, V, num_heads);
-    
-    printf("\nFinal output values:\n");
-    for (int i = 0; i < seq_len; i++) {
-        printf("Seq %d:", i);
-        for (int j = 0; j < d_model; j++) {
-            printf(" %6.3f", output->data[i * d_model + j]);
+        Tensor* Q = tensor_new(3, qkv_dims, q_data, 1);
+        Tensor* K = tensor_new(3, qkv_dims, k_data, 1);
+        Tensor* V = tensor_new(3, qkv_dims, v_data, 1);
+        
+        printf("\nInput values:");
+        printf("\nQ:"); for(int i = 0; i < 8; i++) printf(" %f", q_data[i]);
+        printf("\nK:"); for(int i = 0; i < 8; i++) printf(" %f", k_data[i]);
+        printf("\nV:"); for(int i = 0; i < 8; i++) printf(" %f", v_data[i]);
+        printf("\n");
+        
+        Tensor* output = tensor_multihead_attention(Q, K, V, num_heads);
+        
+        printf("\nFinal output values:\n");
+        for (int i = 0; i < seq_len; i++) {
+            printf("Seq %d:", i);
+            for (int j = 0; j < d_model; j++) {
+                printf(" %6.3f", output->data[i * d_model + j]);
+            }
+            printf("\n");
+        }
+        
+        printf("\nSetting output gradients to 1.0\n");
+        for (int i = 0; i < output->size; i++) {
+            output->grad[i] = 1.0f;
+        }
+        
+        backward();
+        
+        printf("\nQ gradients:\n");
+        for (int i = 0; i < seq_len; i++) {
+            printf("Seq %d:", i);
+            for (int j = 0; j < d_model; j++) {
+                printf(" %6.3f", Q->grad[i * d_model + j]);
+            }
+            printf("\n");
+        }
+        
+        printf("\nK gradients:\n");
+        for (int i = 0; i < seq_len; i++) {
+            printf("Seq %d:", i);
+            for (int j = 0; j < d_model; j++) {
+                printf(" %6.3f", K->grad[i * d_model + j]);
+            }
+            printf("\n");
         }
         printf("\n");
     }
-    
-    printf("\nSetting output gradients to 1.0\n");
-    for (int i = 0; i < output->size; i++) {
-        output->grad[i] = 1.0f;
-    }
-    
-    backward();
-    
-    printf("\nQ gradients:\n");
-    for (int i = 0; i < seq_len; i++) {
-        printf("Seq %d:", i);
-        for (int j = 0; j < d_model; j++) {
-            printf(" %6.3f", Q->grad[i * d_model + j]);
-        }
-        printf("\n");
-    }
-    
-    printf("\nK gradients:\n");
-    for (int i = 0; i < seq_len; i++) {
-        printf("Seq %d:", i);
-        for (int j = 0; j < d_model; j++) {
-            printf(" %6.3f", K->grad[i * d_model + j]);
-        }
-        printf("\n");
-    }
-    printf("\n");
-}
 
     {
         printf("Test 2: Uniform Attention Pattern\n");
@@ -471,48 +471,48 @@ int main() {
         printf("\n");
     }
 
-{
-    printf("\nTest 3: Gradient Flow\n");
-    int batch_size = 1;
-    int seq_len = 2;
-    int d_model = 4;
-    int num_heads = 2;
-    int dims[] = {batch_size, seq_len, d_model};
-    
-    float q_data[] = {
-        1.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 1.0f
-    };
-    float k_data[] = {
-        1.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 1.0f
-    };
-    float v_data[] = {
-        1.0f, 1.0f, 2.0f, 2.0f,
-        3.0f, 3.0f, 4.0f, 4.0f
-    };
+    {
+        printf("\nTest 3: Gradient Flow\n");
+        int batch_size = 1;
+        int seq_len = 2;
+        int d_model = 4;
+        int num_heads = 2;
+        int dims[] = {batch_size, seq_len, d_model};
 
-    Tensor* Q = tensor_new(3, dims, q_data, 1);
-    Tensor* K = tensor_new(3, dims, k_data, 1);
-    Tensor* V = tensor_new(3, dims, v_data, 1);
-    
-    Tensor* output = tensor_multihead_attention(Q, K, V, num_heads);
-    
-    for (int i = 0; i < output->size; i++) {
-        output->grad[i] = 1.0f;
-    }
-    
-    backward();
-    
-    printf("Q gradients:\n");
-    for (int i = 0; i < seq_len; i++) {
-        printf("Seq %d:", i);
-        for (int j = 0; j < d_model; j++) {
-            printf(" %6.3f", Q->grad[i * d_model + j]);
+        float q_data[] = {
+            1.0f, 1.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 1.0f, 1.0f
+        };
+        float k_data[] = {
+            1.0f, 1.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 1.0f, 1.0f
+        };
+        float v_data[] = {
+            1.0f, 1.0f, 2.0f, 2.0f,
+            3.0f, 3.0f, 4.0f, 4.0f
+        };
+
+        Tensor* Q = tensor_new(3, dims, q_data, 1);
+        Tensor* K = tensor_new(3, dims, k_data, 1);
+        Tensor* V = tensor_new(3, dims, v_data, 1);
+
+        Tensor* output = tensor_multihead_attention(Q, K, V, num_heads);
+
+        for (int i = 0; i < output->size; i++) {
+            output->grad[i] = 1.0f;
         }
-        printf("\n");
+
+        backward();
+
+        printf("Q gradients:\n");
+        for (int i = 0; i < seq_len; i++) {
+            printf("Seq %d:", i);
+            for (int j = 0; j < d_model; j++) {
+                printf(" %6.3f", Q->grad[i * d_model + j]);
+            }
+            printf("\n");
+        }
     }
-}
 
     {
         printf("\nTest 4: Error Cases\n");
