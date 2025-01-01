@@ -8,7 +8,7 @@
 #define MIN_LOG 1e-7f
 #define MAX_EXP 88.0f
 
-typedef enum { MATMUL, EXP, LOG, ADD, SUB, RESHAPE } OpType;
+typedef enum { MATMUL, EXP, LOG, ADD, SUB, RESHAPE, REDUCE_SUM } OpType;
 
 typedef struct Tensor {
     float *data, *grad;
@@ -19,6 +19,7 @@ typedef struct Tensor {
 typedef struct {
     OpType op;
     Tensor *result, *input1, *input2;
+    int reduce_dim;  // Added for REDUCE_SUM
 } TapeEntry;
 
 static TapeEntry tape[MAX_TAPE];
@@ -75,7 +76,7 @@ static Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
         r->data[i] = op == ADD ? av + bv : av - bv;
     }
     
-    if (r->requires_grad) tape[tape_len++] = (TapeEntry){op, r, a, b};
+    if (r->requires_grad) tape[tape_len++] = (TapeEntry){op, r, a, b, -1};
     return r;
 }
 
@@ -85,14 +86,14 @@ Tensor* tensor_sub(Tensor* a, Tensor* b) { return tensor_op(a, b, SUB); }
 Tensor* tensor_exp(Tensor* a) {
     Tensor* r = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
     for (int i = 0; i < a->size; i++) r->data[i] = expf(fminf(a->data[i], MAX_EXP));
-    if (r->requires_grad) tape[tape_len++] = (TapeEntry){EXP, r, a, NULL};
+    if (r->requires_grad) tape[tape_len++] = (TapeEntry){EXP, r, a, NULL, -1};
     return r;
 }
 
 Tensor* tensor_log(Tensor* a) {
     Tensor* r = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
     for (int i = 0; i < a->size; i++) r->data[i] = logf(fmaxf(a->data[i], MIN_LOG));
-    if (r->requires_grad) tape[tape_len++] = (TapeEntry){LOG, r, a, NULL};
+    if (r->requires_grad) tape[tape_len++] = (TapeEntry){LOG, r, a, NULL, -1};
     return r;
 }
 
@@ -116,7 +117,7 @@ Tensor* tensor_matmul(Tensor* a, Tensor* b) {
                     sum += a->data[n*M*K + i*K + k] * b->data[n*K*N + k*N + j];
                 r->data[n*M*N + i*N + j] = sum;
             }
-    if (r->requires_grad) tape[tape_len++] = (TapeEntry){MATMUL, r, a, b};
+    if (r->requires_grad) tape[tape_len++] = (TapeEntry){MATMUL, r, a, b, -1};
     return r;
 }
 
@@ -125,7 +126,47 @@ Tensor* tensor_reshape(Tensor* a, int ndims, const int* dims) {
     for (int i = 0; i < ndims; i++) size *= dims[i];
     if (size != a->size) return NULL;
     Tensor* r = tensor_new(ndims, dims, a->data, a->requires_grad);
-    if (r->requires_grad) tape[tape_len++] = (TapeEntry){RESHAPE, r, a, NULL};
+    if (r->requires_grad) tape[tape_len++] = (TapeEntry){RESHAPE, r, a, NULL, -1};
+    return r;
+}
+
+Tensor* tensor_reduce_sum(Tensor* a, int dim) {
+    if (!a || dim >= a->ndims) return NULL;
+    
+    int new_ndims = a->ndims - 1;
+    int new_dims[32];
+    for (int i = 0, j = 0; i < a->ndims; i++) {
+        if (i != dim) new_dims[j++] = a->dims[i];
+    }
+    
+    Tensor* r = tensor_new(new_ndims, new_dims, NULL, a->requires_grad);
+    
+    int stride[32];
+    stride[a->ndims - 1] = 1;
+    for (int i = a->ndims - 2; i >= 0; i--) {
+        stride[i] = stride[i + 1] * a->dims[i + 1];
+    }
+    
+    memset(r->data, 0, r->size * sizeof(float));
+    
+    for (int i = 0; i < a->size; i++) {
+        int coords[32], idx = i;
+        for (int d = 0; d < a->ndims; d++) {
+            coords[d] = idx / stride[d];
+            idx %= stride[d];
+        }
+        
+        int target_idx = 0, stride_r = 1;
+        for (int d = a->ndims - 1, r_d = new_ndims - 1; d >= 0; d--) {
+            if (d != dim) {
+                target_idx += coords[d] * stride_r;
+                stride_r *= new_dims[r_d--];
+            }
+        }
+        r->data[target_idx] += a->data[i];
+    }
+    
+    if (r->requires_grad) tape[tape_len++] = (TapeEntry){REDUCE_SUM, r, a, NULL, dim};
     return r;
 }
 
@@ -162,80 +203,268 @@ void backward() {
         else if (e->op == RESHAPE && a->requires_grad)
             for (int i = 0; i < a->size; i++)
                 a->grad[i] += r->grad[i];
+        else if (e->op == REDUCE_SUM && a->requires_grad) {
+            int stride[32];
+            stride[a->ndims - 1] = 1;
+            for (int i = a->ndims - 2; i >= 0; i--) {
+                stride[i] = stride[i + 1] * a->dims[i + 1];
+            }
+            
+            for (int i = 0; i < a->size; i++) {
+                int coords[32], idx = i;
+                for (int d = 0; d < a->ndims; d++) {
+                    coords[d] = idx / stride[d];
+                    idx %= stride[d];
+                }
+                
+                int target_idx = 0, stride_r = 1;
+                for (int d = a->ndims - 1, r_d = r->ndims - 1; d >= 0; d--) {
+                    if (d != e->reduce_dim) {
+                        target_idx += coords[d] * stride_r;
+                        stride_r *= r->dims[r_d--];
+                    }
+                }
+                a->grad[i] += r->grad[target_idx];
+            }
+        }
     }
     tape_len = 0;
 }
 
 int main() {
-    // Test 5D matrix multiplication
-    int dims_a[] = {2, 3, 4, 3, 2}; // 2x3x4x3x2 tensor
-    int dims_b[] = {2, 3, 4, 2, 4}; // 2x3x4x2x4 tensor
-    
-    // Create test data for tensor A
-    float* data_a = malloc(2 * 3 * 4 * 3 * 2 * sizeof(float));
-    for (int i = 0; i < 2*3*4*3*2; i++) {
-        data_a[i] = (float)(i) / 10.0f;
+    // Test 1: Simple 2D tensor reduction along dim 0
+    {
+        printf("\nTest 1: 2D tensor reduction along dim 0\n");
+        float data[] = {1, 2, 3,
+                       4, 5, 6};
+        int dims[] = {2, 3};
+        Tensor* a = tensor_new(2, dims, data, 1);
+        Tensor* b = tensor_reduce_sum(a, 0);
+        
+        printf("Input:\n");
+        for (int i = 0; i < 2; i++) {
+            for (int j = 0; j < 3; j++) {
+                printf("%.1f ", a->data[i*3 + j]);
+            }
+            printf("\n");
+        }
+        
+        printf("Output (reduce dim 0):\n");
+        for (int i = 0; i < 3; i++) {
+            printf("%.1f ", b->data[i]);
+        }
+        printf("\n");
+        
+        // Test backward
+        b->grad[0] = 1.0;
+        b->grad[1] = 1.0;
+        b->grad[2] = 1.0;
+        backward();
+        
+        printf("Gradients:\n");
+        for (int i = 0; i < 2; i++) {
+            for (int j = 0; j < 3; j++) {
+                printf("%.1f ", a->grad[i*3 + j]);
+            }
+            printf("\n");
+        }
     }
-    
-    // Create test data for tensor B
-    float* data_b = malloc(2 * 3 * 4 * 2 * 4 * sizeof(float));
-    for (int i = 0; i < 2*3*4*2*4; i++) {
-        data_b[i] = (float)(i) / 20.0f;
+
+    // Test 2: 3D tensor reduction along dim 1
+    {
+        printf("\nTest 2: 3D tensor reduction along dim 1\n");
+        float data[] = {1, 2,
+                       3, 4,
+                       5, 6,
+                       
+                       7, 8,
+                       9, 10,
+                       11, 12};
+        int dims[] = {2, 3, 2};
+        Tensor* a = tensor_new(3, dims, data, 1);
+        Tensor* b = tensor_reduce_sum(a, 1);
+        
+        printf("Input:\n");
+        for (int i = 0; i < 2; i++) {
+            printf("Batch %d:\n", i);
+            for (int j = 0; j < 3; j++) {
+                for (int k = 0; k < 2; k++) {
+                    printf("%.1f ", a->data[i*6 + j*2 + k]);
+                }
+                printf("\n");
+            }
+        }
+        
+        printf("Output (reduce dim 1):\n");
+        for (int i = 0; i < 2; i++) {
+            for (int j = 0; j < 2; j++) {
+                printf("%.1f ", b->data[i*2 + j]);
+            }
+            printf("\n");
+        }
+        
+        // Test backward
+        for (int i = 0; i < b->size; i++) {
+            b->grad[i] = 1.0;
+        }
+        backward();
+        
+        printf("Gradients:\n");
+        for (int i = 0; i < 2; i++) {
+            printf("Batch %d:\n", i);
+            for (int j = 0; j < 3; j++) {
+                for (int k = 0; k < 2; k++) {
+                    printf("%.1f ", a->grad[i*6 + j*2 + k]);
+                }
+                printf("\n");
+            }
+        }
     }
-    
-    // Create tensors
-    Tensor* a = tensor_new(5, dims_a, data_a, 1);
-    Tensor* b = tensor_new(5, dims_b, data_b, 1);
-    
-    // Perform matrix multiplication
-    Tensor* c = tensor_matmul(a, b);
-    
-    if (!c) {
-        printf("Matrix multiplication failed!\n");
-        return 1;
+
+    // Test 3: Edge case - reduction of 1D tensor
+    {
+        printf("\nTest 3: 1D tensor reduction\n");
+        float data[] = {1, 2, 3, 4};
+        int dims[] = {4};
+        Tensor* a = tensor_new(1, dims, data, 1);
+        Tensor* b = tensor_reduce_sum(a, 0);
+        
+        printf("Input: ");
+        for (int i = 0; i < 4; i++) {
+            printf("%.1f ", a->data[i]);
+        }
+        printf("\nOutput: %.1f\n", b->data[0]);
+        
+        b->grad[0] = 1.0;
+        backward();
+        
+        printf("Gradients: ");
+        for (int i = 0; i < 4; i++) {
+            printf("%.1f ", a->grad[i]);
+        }
+        printf("\n");
     }
-    
-    // Print dimensions of result
-    printf("Result dimensions: ");
-    for (int i = 0; i < c->ndims; i++) {
-        printf("%d ", c->dims[i]);
+
+    // Test 4: Verify numerical accuracy with larger numbers
+    {
+        printf("\nTest 4: Numerical accuracy test\n");
+        float data[] = {100.5, 200.7, 300.3, 400.1};
+        int dims[] = {4};
+        Tensor* a = tensor_new(1, dims, data, 1);
+        Tensor* b = tensor_reduce_sum(a, 0);
+        float expected_sum = 1001.6; // pre-calculated sum
+        printf("Sum: %.6f (Expected: %.6f)\n", b->data[0], expected_sum);
+        printf("Difference: %.6f\n", fabsf(b->data[0] - expected_sum));
     }
-    printf("\n");
-    
-    // Set gradient of output to 1s for testing
-    for (int i = 0; i < c->size; i++) {
-        c->grad[i] = 1.0f;
+
+    // Test 5: Test reduction with zeros and negative numbers
+    {
+        printf("\nTest 5: Zeros and negative numbers\n");
+        float data[] = {-1.0, 0.0, 1.0, -2.0, 0.0, 2.0};
+        int dims[] = {2, 3};
+        Tensor* a = tensor_new(2, dims, data, 1);
+        Tensor* b = tensor_reduce_sum(a, 0);
+        printf("Input:\n");
+        for (int i = 0; i < 2; i++) {
+            for (int j = 0; j < 3; j++) printf("%.1f ", a->data[i*3 + j]);
+            printf("\n");
+        }
+        printf("Output:\n");
+        for (int i = 0; i < 3; i++) printf("%.1f ", b->data[i]);
+        printf("\n");
     }
-    
-    // Perform backward pass
-    backward();
-    
-    // Verify gradients numerically
-    float epsilon = 1e-4;
-    int test_idx = 5; // Test gradient for 5th element
-    
-    // Test gradient for tensor A
-    float original_val = a->data[test_idx];
-    a->data[test_idx] = original_val + epsilon;
-    Tensor* c_plus = tensor_matmul(a, b);
-    
-    a->data[test_idx] = original_val - epsilon;
-    Tensor* c_minus = tensor_matmul(a, b);
-    
-    float numerical_grad = 0;
-    for (int i = 0; i < c->size; i++) {
-        numerical_grad += (c_plus->data[i] - c_minus->data[i]) / (2 * epsilon);
+
+    // Test 6: Test reduction with dimension size 1
+    {
+        printf("\nTest 6: Dimension size 1\n");
+        float data[] = {1.0, 2.0, 3.0};
+        int dims[] = {1, 3};
+        Tensor* a = tensor_new(2, dims, data, 1);
+        Tensor* b = tensor_reduce_sum(a, 0);
+        printf("Input shape: [1, 3]\n");
+        printf("Output shape: [3]\n");
+        printf("Output: ");
+        for (int i = 0; i < 3; i++) printf("%.1f ", b->data[i]);
+        printf("\n");
     }
-    
-    printf("\nGradient verification for tensor A at index %d:\n", test_idx);
-    printf("Numerical gradient: %f\n", numerical_grad);
-    printf("Analytical gradient: %f\n", a->grad[test_idx]);
-    printf("Difference: %f\n", fabsf(numerical_grad - a->grad[test_idx]));
-    
-    // Clean up
-    free(data_a);
-    free(data_b);
+
+    // Test 7: Multiple reductions
+    {
+        printf("\nTest 7: Multiple reductions\n");
+        float data[] = {1,2,3,4,5,6,7,8};
+        int dims[] = {2,2,2};
+        Tensor* a = tensor_new(3, dims, data, 1);
+        Tensor* b = tensor_reduce_sum(a, 0);
+        Tensor* c = tensor_reduce_sum(b, 0);
+        printf("Original sum: %.1f\n", c->data[0]);
+        
+        // Verify same result with different reduction order
+        Tensor* d = tensor_reduce_sum(a, 1);
+        Tensor* e = tensor_reduce_sum(d, 0);
+        printf("Alternative reduction path sum: %.1f\n", e->data[0]);
+    }
+
+    // Test 8: Large tensor gradient accumulation
+    {
+        printf("\nTest 8: Large tensor gradient accumulation\n");
+        float* data = malloc(1000 * sizeof(float));
+        for (int i = 0; i < 1000; i++) data[i] = 1.0f;
+        int dims[] = {10, 10, 10};
+        Tensor* a = tensor_new(3, dims, data, 1);
+        
+        // First reduction and backward
+        Tensor* b = tensor_reduce_sum(a, 0);
+        for (int i = 0; i < b->size; i++) {
+            b->grad[i] = 1.0f;
+        }
+        backward();
+        
+        // Second reduction and backward
+        Tensor* c = tensor_reduce_sum(a, 0);
+        for (int i = 0; i < c->size; i++) {
+            c->grad[i] = 1.0f;
+        }
+        backward();
+        
+        // Check if gradients accumulated correctly
+        float grad_sum = 0;
+        for (int i = 0; i < a->size; i++) {
+            grad_sum += a->grad[i];
+        }
+        printf("Input tensor size: %d\n", a->size);
+        printf("Reduced tensor size: %d\n", b->size);
+        printf("Gradient sum after two backwards: %.1f (Expected: 2000.0)\n", grad_sum);
+        
+        // Print first few gradients for debugging
+        printf("First few gradients: ");
+        for (int i = 0; i < 5; i++) {
+            printf("%.1f ", a->grad[i]);
+        }
+        printf("\n");
+        
+        free(data);
+    }
+
+    // Test 9: Very small numbers
+    {
+        printf("\nTest 9: Very small numbers\n");
+        float data[] = {1e-30f, 1e-31f, 1e-32f, 1e-33f};
+        int dims[] = {4};
+        Tensor* a = tensor_new(1, dims, data, 1);
+        Tensor* b = tensor_reduce_sum(a, 0);
+        printf("Sum of very small numbers: %.2e\n", b->data[0]);
+    }
+
+    // Test 10: Invalid reduction dimension
+    {
+        printf("\nTest 10: Invalid reduction tests\n");
+        float data[] = {1.0f, 2.0f};
+        int dims[] = {2};
+        Tensor* a = tensor_new(1, dims, data, 1);
+        Tensor* b = tensor_reduce_sum(a, 1);  // Should return NULL
+        printf("Reduction with invalid dim: %s\n", b == NULL ? "Correctly returned NULL" : "Failed");
+    }
+
     clean_registry();
-    
     return 0;
 }
