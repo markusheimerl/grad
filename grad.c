@@ -226,7 +226,7 @@ Tensor* tensor_softmax(Tensor* a) {
     }
     
     if (r->requires_grad) {
-        tape[tape_len++] = (TapeEntry){SOFTMAX, r, a, NULL};
+        tape[tape_len++] = (TapeEntry){SOFTMAX, r, a, NULL, NULL};
     }
     
     return r;
@@ -237,7 +237,7 @@ Tensor* tensor_reshape(Tensor* a, int ndims, const int* dims) {
     for (int i = 0; i < ndims; i++) size *= dims[i];
     if (size != a->size) return NULL;
     Tensor* r = tensor_new(ndims, dims, a->data, a->requires_grad);
-    if (r->requires_grad) tape[tape_len++] = (TapeEntry){RESHAPE, r, a, NULL};
+    if (r->requires_grad) tape[tape_len++] = (TapeEntry){RESHAPE, r, a, NULL, NULL};
     return r;
 }
 
@@ -381,121 +381,262 @@ void backward() {
     tape_len = 0;
 }
 
+Tensor* tensor_multihead_attention(Tensor* Q, Tensor* K, Tensor* V, int num_heads) {
+    // Initial validation
+    if (!Q || !K || !V || Q->ndims != 3 || K->ndims != 3 || V->ndims != 3) return NULL;
+    
+    int batch_size = Q->dims[0];
+    int seq_len_q = Q->dims[1];
+    int seq_len_k = K->dims[1];
+    int d_model = Q->dims[2];
+    
+    // Validate dimensions before proceeding
+    if (d_model % num_heads != 0 || 
+        K->dims[2] != d_model || 
+        V->dims[2] != d_model || 
+        seq_len_k != V->dims[1] ||
+        batch_size != K->dims[0] || 
+        batch_size != V->dims[0]) return NULL;
+    
+    int d_head = d_model / num_heads;
+    
+    // Clear existing tape entries to prevent accumulation
+    tape_len = 0;
+
+    // Reshape operations
+    int reshape_dims[] = {batch_size, seq_len_q, num_heads, d_head};
+    Tensor* Q_reshaped = tensor_reshape(Q, 4, reshape_dims);
+    if (!Q_reshaped) return NULL;
+
+    reshape_dims[1] = seq_len_k;
+    Tensor* K_reshaped = tensor_reshape(K, 4, reshape_dims);
+    if (!K_reshaped) return NULL;
+
+    Tensor* V_reshaped = tensor_reshape(V, 4, reshape_dims);
+    if (!V_reshaped) return NULL;
+
+    // Permute operations
+    int perm[] = {0, 2, 1, 3};
+    Tensor* Q_perm = tensor_permute(Q_reshaped, perm, 4);
+    if (!Q_perm) return NULL;
+
+    Tensor* K_perm = tensor_permute(K_reshaped, perm, 4);
+    if (!K_perm) return NULL;
+
+    Tensor* V_perm = tensor_permute(V_reshaped, perm, 4);
+    if (!V_perm) return NULL;
+
+    // K transpose for attention
+    int k_perm[] = {0, 1, 3, 2};
+    Tensor* K_transpose = tensor_permute(K_perm, k_perm, 4);
+    if (!K_transpose) return NULL;
+
+    // Compute attention scores
+    Tensor* scores = tensor_matmul(Q_perm, K_transpose);
+    if (!scores) return NULL;
+
+    // Scale scores
+    float scale = 1.0f / sqrt(d_head);
+    Tensor* scale_tensor = tensor_new(4, (int[]){1, 1, 1, 1}, (float[]){scale}, 0);
+    if (!scale_tensor) return NULL;
+
+    Tensor* scaled_scores = tensor_hadamard(scores, scale_tensor);
+    if (!scaled_scores) return NULL;
+
+    // Apply softmax
+    Tensor* attention_weights = tensor_softmax(scaled_scores);
+    if (!attention_weights) return NULL;
+
+    // Apply attention to values
+    Tensor* attention = tensor_matmul(attention_weights, V_perm);
+    if (!attention) return NULL;
+
+    // Final permute and reshape
+    int inv_perm[] = {0, 2, 1, 3};
+    Tensor* attention_perm = tensor_permute(attention, inv_perm, 4);
+    if (!attention_perm) return NULL;
+
+    int final_shape[] = {batch_size, seq_len_q, d_model};
+    Tensor* output = tensor_reshape(attention_perm, 3, final_shape);
+    if (!output) return NULL;
+
+    printf("DEBUG: Final tape length: %d\n", tape_len);
+    return output;
+}
 int main() {
-    // Test 1: 3D tensors with exact shape match
-    int dims1[] = {2, 3, 4};
-    float data1[24];
-    for (int i = 0; i < 24; i++) data1[i] = i + 1;
-    Tensor* a = tensor_new(3, dims1, data1, 1);
-
-    int dims2[] = {2, 3, 4};
-    float data2[24];
-    for (int i = 0; i < 24; i++) data2[i] = (i % 4) + 1;
-    Tensor* b = tensor_new(3, dims2, data2, 1);
-
-    Tensor* c = tensor_hadamard(a, b);
+    // Test 1: Basic functionality with clear attention patterns
+{
+    printf("\nTest 1: Basic Multi-Head Attention with Simple Values\n");
+    int batch_size = 1;
+    int seq_len = 2;  // Simplified sequence length
+    int d_model = 4;
+    int num_heads = 2;
+    int qkv_dims[] = {batch_size, seq_len, d_model};
     
-    printf("Test 1 - 3D * 3D:\n");
-    for (int i = 0; i < 2; i++) {
-        for (int j = 0; j < 3; j++) {
-            for (int k = 0; k < 4; k++) {
-                printf("%6.2f ", c->data[i*12 + j*4 + k]);
-            }
-            printf("\n");
+    // Simple values for easy tracking
+    float q_data[] = {
+        1.0f, 1.0f, 0.0f, 0.0f,  // First sequence position, split across 2 heads
+        0.0f, 0.0f, 1.0f, 1.0f   // Second sequence position
+    };
+    float k_data[] = {
+        1.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 1.0f
+    };
+    float v_data[] = {
+        1.0f, 1.0f, 2.0f, 2.0f,
+        3.0f, 3.0f, 4.0f, 4.0f
+    };
+
+    Tensor* Q = tensor_new(3, qkv_dims, q_data, 1);
+    Tensor* K = tensor_new(3, qkv_dims, k_data, 1);
+    Tensor* V = tensor_new(3, qkv_dims, v_data, 1);
+    
+    printf("\nInput values:");
+    printf("\nQ:"); for(int i = 0; i < 8; i++) printf(" %f", q_data[i]);
+    printf("\nK:"); for(int i = 0; i < 8; i++) printf(" %f", k_data[i]);
+    printf("\nV:"); for(int i = 0; i < 8; i++) printf(" %f", v_data[i]);
+    printf("\n");
+    
+    Tensor* output = tensor_multihead_attention(Q, K, V, num_heads);
+    
+    printf("\nFinal output values:\n");
+    for (int i = 0; i < seq_len; i++) {
+        printf("Seq %d:", i);
+        for (int j = 0; j < d_model; j++) {
+            printf(" %6.3f", output->data[i * d_model + j]);
         }
         printf("\n");
     }
-
-    // Test 2: Broadcasting 2D to 3D
-    int dims3[] = {1, 3, 4};
-    float data3[12];
-    for (int i = 0; i < 12; i++) data3[i] = i + 1;
-    Tensor* d = tensor_new(3, dims3, data3, 1);
-
-    Tensor* e = tensor_hadamard(a, d);
     
-    printf("Test 2 - 3D * (1,3,4) broadcast:\n");
-    for (int i = 0; i < 2; i++) {
-        for (int j = 0; j < 3; j++) {
-            for (int k = 0; k < 4; k++) {
-                printf("%6.2f ", e->data[i*12 + j*4 + k]);
-            }
-            printf("\n");
-        }
-        printf("\n");
-    }
-
-    // Test 3: Broadcasting 1D to 3D
-    int dims4[] = {4};
-    float data4[] = {1, 2, 3, 4};
-    Tensor* f = tensor_new(1, dims4, data4, 1);
-
-    Tensor* g = tensor_hadamard(a, f);
-    
-    printf("Test 3 - 3D * (4) broadcast:\n");
-    for (int i = 0; i < 2; i++) {
-        for (int j = 0; j < 3; j++) {
-            for (int k = 0; k < 4; k++) {
-                printf("%6.2f ", g->data[i*12 + j*4 + k]);
-            }
-            printf("\n");
-        }
-        printf("\n");
-    }
-
-    // Test 4: Gradient checking
-    // Set specific gradients in the output
-    for (int i = 0; i < g->size; i++) {
-        g->grad[i] = 1.0f;
+    // Test gradients
+    printf("\nSetting output gradients to 1.0\n");
+    for (int i = 0; i < output->size; i++) {
+        output->grad[i] = 1.0f;
     }
     
     backward();
     
-    printf("Test 4 - Gradient check for first tensor (should match broadcast pattern):\n");
-    for (int i = 0; i < 2; i++) {
-        for (int j = 0; j < 3; j++) {
-            for (int k = 0; k < 4; k++) {
-                printf("%6.2f ", a->grad[i*12 + j*4 + k]);
-            }
-            printf("\n");
+    printf("\nQ gradients:\n");
+    for (int i = 0; i < seq_len; i++) {
+        printf("Seq %d:", i);
+        for (int j = 0; j < d_model; j++) {
+            printf(" %6.3f", Q->grad[i * d_model + j]);
         }
         printf("\n");
     }
-
-    printf("Gradient check for broadcast tensor:\n");
-    for (int i = 0; i < f->size; i++) {
-        printf("%6.2f ", f->grad[i]);
-    }
-    printf("\n\n");
-
-    // Test 5: Edge cases
-    int dims5[] = {2, 1, 4};
-    float data5[8];
-    for (int i = 0; i < 8; i++) data5[i] = i + 1;
-    Tensor* h = tensor_new(3, dims5, data5, 1);
-
-    Tensor* i = tensor_hadamard(a, h);
     
-    printf("Test 5 - 3D * (2,1,4) broadcast:\n");
-    for (int x = 0; x < 2; x++) {
-        for (int y = 0; y < 3; y++) {
-            for (int z = 0; z < 4; z++) {
-                printf("%6.2f ", i->data[x*12 + y*4 + z]);
+    printf("\nK gradients:\n");
+    for (int i = 0; i < seq_len; i++) {
+        printf("Seq %d:", i);
+        for (int j = 0; j < d_model; j++) {
+            printf(" %6.3f", K->grad[i * d_model + j]);
+        }
+        printf("\n");
+    }
+    printf("\n");
+}
+
+    // Test 2: Uniform attention pattern
+    {
+        printf("Test 2: Uniform Attention Pattern\n");
+        int batch_size = 1;
+        int seq_len = 3;
+        int d_model = 4;
+        int num_heads = 2;
+        int qkv_dims[] = {batch_size, seq_len, d_model};
+        
+        // Create uniform attention by setting all Q and K values to the same value
+        float q_data[12], k_data[12], v_data[12];
+        for (int i = 0; i < seq_len * d_model; i++) {
+            q_data[i] = 1.0f;
+            k_data[i] = 1.0f;
+            v_data[i] = (i / d_model) + 1.0f;  // Different values per position
+        }
+
+        Tensor* Q = tensor_new(3, qkv_dims, q_data, 1);
+        Tensor* K = tensor_new(3, qkv_dims, k_data, 1);
+        Tensor* V = tensor_new(3, qkv_dims, v_data, 1);
+        
+        Tensor* output = tensor_multihead_attention(Q, K, V, num_heads);
+        printf("Output (should show uniform mixing):\n");
+        for (int i = 0; i < seq_len; i++) {
+            printf("Seq %d: ", i);
+            for (int j = 0; j < d_model; j++) {
+                printf("%6.3f ", output->data[i * d_model + j]);
             }
             printf("\n");
         }
         printf("\n");
     }
 
-    // Test 6: Error cases
-    int wrong_dims[] = {2, 2, 3};
-    float wrong_data[12];
-    for (int i = 0; i < 12; i++) wrong_data[i] = i;
-    Tensor* wrong = tensor_new(3, wrong_dims, wrong_data, 1);
+    // Test 3: Gradient Flow
+{
+    printf("\nTest 3: Gradient Flow\n");
+    int batch_size = 1;
+    int seq_len = 2;
+    int d_model = 4;
+    int num_heads = 2;
+    int dims[] = {batch_size, seq_len, d_model};
+    
+    // Use same pattern as Test 1 for consistency
+    float q_data[] = {
+        1.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 1.0f
+    };
+    float k_data[] = {
+        1.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 1.0f
+    };
+    float v_data[] = {
+        1.0f, 1.0f, 2.0f, 2.0f,
+        3.0f, 3.0f, 4.0f, 4.0f
+    };
 
-    Tensor* should_be_null = tensor_hadamard(a, wrong);
-    printf("Test 6 - Incompatible shapes should return NULL: %s\n", 
-           should_be_null == NULL ? "PASS" : "FAIL");
+    Tensor* Q = tensor_new(3, dims, q_data, 1);
+    Tensor* K = tensor_new(3, dims, k_data, 1);
+    Tensor* V = tensor_new(3, dims, v_data, 1);
+    
+    Tensor* output = tensor_multihead_attention(Q, K, V, num_heads);
+    
+    // Set gradients
+    for (int i = 0; i < output->size; i++) {
+        output->grad[i] = 1.0f;
+    }
+    
+    backward();
+    
+    printf("Q gradients:\n");
+    for (int i = 0; i < seq_len; i++) {
+        printf("Seq %d:", i);
+        for (int j = 0; j < d_model; j++) {
+            printf(" %6.3f", Q->grad[i * d_model + j]);
+        }
+        printf("\n");
+    }
+}
+
+
+    // Test 4: Error cases
+    {
+        printf("Test 4: Error Cases\n");
+        int batch_size = 2;
+        int seq_len = 3;
+        int d_model = 4;
+        int qkv_dims[] = {batch_size, seq_len, d_model};
+        float data[24] = {0};
+        
+        Tensor* Q = tensor_new(3, qkv_dims, data, 1);
+        Tensor* K = tensor_new(3, qkv_dims, data, 1);
+        Tensor* V = tensor_new(3, qkv_dims, data, 1);
+        
+        printf("Invalid num_heads (should be NULL): %s\n",
+               tensor_multihead_attention(Q, K, V, 3) == NULL ? "PASS" : "FAIL");
+        
+        int wrong_dims[] = {batch_size, seq_len, d_model + 1};
+        Tensor* Wrong = tensor_new(3, wrong_dims, data, 1);
+        printf("Mismatched dimensions (should be NULL): %s\n",
+               tensor_multihead_attention(Q, K, Wrong, 2) == NULL ? "PASS" : "FAIL");
+    }
 
     clean_registry();
     return 0;
