@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>
 
 #define MAX_TAPE 1000
 #define MAX_TENSORS 1000
@@ -37,6 +38,39 @@ Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_g
     if ((t->requires_grad = requires_grad)) t->grad = calloc(t->size, sizeof(float));
     registry[registry_len++] = t;
     return t;
+}
+
+
+// Box-Muller transform to generate normal distribution
+static float randn() {
+    float u1 = (float)rand() / RAND_MAX;
+    float u2 = (float)rand() / RAND_MAX;
+    float r = sqrtf(-2.0f * logf(u1));
+    float theta = 2.0f * M_PI * u2;
+    return r * cosf(theta);
+}
+
+Tensor* tensor_randn(int ndims, const int* dims, int requires_grad) {
+    // Initialize random seed if not already done
+    static int seed_initialized = 0;
+    if (!seed_initialized) {
+        srand(time(NULL));
+        seed_initialized = 1;
+    }
+    
+    // Create tensor
+    Tensor* t = tensor_new(ndims, dims, NULL, requires_grad);
+    
+    // Fill with random normal values
+    for (int i = 0; i < t->size; i++) {
+        t->data[i] = randn();
+    }
+    
+    return t;
+}
+
+Tensor* tensor_zeros(int ndims, const int* dims, int requires_grad) {
+    return tensor_new(ndims, dims, NULL, requires_grad);
 }
 
 void clean_registry() {
@@ -279,5 +313,6 @@ void backward() {
     }
     tape_len = 0;
 }
+
 
 #endif // __GRAD_H__
