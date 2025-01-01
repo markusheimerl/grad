@@ -541,6 +541,160 @@ void test_hadamard() {
     }
 }
 
+Tensor* tensor_reduce_sum(Tensor* a, int axis) {
+    if (!a || axis < 0 || axis >= a->ndims) return NULL;
+    
+    int pre_size = 1;
+    int axis_size = a->dims[axis];
+    int post_size = 1;
+    
+    for (int i = 0; i < axis; i++) pre_size *= a->dims[i];
+    for (int i = axis + 1; i < a->ndims; i++) post_size *= a->dims[i];
+    
+    // Create ones vector
+    float* ones_data = malloc(axis_size * sizeof(float));
+    for (int i = 0; i < axis_size; i++) ones_data[i] = 1.0f;
+    
+    // Shape the ones vector based on the reduction axis
+    Tensor* ones;
+    Tensor* reshaped;
+    if (axis == 0) {
+        // For axis 0, we want (1, axis_size) × (axis_size, pre_size * post_size)
+        ones = tensor_new(2, (int[]){1, axis_size}, ones_data, 0);
+        reshaped = tensor_reshape(a, 2, (int[]){axis_size, pre_size * post_size});
+        
+    } else {
+        // For other axes, we want (pre_size * post_size, axis_size) × (axis_size, 1)
+        ones = tensor_new(2, (int[]){axis_size, 1}, ones_data, 0);
+        reshaped = tensor_reshape(a, 2, (int[]){pre_size * post_size, axis_size});
+    }
+    free(ones_data);
+    
+    // Perform matrix multiplication in the correct order
+    Tensor* result = axis == 0 ? tensor_matmul(ones, reshaped) : tensor_matmul(reshaped, ones);
+    
+    // Calculate final shape
+    int final_ndims = a->ndims - 1;
+    if (final_ndims == 0) final_ndims = 1;
+    
+    int* final_dims = malloc(final_ndims * sizeof(int));
+    int j = 0;
+    for (int i = 0; i < a->ndims; i++) {
+        if (i != axis) final_dims[j++] = a->dims[i];
+    }
+    if (j == 0) final_dims[0] = 1;  // Handle scalar result
+    
+    // Reshape to final shape
+    Tensor* final_result = tensor_reshape(result, final_ndims, final_dims);
+    free(final_dims);
+    
+    return final_result;
+}
+
+void test_reduce_sum() {
+    printf("\n=== Reduce Sum Tests ===\n");
+    
+    // Test 1: Basic verification with all axes
+    printf("Test 1: Basic verification with all axes\n");
+    float data3d[] = {
+        1.0f, 2.0f,  // [0,0,:]
+        3.0f, 4.0f,  // [0,1,:]
+        5.0f, 6.0f,  // [1,0,:]
+        7.0f, 8.0f   // [1,1,:]
+    };
+    Tensor* t3d = tensor_new(3, (int[]){2,2,2}, data3d, 1);
+    
+    Tensor* sum0 = tensor_reduce_sum(t3d, 0);  // (2,2)
+    Tensor* sum1 = tensor_reduce_sum(t3d, 1);  // (2,2)
+    Tensor* sum2 = tensor_reduce_sum(t3d, 2);  // (2,2)
+    
+    printf("Original 3D tensor (2,2,2):\n");
+    for(int i = 0; i < 2; i++) {
+        printf("Layer %d:\n", i);
+        for(int j = 0; j < 2; j++) {
+            printf("[%.1f %.1f] ", data3d[i*4 + j*2], data3d[i*4 + j*2 + 1]);
+        }
+        printf("\n");
+    }
+    
+    printf("\nReductions:\n");
+    printf("Axis 0 (should be [[6,8],[10,12]]):\n");
+    for(int i = 0; i < 4; i++) {
+        printf("%.1f ", sum0->data[i]);
+        if(i % 2 == 1) printf("\n");
+        float expected = data3d[i] + data3d[i+4];
+        assert_close(sum0->data[i], expected, 1e-5, "Axis 0 reduction");
+    }
+    
+    // Test 2: Chain of reductions
+    printf("\nTest 2: Chain of reductions\n");
+    Tensor* chain1 = tensor_reduce_sum(t3d, 2);  // First reduce last dim
+    Tensor* chain2 = tensor_reduce_sum(chain1, 1); // Then middle dim
+    Tensor* chain3 = tensor_reduce_sum(chain2, 0); // Finally first dim
+    
+    float total = 0;
+    for(int i = 0; i < 8; i++) total += data3d[i];
+    
+    printf("Sequential reduction result (should be %.1f): %.1f\n", 
+           total, chain3->data[0]);
+    assert_close(chain3->data[0], total, 1e-5, "Chain reduction");
+    
+    // Test 3: Gradient through multiple paths
+    printf("\nTest 3: Gradient through multiple paths\n");
+    Tensor* x = tensor_new(2, (int[]){2,2}, (float[]){1,2,3,4}, 1);
+    Tensor* y1 = tensor_reduce_sum(x, 0);  // Sum rows
+    Tensor* y2 = tensor_reduce_sum(x, 1);  // Sum columns
+    Tensor* z = tensor_add(y1, y2);        // Add both reductions
+    
+    z->grad[0] = 1.0f;
+    z->grad[1] = 1.0f;
+    backward();
+    
+    printf("Input gradients (should be [2,2,2,2]):\n");
+    for(int i = 0; i < 4; i++) {
+        printf("%.1f ", x->grad[i]);
+        assert_close(x->grad[i], 2.0f, 1e-5, "Multiple path gradients");
+    }
+    printf("\n");
+    
+    // Test 4: Reduction with singleton dimensions
+    printf("\nTest 4: Reduction with singleton dimensions\n");
+    Tensor* singleton = tensor_new(4, (int[]){2,1,2,1}, (float[]){1,2,3,4}, 1);
+    Tensor* sum_singleton = tensor_reduce_sum(singleton, 1);
+    
+    printf("Original shape: (2,1,2,1), After reduction: (2,2,1)\n");
+    printf("Values (should be unchanged): ");
+    for(int i = 0; i < 4; i++) {
+        printf("%.1f ", sum_singleton->data[i]);
+        assert_close(sum_singleton->data[i], singleton->data[i], 1e-5, "Singleton reduction");
+    }
+    printf("\n");
+    
+    // Test 5: Reduction to scalar
+    printf("\nTest 5: Reduction to scalar\n");
+    Tensor* scalar = tensor_new(1, (int[]){4}, (float[]){1,2,3,4}, 1);
+    Tensor* sum_scalar = tensor_reduce_sum(scalar, 0);
+    
+    printf("Sum of [1,2,3,4] = %.1f (should be 10)\n", sum_scalar->data[0]);
+    assert_close(sum_scalar->data[0], 10.0f, 1e-5, "Scalar reduction");
+    
+    // Test 6: Gradient accumulation with single reduction
+    printf("\nTest 6: Gradient accumulation with single reduction\n");
+    Tensor* a = tensor_new(2, (int[]){2,3}, (float[]){1,2,3,4,5,6}, 1);
+    Tensor* b = tensor_reduce_sum(a, 1);  // Reduce along axis 1
+    b->grad[0] = 1.0f;  // Set gradient for first row sum
+    b->grad[1] = 2.0f;  // Set gradient for second row sum
+    backward();
+    
+    printf("Gradients after reduction (should be [1,1,1,2,2,2]):\n");
+    for(int i = 0; i < 6; i++) {
+        printf("%.1f ", a->grad[i]);
+        float expected = i < 3 ? 1.0f : 2.0f;  // First three gradients should be 1.0, last three 2.0
+        assert_close(a->grad[i], expected, 1e-5, "Gradient accumulation");
+    }
+    printf("\n");
+}
+
 int main() {
     test_matmul();
     test_exp_log();
@@ -549,6 +703,7 @@ int main() {
     test_numerical_gradient();
     test_permute();
     test_hadamard();
+    test_reduce_sum();
     
     printf("\nAll tests passed successfully!\n");
     clean_registry();
