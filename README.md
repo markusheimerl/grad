@@ -25,6 +25,9 @@ reduce_sum(A, axis) = A @ ones  // for axis=1
 ## Required Operations for Transformer Decoder
 
 1. Softmax
+
+softmax(x) = exp(x - log(sum(exp(x))))
+
 ```c
 // Can be implemented using existing operations:
 softmax(x) = exp(x) / sum(exp(x))
