@@ -8,7 +8,7 @@
 #define MIN_LOG 1e-7f
 #define MAX_EXP 88.0f
 
-typedef enum { MATMUL, EXP, LOG, ADD, SUB, RESHAPE } OpType;
+typedef enum { MATMUL, EXP, LOG, ADD, SUB, RESHAPE, SOFTMAX } OpType;
 
 typedef struct Tensor {
     float *data, *grad;
@@ -55,6 +55,41 @@ void clean_registry() {
         Tensor* t = registry[--registry_len];
         free(t->data); free(t->grad); free(t->dims); free(t);
     }
+}
+
+Tensor* tensor_softmax(Tensor* a) {
+    if (!a || a->ndims < 1) return NULL;
+    
+    Tensor* r = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
+    int last_dim = a->dims[a->ndims - 1];
+    int outer_size = a->size / last_dim;
+    
+    for (int i = 0; i < outer_size; i++) {
+        // Find max for this batch
+        float max_val = a->data[i * last_dim];
+        for (int j = 1; j < last_dim; j++) {
+            max_val = fmaxf(max_val, a->data[i * last_dim + j]);
+        }
+        
+        // Compute exp(x - max) and sum
+        float sum = 0.0f;
+        for (int j = 0; j < last_dim; j++) {
+            float val = a->data[i * last_dim + j] - max_val;
+            r->data[i * last_dim + j] = expf(val);
+            sum += r->data[i * last_dim + j];
+        }
+        
+        // Normalize
+        for (int j = 0; j < last_dim; j++) {
+            r->data[i * last_dim + j] /= sum;
+        }
+    }
+    
+    if (r->requires_grad) {
+        tape[tape_len++] = (TapeEntry){SOFTMAX, r, a, NULL};
+    }
+    
+    return r;
 }
 
 static Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
@@ -166,12 +201,96 @@ void backward() {
             for (int i = 0; i < a->size; i++)
                 a->grad[i] += r->grad[i];
         }
+        else if (e->op == SOFTMAX && a->requires_grad) {
+            int last_dim = a->dims[a->ndims - 1];
+            int outer_size = a->size / last_dim;
+            
+            for (int i = 0; i < outer_size; i++) {
+                float sum = 0.0f;
+                for (int j = 0; j < last_dim; j++) {
+                    sum += r->grad[i * last_dim + j] * r->data[i * last_dim + j];
+                }
+                
+                for (int j = 0; j < last_dim; j++) {
+                    float softmax_j = r->data[i * last_dim + j];
+                    a->grad[i * last_dim + j] += softmax_j * (r->grad[i * last_dim + j] - sum);
+                }
+            }
+        }
     }
     tape_len = 0;
 }
 
 int main() {
+    // Test 1: Basic softmax properties
+    printf("Test 1: Basic softmax properties\n");
+    int dims1[] = {3};
+    float data1[] = {1.0f, 2.0f, 3.0f};
+    Tensor* t1 = tensor_new(1, dims1, data1, 1);
+    Tensor* s1 = tensor_softmax(t1);
+    
+    printf("Input: [%.2f, %.2f, %.2f]\n", t1->data[0], t1->data[1], t1->data[2]);
+    printf("Softmax: [%.6f, %.6f, %.6f]\n", s1->data[0], s1->data[1], s1->data[2]);
+    float sum1 = s1->data[0] + s1->data[1] + s1->data[2];
+    printf("Sum (should be 1.0): %.6f\n\n", sum1);
 
+    // Test 2: Numerical stability test
+    printf("Test 2: Numerical stability test\n");
+    int dims2[] = {3};
+    float data2[] = {1000.0f, 1000.0f, 1000.0f};  // Large numbers
+    Tensor* t2 = tensor_new(1, dims2, data2, 1);
+    Tensor* s2 = tensor_softmax(t2);
+    printf("Large inputs: [%.1f, %.1f, %.1f]\n", t2->data[0], t2->data[1], t2->data[2]);
+    printf("Softmax: [%.6f, %.6f, %.6f]\n", s2->data[0], s2->data[1], s2->data[2]);
+    float sum2 = s2->data[0] + s2->data[1] + s2->data[2];
+    printf("Sum (should be 1.0): %.6f\n\n", sum2);
+
+    // Test 3: Batch processing
+    printf("Test 3: Batch processing\n");
+    int dims3[] = {2, 3};  // 2 batches, 3 classes each
+    float data3[] = {1.0f, 2.0f, 3.0f, // first batch
+                     10.0f, 11.0f, 12.0f}; // second batch (very different scale)
+    Tensor* t3 = tensor_new(2, dims3, data3, 1);
+    Tensor* s3 = tensor_softmax(t3);
+    
+    printf("Batch 1 input: [%.2f, %.2f, %.2f]\n", t3->data[0], t3->data[1], t3->data[2]);
+    printf("Batch 1 softmax: [%.6f, %.6f, %.6f]\n", s3->data[0], s3->data[1], s3->data[2]);
+    printf("Batch 1 sum: %.6f\n", s3->data[0] + s3->data[1] + s3->data[2]);
+    
+    printf("Batch 2 input: [%.2f, %.2f, %.2f]\n", t3->data[3], t3->data[4], t3->data[5]);
+    printf("Batch 2 softmax: [%.6f, %.6f, %.6f]\n", s3->data[3], s3->data[4], s3->data[5]);
+    printf("Batch 2 sum: %.6f\n\n", s3->data[3] + s3->data[4] + s3->data[5]);
+
+    // Test 4: Gradient verification
+    printf("Test 4: Gradient verification\n");
+    // Reset gradients
+    memset(t3->grad, 0, t3->size * sizeof(float));
+    memset(s3->grad, 0, s3->size * sizeof(float));
+    
+    // Set gradient for first element in each batch
+    s3->grad[0] = 1.0f;
+    s3->grad[3] = 1.0f;
+    
+    backward();
+    
+    printf("Batch 1 gradients: [%.6f, %.6f, %.6f]\n", 
+           t3->grad[0], t3->grad[1], t3->grad[2]);
+    printf("Batch 2 gradients: [%.6f, %.6f, %.6f]\n", 
+           t3->grad[3], t3->grad[4], t3->grad[5]);
+    
+    // Verify gradient properties
+    float grad_sum1 = t3->grad[0] + t3->grad[1] + t3->grad[2];
+    float grad_sum2 = t3->grad[3] + t3->grad[4] + t3->grad[5];
+    printf("Gradient sums (should be ~0): %.6f, %.6f\n\n", grad_sum1, grad_sum2);
+
+
+printf("\nTest 5: Softmax invariance property\n");
+int dims5[] = {3};
+float data5[] = {101.0f, 102.0f, 103.0f};  // Same differences as [1,2,3] but shifted by 100
+Tensor* t5 = tensor_new(1, dims5, data5, 1);
+Tensor* s5 = tensor_softmax(t5);
+printf("Input: [%.2f, %.2f, %.2f]\n", t5->data[0], t5->data[1], t5->data[2]);
+printf("Softmax: [%.6f, %.6f, %.6f]\n", s5->data[0], s5->data[1], s5->data[2]);
     clean_registry();
     return 0;
 }
