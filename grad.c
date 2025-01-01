@@ -82,70 +82,30 @@ Tensor* tensor_log(Tensor* a) {
     return result;
 }
 
+Tensor* tensor_add(Tensor* a, Tensor* b) {
+    if (a->ndims != b->ndims) return NULL;
+    for (int i = 0; i < a->ndims; i++) if (a->dims[i] != b->dims[i]) return NULL;
+    Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad || b->requires_grad);
+    for (int i = 0; i < a->size; i++) result->data[i] = a->data[i] + b->data[i];
+    if (result->requires_grad) tape[tape_len++] = (TapeEntry){ADD, result, a, b};
+    return result;
+}
+
+Tensor* tensor_sub(Tensor* a, Tensor* b) {
+    if (!a || !b || a->ndims != b->ndims) return NULL;
+    for (int i = 0; i < a->ndims; i++) if (a->dims[i] != b->dims[i]) return NULL;
+    Tensor* result = tensor_new(a->ndims, a->dims, NULL, a->requires_grad || b->requires_grad);
+    for (int i = 0; i < a->size; i++) result->data[i] = a->data[i] - b->data[i];
+    if (result->requires_grad) tape[tape_len++] = (TapeEntry){SUB, result, a, b};
+    return result;
+}
+
 Tensor* tensor_reshape(Tensor* a, int ndims, const int* new_dims) {
     int size = 1;
     for (int i = 0; i < ndims; i++) size *= new_dims[i];
     if (size != a->size) return NULL;
     Tensor* result = tensor_new(ndims, new_dims, a->data, a->requires_grad);
     if (result->requires_grad) tape[tape_len++] = (TapeEntry){RESHAPE, result, a, NULL};
-    return result;
-}
-
-Tensor* tensor_add(Tensor* a, Tensor* b) {
-    if (a->ndims != b->ndims) return NULL;
-    int match = 1, max_dims[MAX_DIMS];
-    for (int i = 0; i < a->ndims; i++) {
-        if (a->dims[i] != b->dims[i] && a->dims[i] != 1 && b->dims[i] != 1) match = 0;
-        max_dims[i] = a->dims[i] > b->dims[i] ? a->dims[i] : b->dims[i];
-    }
-    if (!match) return NULL;
-    Tensor* result = tensor_new(a->ndims, max_dims, NULL, a->requires_grad || b->requires_grad);
-    for (int i = 0; i < result->size; i++) {
-        int a_idx = i, b_idx = i;
-        if (a->size != result->size || b->size != result->size) {
-            a_idx = 0; b_idx = 0;
-            int temp = i;
-            for (int d = result->ndims - 1; d >= 0; d--) {
-                int stride = 1;
-                for (int k = d + 1; k < result->ndims; k++) stride *= result->dims[k];
-                int coord = (temp / stride) % result->dims[d];
-                if (a->dims[d] > 1) a_idx += coord * (stride / (result->dims[d] / a->dims[d]));
-                if (b->dims[d] > 1) b_idx += coord * (stride / (result->dims[d] / b->dims[d]));
-                temp %= stride;
-            }
-        }
-        result->data[i] = a->data[a_idx] + b->data[b_idx];
-    }
-    if (result->requires_grad) tape[tape_len++] = (TapeEntry){ADD, result, a, b};
-    return result;
-}
-
-Tensor* tensor_sub(Tensor* a, Tensor* b) {
-    if (a->ndims != b->ndims) return NULL;
-    int match = 1, max_dims[MAX_DIMS];
-    for (int i = 0; i < a->ndims; i++) {
-        if (a->dims[i] != b->dims[i] && a->dims[i] != 1 && b->dims[i] != 1) match = 0;
-        max_dims[i] = a->dims[i] > b->dims[i] ? a->dims[i] : b->dims[i];
-    }
-    if (!match) return NULL;
-    Tensor* result = tensor_new(a->ndims, max_dims, NULL, a->requires_grad || b->requires_grad);
-    for (int i = 0; i < result->size; i++) {
-        int a_idx = i, b_idx = i;
-        if (a->size != result->size || b->size != result->size) {
-            a_idx = 0; b_idx = 0;
-            int temp = i;
-            for (int d = result->ndims - 1; d >= 0; d--) {
-                int stride = 1;
-                for (int k = d + 1; k < result->ndims; k++) stride *= result->dims[k];
-                int coord = (temp / stride) % result->dims[d];
-                if (a->dims[d] > 1) a_idx += coord * (stride / (result->dims[d] / a->dims[d]));
-                if (b->dims[d] > 1) b_idx += coord * (stride / (result->dims[d] / b->dims[d]));
-                temp %= stride;
-            }
-        }
-        result->data[i] = a->data[a_idx] - b->data[b_idx];
-    }
-    if (result->requires_grad) tape[tape_len++] = (TapeEntry){SUB, result, a, b};
     return result;
 }
 
@@ -170,23 +130,13 @@ void backward() {
                 break;
             }
             case ADD:
-            case SUB: {
-                if (a->requires_grad || b->requires_grad) {
-                    for (int i = 0; i < result->size; i++) {
-                        int a_idx = i, b_idx = i;
-                        int stride = 1;
-                        for (int d = a->ndims - 1; d >= 0; d--) {
-                            int dim_idx = (i / stride) % result->dims[d];
-                            if (a->dims[d] == 1) a_idx -= dim_idx * stride;
-                            if (b->dims[d] == 1) b_idx -= dim_idx * stride;
-                            stride *= result->dims[d];
-                        }
-                        if (a->requires_grad) a->grad[a_idx] += result->grad[i];
-                        if (b->requires_grad) b->grad[b_idx] += (entry->op == ADD ? 1 : -1) * result->grad[i];
-                    }
-                }
+                if (a->requires_grad) for (int i = 0; i < a->size; i++) a->grad[i] += result->grad[i];
+                if (b->requires_grad) for (int i = 0; i < b->size; i++) b->grad[i] += result->grad[i];
                 break;
-            }
+            case SUB:
+                if (a->requires_grad) for (int i = 0; i < a->size; i++) a->grad[i] += result->grad[i];
+                if (b->requires_grad) for (int i = 0; i < b->size; i++) b->grad[i] -= result->grad[i];
+                break;
             case EXP:
                 if (a->requires_grad) for (int i = 0; i < a->size; i++) a->grad[i] += result->grad[i] * result->data[i];
                 break;
@@ -722,97 +672,6 @@ void test_reduce_sum() {
     printf("\n");
 }
 
-Tensor* tensor_softmax(Tensor* x, int axis) {
-    if (!x || axis < 0 || axis >= x->ndims) return NULL;
-    
-    // Step 1: Compute exp(x)
-    Tensor* exp_x = tensor_exp(x);
-    if (!exp_x) return NULL;
-    
-    // Step 2: Compute sum of exp(x)
-    Tensor* sum_exp = tensor_reduce_sum(exp_x, axis);
-    if (!sum_exp) return NULL;
-    
-    // Step 3: Reshape sum for broadcasting
-    int new_dims[MAX_DIMS];
-    for (int i = 0; i < x->ndims; i++) {
-        new_dims[i] = (i == axis) ? 1 : x->dims[i];
-    }
-    
-    Tensor* reshaped_sum = tensor_reshape(sum_exp, x->ndims, new_dims);
-    if (!reshaped_sum) return NULL;
-    
-    // Step 4: Take log of sum
-    Tensor* log_sum = tensor_log(reshaped_sum);
-    if (!log_sum) return NULL;
-    
-    // Step 5: Subtract log_sum from x (not exp_x!)
-    Tensor* x_centered = tensor_sub(x, log_sum);
-    if (!x_centered) return NULL;
-    
-    // Step 6: Final exp
-    return tensor_exp(x_centered);
-}
-
-void test_softmax() {
-    printf("\n=== Softmax Tests ===\n");
-    
-    // Test 1: Basic 1D softmax
-    printf("Test 1: Basic 1D softmax\n");
-    float data1d[] = {1.0f, 2.0f, 3.0f, 4.0f};
-    Tensor* x1d = tensor_new(1, (int[]){4}, data1d, 1);
-    if (!x1d) {
-        printf("Failed to create input tensor\n");
-        return;
-    }
-    
-    Tensor* soft1d = tensor_softmax(x1d, 0);
-    if (!soft1d) {
-        printf("Failed to compute softmax\n");
-        return;
-    }
-    
-    printf("Input: [1.0, 2.0, 3.0, 4.0]\n");
-    printf("Softmax output: [");
-    float sum = 0.0f;
-    for(int i = 0; i < 4; i++) {
-        printf("%.4f ", soft1d->data[i]);
-        sum += soft1d->data[i];
-    }
-    printf("]\n");
-    printf("Sum of probabilities: %.4f (should be 1.0)\n", sum);
-    assert_close(sum, 1.0f, 1e-5, "Softmax normalization");
-    
-    // Test gradient
-    printf("\nTesting gradient computation:\n");
-    soft1d->grad[0] = 1.0f;  // Set gradient for first output
-    backward();
-    
-    printf("Input gradients: [");
-    for(int i = 0; i < 4; i++) {
-        printf("%.4f ", x1d->grad[i]);
-    }
-    printf("]\n");
-    
-    // Test 2: 2D softmax along rows
-    printf("\nTest 2: 2D softmax along rows\n");
-    float data2d[] = {1.0f, 2.0f, 3.0f,
-                      4.0f, 5.0f, 6.0f};
-    Tensor* x2d = tensor_new(2, (int[]){2,3}, data2d, 1);
-    Tensor* soft2d = tensor_softmax(x2d, 1);
-    
-    printf("2D Softmax output:\n");
-    for(int i = 0; i < 2; i++) {
-        float row_sum = 0.0f;
-        printf("Row %d: [", i);
-        for(int j = 0; j < 3; j++) {
-            printf("%.4f ", soft2d->data[i*3 + j]);
-            row_sum += soft2d->data[i*3 + j];
-        }
-        printf("] Sum: %.4f\n", row_sum);
-        assert_close(row_sum, 1.0f, 1e-5, "Row-wise normalization");
-    }
-}
 int main() {
     test_matmul();
     test_exp_log();
@@ -822,7 +681,6 @@ int main() {
     test_numerical_gradient();
     test_permute();
     test_reduce_sum();
-    test_softmax();
     
     printf("\nAll tests passed successfully!\n");
     clean_registry();
