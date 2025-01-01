@@ -19,7 +19,7 @@ typedef struct Tensor {
 typedef struct {
     OpType op;
     Tensor *result, *input1, *input2;
-    int reduce_dim;  // Added for REDUCE_SUM
+    int reduce_dim;
 } TapeEntry;
 
 static TapeEntry tape[MAX_TAPE];
@@ -61,21 +61,18 @@ void clean_registry() {
 static Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
     if (!a || !b) return NULL;
     int max_d = fmax(a->ndims, b->ndims), rd[32];
-    
     for (int i = 0; i < max_d; i++) {
         int d1 = i < a->ndims ? a->dims[a->ndims-1-i] : 1;
         int d2 = i < b->ndims ? b->dims[b->ndims-1-i] : 1;
         if (d1 != d2 && d1 != 1 && d2 != 1) return NULL;
         rd[max_d-1-i] = fmax(d1, d2);
     }
-
     Tensor* r = tensor_new(max_d, rd, NULL, a->requires_grad || b->requires_grad);
     for (int i = 0; i < r->size; i++) {
         float av = a->data[get_index(i, a->dims, a->ndims, rd, max_d)];
         float bv = b->data[get_index(i, b->dims, b->ndims, rd, max_d)];
         r->data[i] = op == ADD ? av + bv : av - bv;
     }
-    
     if (r->requires_grad) tape[tape_len++] = (TapeEntry){op, r, a, b, -1};
     return r;
 }
@@ -99,8 +96,7 @@ Tensor* tensor_log(Tensor* a) {
 
 Tensor* tensor_matmul(Tensor* a, Tensor* b) {
     if (a->ndims < 1 || b->ndims < 1 || a->dims[a->ndims-1] != b->dims[b->ndims-2]) return NULL;
-    int max_d = fmax(a->ndims, b->ndims);
-    int dims[32];
+    int max_d = fmax(a->ndims, b->ndims), dims[32];
     memcpy(dims, (a->ndims > b->ndims ? a : b)->dims, (max_d - 2) * sizeof(int));
     dims[max_d-2] = a->dims[a->ndims-2];
     dims[max_d-1] = b->dims[b->ndims-1];
@@ -133,19 +129,16 @@ Tensor* tensor_reshape(Tensor* a, int ndims, const int* dims) {
 Tensor* tensor_reduce_sum(Tensor* a, int dim) {
     if (!a || dim >= a->ndims) return NULL;
     
-    int new_ndims = a->ndims - 1;
-    int new_dims[32];
-    for (int i = 0, j = 0; i < a->ndims; i++) {
+    int new_dims[32], new_ndims = a->ndims - 1;
+    for (int i = 0, j = 0; i < a->ndims; i++)
         if (i != dim) new_dims[j++] = a->dims[i];
-    }
     
     Tensor* r = tensor_new(new_ndims, new_dims, NULL, a->requires_grad);
     
     int stride[32];
     stride[a->ndims - 1] = 1;
-    for (int i = a->ndims - 2; i >= 0; i--) {
+    for (int i = a->ndims - 2; i >= 0; i--)
         stride[i] = stride[i + 1] * a->dims[i + 1];
-    }
     
     memset(r->data, 0, r->size * sizeof(float));
     
@@ -156,7 +149,8 @@ Tensor* tensor_reduce_sum(Tensor* a, int dim) {
             idx %= stride[d];
         }
         
-        int target_idx = 0, stride_r = 1;
+        int target_idx = 0;
+        int stride_r = 1;
         for (int d = a->ndims - 1, r_d = new_ndims - 1; d >= 0; d--) {
             if (d != dim) {
                 target_idx += coords[d] * stride_r;
@@ -177,8 +171,11 @@ void backward() {
         
         if (e->op == ADD || e->op == SUB) {
             for (int i = 0; i < r->size; i++) {
-                if (a->requires_grad) a->grad[get_index(i, a->dims, a->ndims, r->dims, r->ndims)] += r->grad[i];
-                if (b->requires_grad) b->grad[get_index(i, b->dims, b->ndims, r->dims, r->ndims)] += (e->op == ADD ? 1 : -1) * r->grad[i];
+                if (a->requires_grad) 
+                    a->grad[get_index(i, a->dims, a->ndims, r->dims, r->ndims)] += r->grad[i];
+                if (b->requires_grad) 
+                    b->grad[get_index(i, b->dims, b->ndims, r->dims, r->ndims)] += 
+                        (e->op == ADD ? 1 : -1) * r->grad[i];
             }
         }
         else if (e->op == MATMUL) {
@@ -189,26 +186,30 @@ void backward() {
                     for (int j = 0; j < N; j++) {
                         float g = r->grad[n*M*N + i*N + j];
                         for (int k = 0; k < K; k++) {
-                            if (a->requires_grad) a->grad[n*M*K + i*K + k] += g * b->data[n*K*N + k*N + j];
-                            if (b->requires_grad) b->grad[n*K*N + k*N + j] += g * a->data[n*M*K + i*K + k];
+                            if (a->requires_grad) 
+                                a->grad[n*M*K + i*K + k] += g * b->data[n*K*N + k*N + j];
+                            if (b->requires_grad) 
+                                b->grad[n*K*N + k*N + j] += g * a->data[n*M*K + i*K + k];
                         }
                     }
         }
-        else if (e->op == EXP && a->requires_grad)
+        else if (e->op == EXP && a->requires_grad) {
             for (int i = 0; i < a->size; i++)
                 a->grad[i] += r->grad[i] * r->data[i];
-        else if (e->op == LOG && a->requires_grad)
+        }
+        else if (e->op == LOG && a->requires_grad) {
             for (int i = 0; i < a->size; i++)
                 a->grad[i] += r->grad[i] / fmaxf(a->data[i], MIN_LOG);
-        else if (e->op == RESHAPE && a->requires_grad)
+        }
+        else if (e->op == RESHAPE && a->requires_grad) {
             for (int i = 0; i < a->size; i++)
                 a->grad[i] += r->grad[i];
+        }
         else if (e->op == REDUCE_SUM && a->requires_grad) {
             int stride[32];
             stride[a->ndims - 1] = 1;
-            for (int i = a->ndims - 2; i >= 0; i--) {
+            for (int i = a->ndims - 2; i >= 0; i--)
                 stride[i] = stride[i + 1] * a->dims[i + 1];
-            }
             
             for (int i = 0; i < a->size; i++) {
                 int coords[32], idx = i;
@@ -217,7 +218,8 @@ void backward() {
                     idx %= stride[d];
                 }
                 
-                int target_idx = 0, stride_r = 1;
+                int target_idx = 0;
+                int stride_r = 1;
                 for (int d = a->ndims - 1, r_d = r->ndims - 1; d >= 0; d--) {
                     if (d != e->reduce_dim) {
                         target_idx += coords[d] * stride_r;
