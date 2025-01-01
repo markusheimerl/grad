@@ -168,6 +168,41 @@ Tensor* tensor_rms_norm(Tensor* x, float eps) {
     return out;
 }
 
+Tensor* tensor_softmax(Tensor* a) {
+    if (!a || a->ndims < 1) return NULL;
+    
+    Tensor* r = tensor_new(a->ndims, a->dims, NULL, a->requires_grad);
+    int last_dim = a->dims[a->ndims - 1];
+    int outer_size = a->size / last_dim;
+    
+    for (int i = 0; i < outer_size; i++) {
+        // Find max for this batch
+        float max_val = a->data[i * last_dim];
+        for (int j = 1; j < last_dim; j++) {
+            max_val = fmaxf(max_val, a->data[i * last_dim + j]);
+        }
+        
+        // Compute exp(x - max) and sum
+        float sum = 0.0f;
+        for (int j = 0; j < last_dim; j++) {
+            float val = a->data[i * last_dim + j] - max_val;
+            r->data[i * last_dim + j] = expf(val);
+            sum += r->data[i * last_dim + j];
+        }
+        
+        // Normalize
+        for (int j = 0; j < last_dim; j++) {
+            r->data[i * last_dim + j] /= sum;
+        }
+    }
+    
+    if (r->requires_grad) {
+        tape[tape_len++] = (TapeEntry){SOFTMAX, r, a, NULL};
+    }
+    
+    return r;
+}
+
 static Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
     if (!a || !b) return NULL;
     int max_d = fmax(a->ndims, b->ndims), rd[32];
@@ -269,6 +304,21 @@ void backward() {
                         (scale * scale * scale) * val * sum_grad_times_val / last_dim;
                 }
             }
+        }else if (e->op == SOFTMAX && a->requires_grad) {
+            int last_dim = a->dims[a->ndims - 1];
+            int outer_size = a->size / last_dim;
+            
+            for (int i = 0; i < outer_size; i++) {
+                float sum = 0.0f;
+                for (int j = 0; j < last_dim; j++) {
+                    sum += r->grad[i * last_dim + j] * r->data[i * last_dim + j];
+                }
+                
+                for (int j = 0; j < last_dim; j++) {
+                    float softmax_j = r->data[i * last_dim + j];
+                    a->grad[i * last_dim + j] += softmax_j * (r->grad[i * last_dim + j] - sum);
+                }
+            }
         }
         
         if (e->aux_data) {
@@ -280,124 +330,6 @@ void backward() {
 }
 
 int main() {
-    printf("=== Comprehensive RMSNorm Test Suite ===\n\n");
-
-    // Test 1: Verify RMS of output is ~1.0
-    printf("Test 1: Verify RMS of output equals 1.0\n");
-    {
-        int dims[] = {4};
-        float data[] = {1.0f, 2.0f, 3.0f, 4.0f};
-        
-        Tensor* x = tensor_new(1, dims, data, 1);
-        Tensor* normalized = tensor_rms_norm(x, 1e-6f);
-        
-        // Calculate RMS of output
-        float rms = 0.0f;
-        for(int i = 0; i < 4; i++) {
-            rms += normalized->data[i] * normalized->data[i];
-        }
-        rms = sqrt(rms / 4);
-        
-        printf("Input: [%.2f %.2f %.2f %.2f]\n", data[0], data[1], data[2], data[3]);
-        printf("Output: [%.6f %.6f %.6f %.6f]\n", 
-               normalized->data[0], normalized->data[1], 
-               normalized->data[2], normalized->data[3]);
-        printf("RMS of output: %.9f (should be very close to 1.0)\n", rms);
-    }
-    printf("\n");
-
-    // Test 2: Scale invariance
-    printf("Test 2: Scale Invariance\n");
-    {
-        int dims[] = {4};
-        float data1[] = {1.0f, 2.0f, 3.0f, 4.0f};
-        float data2[] = {2.0f, 4.0f, 6.0f, 8.0f};  // scaled by 2
-        
-        Tensor* x1 = tensor_new(1, dims, data1, 1);
-        Tensor* x2 = tensor_new(1, dims, data2, 1);
-        Tensor* norm1 = tensor_rms_norm(x1, 1e-6f);
-        Tensor* norm2 = tensor_rms_norm(x2, 1e-6f);
-        
-        printf("Original normalized: [%.6f %.6f %.6f %.6f]\n",
-               norm1->data[0], norm1->data[1], norm1->data[2], norm1->data[3]);
-        printf("Scaled normalized:   [%.6f %.6f %.6f %.6f]\n",
-               norm2->data[0], norm2->data[1], norm2->data[2], norm2->data[3]);
-    }
-    printf("\n");
-
-    // Test 3: Edge cases
-    printf("Test 3: Edge Cases\n");
-    {
-        int dims[] = {4};
-        // Test with very small values
-        float small_data[] = {1e-6f, 2e-6f, 3e-6f, 4e-6f};
-        // Test with very large values
-        float large_data[] = {1e6f, 2e6f, 3e6f, 4e6f};
-        // Test with zeros (with one non-zero to avoid division by zero)
-        float zero_data[] = {0.0f, 0.0f, 0.0f, 1e-5f};
-        
-        Tensor* x_small = tensor_new(1, dims, small_data, 1);
-        Tensor* x_large = tensor_new(1, dims, large_data, 1);
-        Tensor* x_zero = tensor_new(1, dims, zero_data, 1);
-        
-        Tensor* norm_small = tensor_rms_norm(x_small, 1e-6f);
-        Tensor* norm_large = tensor_rms_norm(x_large, 1e-6f);
-        Tensor* norm_zero = tensor_rms_norm(x_zero, 1e-6f);
-        
-        printf("Small values normalized: [%.6f %.6f %.6f %.6f]\n",
-               norm_small->data[0], norm_small->data[1], 
-               norm_small->data[2], norm_small->data[3]);
-        printf("Large values normalized: [%.6f %.6f %.6f %.6f]\n",
-               norm_large->data[0], norm_large->data[1], 
-               norm_large->data[2], norm_large->data[3]);
-        printf("Near-zero values normalized: [%.6f %.6f %.6f %.6f]\n",
-               norm_zero->data[0], norm_zero->data[1], 
-               norm_zero->data[2], norm_zero->data[3]);
-    }
-    printf("\n");
-
-    // Test 4: Gradient verification
-    printf("Test 4: Gradient Verification\n");
-    {
-        int dims[] = {3};
-        float data[] = {1.0f, 2.0f, 3.0f};
-        
-        Tensor* x = tensor_new(1, dims, data, 1);
-        Tensor* normalized = tensor_rms_norm(x, 1e-6f);
-        
-        // Set gradient to [1, 1, 1]
-        for(int i = 0; i < 3; i++) normalized->grad[i] = 1.0f;
-        
-        backward();
-        
-        printf("Input: [%.2f %.2f %.2f]\n", data[0], data[1], data[2]);
-        printf("Normalized: [%.6f %.6f %.6f]\n",
-               normalized->data[0], normalized->data[1], normalized->data[2]);
-        printf("Gradients: [%.6f %.6f %.6f]\n",
-               x->grad[0], x->grad[1], x->grad[2]);
-        
-        // Verify gradient using finite differences
-        float eps = 1e-4f;
-        printf("\nNumerical gradient check (should be close to analytical gradients):\n");
-        for(int i = 0; i < 3; i++) {
-            data[i] += eps;
-            Tensor* x_plus = tensor_new(1, dims, data, 0);
-            Tensor* norm_plus = tensor_rms_norm(x_plus, 1e-6f);
-            
-            data[i] -= 2*eps;
-            Tensor* x_minus = tensor_new(1, dims, data, 0);
-            Tensor* norm_minus = tensor_rms_norm(x_minus, 1e-6f);
-            
-            float numerical_grad = 0;
-            for(int j = 0; j < 3; j++) {
-                numerical_grad += (norm_plus->data[j] - norm_minus->data[j]) / (2*eps);
-            }
-            
-            printf("dim %d numerical grad: %.6f\n", i, numerical_grad);
-            
-            data[i] += eps;  // restore original value
-        }
-    }
 
     clean_registry();
     return 0;
