@@ -178,26 +178,6 @@ Tensor* tensor_ones(int ndims, const int* dims) {
     return t;
 }
 
-Tensor* tensor_reduce_sum(Tensor* a, int axis) {
-    if (!a || axis < 0 || axis >= a->ndims) return NULL;
-    int p[MAX_DIMS], d[MAX_DIMS], j = 0;
-    for (int i = 0; i < a->ndims; i++) if (i != axis) p[j] = i, d[j++] = a->dims[i];
-    p[a->ndims - 1] = axis;
-    Tensor* t = tensor_permute(a, p);
-    return tensor_reshape(tensor_matmul(tensor_reshape(t, 2, (int[]){t->size / t->dims[t->ndims - 1], 
-        t->dims[t->ndims - 1]}), tensor_reshape(tensor_ones(1, (int[]){t->dims[t->ndims - 1]}), 2, 
-        (int[]){t->dims[t->ndims - 1], 1})), a->ndims - 1, d);
-}
-
-Tensor* tensor_reduce_max(Tensor* a, int axis) {
-    if (!a || axis < 0 || axis >= a->ndims) return NULL;
-    int p[MAX_DIMS], d[MAX_DIMS], j = 0;
-    for (int i = 0; i < a->ndims; i++) if (i != axis) p[j] = i, d[j++] = a->dims[i];
-    p[a->ndims - 1] = axis;
-    return tensor_reshape(tensor_log(tensor_reduce_sum(tensor_exp(tensor_permute(a, p)), 
-        a->ndims - 1)), a->ndims - 1, d);
-}
-
 void print_tensor(Tensor* t, const char* name) {
     printf("%s: shape(", name);
     for (int i = 0; i < t->ndims; i++) printf("%d%s", t->dims[i], i < t->ndims - 1 ? "," : ")");
@@ -205,61 +185,6 @@ void print_tensor(Tensor* t, const char* name) {
 }
 
 int main() {
-    printf("=== Tensor Reduce Max Testing with Gradients ===\n\n");
-
-    // Test Case 1: Simple 1D tensor with gradients
-    {
-        printf("Test Case 1: 1D tensor with gradients\n");
-        float data1[] = {1, 2, 3, 4, 5};
-        int dims1[] = {5};
-        Tensor* t1 = tensor_new(1, dims1, data1, 1);
-        
-        Tensor* max1 = tensor_reduce_max(t1, 0);
-        max1->grad[0] = 1.0;  // Set gradient for backward pass
-        
-        backward();
-        
-        printf("Input: ");
-        for(int i = 0; i < t1->size; i++) printf("%.1f ", t1->data[i]);
-        printf("\nMax approximation: %.4f\n", max1->data[0]);
-        printf("Gradients: ");
-        for(int i = 0; i < t1->size; i++) printf("%.4f ", t1->grad[i]);
-        printf("\n\n");
-    }
-
-    // Test Case 2: 2D tensor with gradients
-    {
-        printf("Test Case 2: 2D tensor with gradients\n");
-        float data2[] = {
-            1, 2, 3,
-            4, 5, 6,
-            7, 8, 9
-        };
-        int dims2[] = {3, 3};
-        Tensor* t2 = tensor_new(2, dims2, data2, 1);
-        
-        printf("Input:\n");
-        for(int i = 0; i < dims2[0]; i++) {
-            for(int j = 0; j < dims2[1]; j++)
-                printf("%2.1f ", t2->data[i*dims2[1] + j]);
-            printf("\n");
-        }
-        
-        // Max along axis 0
-        Tensor* max2_0 = tensor_reduce_max(t2, 0);
-        for(int i = 0; i < max2_0->size; i++) max2_0->grad[i] = 1.0;
-        
-        backward();
-        
-        printf("\nMax along axis 0: ");
-        for(int i = 0; i < max2_0->size; i++) printf("%.4f ", max2_0->data[i]);
-        printf("\nGradients:\n");
-        for(int i = 0; i < dims2[0]; i++) {
-            for(int j = 0; j < dims2[1]; j++)
-                printf("%.4f ", t2->grad[i*dims2[1] + j]);
-            printf("\n");
-        }
-    }
 
     clean_registry();
     return 0;
