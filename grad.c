@@ -138,6 +138,7 @@ void backward() {
     tape_len = 0;
 }
 
+// Only works for positive numbers
 Tensor* tensor_hadamard(Tensor* a, Tensor* b) {
     if (a->ndims != b->ndims) return NULL;
     for (int i = 0; i < a->ndims; i++) if (a->dims[i] != b->dims[i]) return NULL;
@@ -394,12 +395,160 @@ void test_numerical_gradient() {
     assert_close(x->grad[0], numerical_grad, 1e-3, "Exp numerical gradient");
 }
 
+void test_permute() {
+    printf("\n=== Advanced Permute Tests ===\n");
+    
+    // Test 1: 4D tensor permute with complex pattern
+    printf("Test 1: 4D tensor permute (2,3,4,2) -> (4,2,2,3)\n");
+    float* data4d = malloc(48 * sizeof(float));
+    for(int i = 0; i < 48; i++) data4d[i] = i + 1;
+    
+    Tensor* t4d = tensor_new(4, (int[]){2,3,4,2}, data4d, 1);
+    Tensor* p4d = tensor_permute(t4d, (int[]){2,3,0,1});
+    
+    printf("Original shape: (2,3,4,2), Permuted shape: (4,2,2,3)\n");
+    printf("Verifying corner elements:\n");
+    // Print and verify some strategic elements
+    printf("Original[0,0,0,0] = %.1f -> Permuted[0,0,0,0] = %.1f\n", t4d->data[0], p4d->data[0]);
+    printf("Original[1,2,3,1] = %.1f -> Permuted[3,1,1,2] = %.1f\n", 
+           t4d->data[1*24 + 2*8 + 3*2 + 1], p4d->data[3*12 + 1*6 + 1*3 + 2]);
+    
+    // Test 2: Permute with singleton dimensions
+    printf("\nTest 2: Permute with singleton dimensions (1,4,1,3) -> (4,1,3,1)\n");
+    float* data_single = malloc(12 * sizeof(float));
+    for(int i = 0; i < 12; i++) data_single[i] = i + 1;
+    Tensor* t_single = tensor_new(4, (int[]){1,4,1,3}, data_single, 1);
+    Tensor* p_single = tensor_permute(t_single, (int[]){1,0,3,2});
+    printf("Verifying singleton dimension permute:\n");
+    for(int i = 0; i < 12; i++) {
+        printf("%.1f ", p_single->data[i]);
+        if((i+1) % 3 == 0) printf("\n");
+    }
+    
+    // Test 3: Permute with repeated application
+    printf("\nTest 3: Double permute should return to original\n");
+    int dims[] = {2,3,2};
+    float* data3d = malloc(12 * sizeof(float));
+    for(int i = 0; i < 12; i++) data3d[i] = i + 1;
+    
+    Tensor* t3d = tensor_new(3, dims, data3d, 1);
+    Tensor* p1 = tensor_permute(t3d, (int[]){2,0,1});
+    Tensor* p2 = tensor_permute(p1, (int[]){1,2,0});
+    
+    printf("Testing if double permute preserves values:\n");
+    for(int i = 0; i < 12; i++) {
+        assert_close(t3d->data[i], p2->data[i], 1e-5, "Double permute");
+        if(i < 5) printf("%.1f -> %.1f -> %.1f\n", t3d->data[i], p1->data[i], p2->data[i]);
+    }
+    
+    // Test 4: Gradient propagation through permute
+    printf("\nTest 4: Gradient propagation through permute\n");
+    Tensor* x = tensor_new(2, (int[]){2,3}, (float[]){1,2,3,4,5,6}, 1);
+    Tensor* px = tensor_permute(x, (int[]){1,0});
+    for(int i = 0; i < px->size; i++) px->grad[i] = 1.0f;
+    backward();
+    
+    printf("Input gradients after permute:\n");
+    for(int i = 0; i < 2; i++) {
+        for(int j = 0; j < 3; j++) printf("%.1f ", x->grad[i*3 + j]);
+        printf("\n");
+    }
+    
+    free(data4d);
+    free(data_single);
+    free(data3d);
+}
+
+void test_hadamard() {
+    printf("\n=== Advanced Hadamard Product Tests ===\n");
+    
+    // Test 1: Basic Hadamard product with positive numbers
+    printf("Test 1: Basic Hadamard product with positive numbers\n");
+    float data1[] = {0.5f, 1.0f, 1.5f, 2.0f};  // Using positive numbers
+    float data2[] = {1.0f, 1.5f, 2.0f, 2.5f};  // Using positive numbers
+    Tensor* h1 = tensor_new(2, (int[]){2,2}, data1, 1);
+    Tensor* h2 = tensor_new(2, (int[]){2,2}, data2, 1);
+    Tensor* h_result = tensor_hadamard(h1, h2);
+    
+    printf("Results:\n");
+    for(int i = 0; i < 4; i++) {
+        float expected = data1[i] * data2[i];
+        printf("%.2f * %.2f = %.2f (expected: %.2f)\n", 
+               data1[i], data2[i], h_result->data[i], expected);
+        assert_close(h_result->data[i], expected, 1e-4, "Basic hadamard");
+    }
+    
+    // Test 2: Chain of Hadamard products
+    printf("\nTest 2: Chain of Hadamard products\n");
+    float data3[] = {1.0f, 1.2f, 1.4f, 1.6f};
+    Tensor* h3 = tensor_new(2, (int[]){2,2}, data3, 1);
+    Tensor* chain1 = tensor_hadamard(h3, h3);  // square
+    Tensor* chain2 = tensor_hadamard(chain1, h3);  // cube
+    
+    printf("Original -> Square -> Cube:\n");
+    for(int i = 0; i < 4; i++) {
+        float expected = data3[i] * data3[i] * data3[i];
+        printf("%.2f -> %.2f -> %.2f (expected: %.2f)\n", 
+               data3[i], chain1->data[i], chain2->data[i], expected);
+        assert_close(chain2->data[i], expected, 1e-4, "Chained hadamard");
+    }
+    
+    // Test 3: Hadamard with ones (identity)
+    printf("\nTest 3: Hadamard with ones (identity)\n");
+    float ones_data[] = {1.0f, 1.0f, 1.0f, 1.0f};
+    float test_data[] = {1.5f, 2.0f, 2.5f, 3.0f};
+    Tensor* ones = tensor_new(2, (int[]){2,2}, ones_data, 1);
+    Tensor* test = tensor_new(2, (int[]){2,2}, test_data, 1);
+    Tensor* id_result = tensor_hadamard(test, ones);
+    
+    printf("Testing identity property (x * 1 = x):\n");
+    for(int i = 0; i < 4; i++) {
+        printf("%.2f * 1.00 = %.2f\n", test_data[i], id_result->data[i]);
+        assert_close(id_result->data[i], test_data[i], 1e-4, "Identity hadamard");
+    }
+    
+    // Test 4: Gradient verification
+    printf("\nTest 4: Gradient verification\n");
+    Tensor* a = tensor_new(2, (int[]){2,2}, (float[]){1.5f, 2.0f, 2.5f, 3.0f}, 1);
+    Tensor* b = tensor_new(2, (int[]){2,2}, (float[]){2.0f, 2.5f, 3.0f, 3.5f}, 1);
+    Tensor* c = tensor_hadamard(a, b);
+    
+    // Set all gradients to 1.0
+    for(int i = 0; i < 4; i++) c->grad[i] = 1.0f;
+    backward();
+    
+    printf("Gradients:\n");
+    printf("dC/dA (should be equal to B):\n");
+    for(int i = 0; i < 4; i++) {
+        printf("%.2f ", a->grad[i]);
+        assert_close(a->grad[i], b->data[i], 1e-4, "Gradient wrt A");
+    }
+    printf("\ndC/dB (should be equal to A):\n");
+    for(int i = 0; i < 4; i++) {
+        printf("%.2f ", b->grad[i]);
+        assert_close(b->grad[i], a->data[i], 1e-4, "Gradient wrt B");
+    }
+    printf("\n");
+    
+    // Test 5: Commutativity
+    printf("\nTest 5: Testing commutativity (a * b = b * a)\n");
+    Tensor* h_ab = tensor_hadamard(a, b);
+    Tensor* h_ba = tensor_hadamard(b, a);
+    
+    for(int i = 0; i < 4; i++) {
+        printf("%.2f = %.2f\n", h_ab->data[i], h_ba->data[i]);
+        assert_close(h_ab->data[i], h_ba->data[i], 1e-4, "Commutativity");
+    }
+}
+
 int main() {
     test_matmul();
     test_exp_log();
     test_add();
     test_reshape();
     test_numerical_gradient();
+    test_permute();
+    test_hadamard();
     
     printf("\nAll tests passed successfully!\n");
     clean_registry();
