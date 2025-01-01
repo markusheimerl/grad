@@ -314,5 +314,4 @@ void backward() {
     tape_len = 0;
 }
 
-
 #endif // __GRAD_H__
