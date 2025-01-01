@@ -203,6 +203,15 @@ Tensor* tensor_softmax(Tensor* a) {
     return r;
 }
 
+Tensor* tensor_reshape(Tensor* a, int ndims, const int* dims) {
+    int size = 1;
+    for (int i = 0; i < ndims; i++) size *= dims[i];
+    if (size != a->size) return NULL;
+    Tensor* r = tensor_new(ndims, dims, a->data, a->requires_grad);
+    if (r->requires_grad) tape[tape_len++] = (TapeEntry){RESHAPE, r, a, NULL};
+    return r;
+}
+
 static Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
     if (!a || !b) return NULL;
     int max_d = fmax(a->ndims, b->ndims), rd[32];
@@ -253,6 +262,9 @@ void backward() {
                                 b->grad[n*K*N + k*N + j] += g * a->data[n*M*K + i*K + k];
                         }
                     }
+        }else if (e->op == RESHAPE && a->requires_grad) {
+            for (int i = 0; i < a->size; i++)
+                a->grad[i] += r->grad[i];
         }
         else if (e->op == PERMUTE && a->requires_grad) {
             int* inv_perm = malloc(a->ndims * sizeof(int));
