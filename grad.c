@@ -171,6 +171,26 @@ Tensor* tensor_permute(Tensor* a, const int* p) {
     return r;
 }
 
+Tensor* tensor_reduce_sum(Tensor* a, int axis) {
+    if (!a || axis < 0 || axis >= a->ndims) return NULL;
+    int p[MAX_DIMS], d[MAX_DIMS], j = 0;
+    for (int i = 0; i < a->ndims; i++) if (i != axis) p[j] = i, d[j++] = a->dims[i];
+    p[a->ndims - 1] = axis;
+    Tensor* t = tensor_permute(a, p);
+    return tensor_reshape(tensor_matmul(tensor_reshape(t, 2, (int[]){t->size / t->dims[t->ndims - 1], 
+        t->dims[t->ndims - 1]}), tensor_reshape(tensor_ones(1, (int[]){t->dims[t->ndims - 1]}), 2, 
+        (int[]){t->dims[t->ndims - 1], 1})), a->ndims - 1, d);
+}
+
+Tensor* tensor_reduce_max(Tensor* a, int axis) {
+    if (!a || axis < 0 || axis >= a->ndims) return NULL;
+    int p[MAX_DIMS], d[MAX_DIMS], j = 0;
+    for (int i = 0; i < a->ndims; i++) if (i != axis) p[j] = i, d[j++] = a->dims[i];
+    p[a->ndims - 1] = axis;
+    return tensor_reshape(tensor_log(tensor_reduce_sum(tensor_exp(tensor_permute(a, p)), 
+        a->ndims - 1)), a->ndims - 1, d);
+}
+
 void print_tensor(Tensor* t, const char* name) {
     printf("%s: shape(", name);
     for (int i = 0; i < t->ndims; i++) printf("%d%s", t->dims[i], i < t->ndims - 1 ? "," : ")");
