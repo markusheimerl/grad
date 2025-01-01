@@ -95,17 +95,14 @@ Tensor* tensor_permute(Tensor* a, const int* perm, int perm_size) {
     free(used);
     
     int* new_dims = malloc(a->ndims * sizeof(int));
-    for (int i = 0; i < a->ndims; i++) {
-        new_dims[i] = a->dims[perm[i]];
-    }
+    for (int i = 0; i < a->ndims; i++) new_dims[i] = a->dims[perm[i]];
     
     Tensor* r = tensor_new(a->ndims, new_dims, NULL, a->requires_grad);
     
     int* a_strides = malloc(a->ndims * sizeof(int));
     int* r_strides = malloc(r->ndims * sizeof(int));
     
-    a_strides[a->ndims - 1] = 1;
-    r_strides[r->ndims - 1] = 1;
+    a_strides[a->ndims - 1] = r_strides[r->ndims - 1] = 1;
     
     for (int i = a->ndims - 2; i >= 0; i--) {
         a_strides[i] = a_strides[i + 1] * a->dims[i + 1];
@@ -122,16 +119,13 @@ Tensor* tensor_permute(Tensor* a, const int* perm, int perm_size) {
         r->data[i] = a->data[old_idx];
     }
     
-    free(a_strides);
-    free(r_strides);
-    free(new_dims);
+    free(a_strides); free(r_strides); free(new_dims);
     
     if (r->requires_grad) {
         int* stored_perm = malloc(perm_size * sizeof(int));
         memcpy(stored_perm, perm, perm_size * sizeof(int));
         tape[tape_len++] = (TapeEntry){PERMUTE, r, a, NULL, stored_perm};
     }
-    
     return r;
 }
 
@@ -187,18 +181,13 @@ void backward() {
                     }
         }
         else if (e->op == PERMUTE && a->requires_grad) {
-            // Create inverse permutation
             int* inv_perm = malloc(a->ndims * sizeof(int));
-            for (int i = 0; i < a->ndims; i++) {
-                inv_perm[e->aux_data[i]] = i;
-            }
+            for (int i = 0; i < a->ndims; i++) inv_perm[e->aux_data[i]] = i;
             
-            // Apply inverse permutation to gradients
             int* a_strides = malloc(a->ndims * sizeof(int));
             int* r_strides = malloc(r->ndims * sizeof(int));
             
-            a_strides[a->ndims - 1] = 1;
-            r_strides[r->ndims - 1] = 1;
+            a_strides[a->ndims - 1] = r_strides[r->ndims - 1] = 1;
             
             for (int i = a->ndims - 2; i >= 0; i--) {
                 a_strides[i] = a_strides[i + 1] * a->dims[i + 1];
@@ -215,9 +204,7 @@ void backward() {
                 a->grad[old_idx] += r->grad[i];
             }
             
-            free(a_strides);
-            free(r_strides);
-            free(inv_perm);
+            free(a_strides); free(r_strides); free(inv_perm);
         }
         
         if (e->aux_data) {
