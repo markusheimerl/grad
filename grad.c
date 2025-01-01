@@ -125,7 +125,6 @@ Tensor* tensor_softmax(Tensor* a) {
 
 Tensor* tensor_rms_norm(Tensor* x, float eps) {
     if (!x || x->ndims < 1) return NULL;
-    
     Tensor* out = tensor_new(x->ndims, x->dims, NULL, x->requires_grad);
     int last_dim = x->dims[x->ndims - 1];
     int batch_size = x->size / last_dim;
@@ -137,150 +136,19 @@ Tensor* tensor_rms_norm(Tensor* x, float eps) {
             ms += val * val;
         }
         ms /= last_dim;
-        
         float scale = 1.0f / sqrt(ms + eps);
         for (int i = 0; i < last_dim; i++) {
             out->data[b * last_dim + i] = x->data[b * last_dim + i] * scale;
         }
     }
-    
     if (out->requires_grad) {
         float* eps_ptr = malloc(sizeof(float));
         *eps_ptr = eps;
         tape[tape_len++] = (TapeEntry){RMSNORM, out, x, NULL, (int*)eps_ptr};
     }
-    
     return out;
 }
 
-void backward() {
-    for (int t = tape_len-1; t >= 0; t--) {
-        TapeEntry* e = &tape[t];
-        Tensor *r = e->result, *a = e->input1, *b = e->input2;
-        
-        switch(e->op) {
-            case ADD:
-            case SUB:
-            case HADAMARD:
-                for (int i = 0; i < r->size; i++) {
-                    float grad = r->grad[i];
-                    if (a->requires_grad) {
-                        int a_idx = get_index(i, a->dims, a->ndims, r->dims, r->ndims);
-                        if (e->op == HADAMARD)
-                            a->grad[a_idx] += grad * b->data[get_index(i, b->dims, b->ndims, r->dims, r->ndims)];
-                        else
-                            a->grad[a_idx] += grad;
-                    }
-                    if (b->requires_grad) {
-                        int b_idx = get_index(i, b->dims, b->ndims, r->dims, r->ndims);
-                        if (e->op == HADAMARD)
-                            b->grad[b_idx] += grad * a->data[get_index(i, a->dims, a->ndims, r->dims, r->ndims)];
-                        else
-                            b->grad[b_idx] += (e->op == ADD ? 1 : -1) * grad;
-                    }
-                }
-                break;
-
-            case MATMUL: {
-                int M = a->dims[a->ndims-2], K = a->dims[a->ndims-1], N = b->dims[b->ndims-1];
-                int batch = r->size / (M * N);
-                for (int n = 0; n < batch; n++)
-                    for (int i = 0; i < M; i++)
-                        for (int j = 0; j < N; j++) {
-                            float g = r->grad[n*M*N + i*N + j];
-                            for (int k = 0; k < K; k++) {
-                                if (a->requires_grad) 
-                                    a->grad[n*M*K + i*K + k] += g * b->data[n*K*N + k*N + j];
-                                if (b->requires_grad) 
-                                    b->grad[n*K*N + k*N + j] += g * a->data[n*M*K + i*K + k];
-                            }
-                        }
-                break;
-            }
-
-            case SOFTMAX:
-                if (a->requires_grad) {
-                    int last_dim = a->dims[a->ndims - 1];
-                    int outer_size = a->size / last_dim;
-                    for (int i = 0; i < outer_size; i++) {
-                        float sum = 0;
-                        for (int j = 0; j < last_dim; j++)
-                            sum += r->grad[i * last_dim + j] * r->data[i * last_dim + j];
-                        for (int j = 0; j < last_dim; j++)
-                            a->grad[i * last_dim + j] += r->data[i * last_dim + j] * (r->grad[i * last_dim + j] - sum);
-                    }
-                }
-                break;
-
-            case RESHAPE:
-                if (a->requires_grad)
-                    for (int i = 0; i < a->size; i++)
-                        a->grad[i] += r->grad[i];
-                break;
-            case PERMUTE:
-                if (a->requires_grad) {
-                    int* inv_perm = malloc(a->ndims * sizeof(int));
-                    for (int i = 0; i < a->ndims; i++) 
-                        inv_perm[e->aux_data[i]] = i;
-                    
-                    int* a_strides = malloc(a->ndims * sizeof(int));
-                    int* r_strides = malloc(r->ndims * sizeof(int));
-                    
-                    a_strides[a->ndims - 1] = r_strides[r->ndims - 1] = 1;
-                    for (int i = a->ndims - 2; i >= 0; i--) {
-                        a_strides[i] = a_strides[i + 1] * a->dims[i + 1];
-                        r_strides[i] = r_strides[i + 1] * r->dims[i + 1];
-                    }
-                    
-                    for (int i = 0; i < r->size; i++) {
-                        int temp = i, old_idx = 0;
-                        for (int d = 0; d < r->ndims; d++) {
-                            int coord = temp / r_strides[d];
-                            temp %= r_strides[d];
-                            old_idx += coord * a_strides[inv_perm[d]];
-                        }
-                        a->grad[old_idx] += r->grad[i];
-                    }
-                    
-                    free(a_strides); free(r_strides); free(inv_perm);
-                }
-                break;
-                case RMSNORM:
-    if (a->requires_grad) {
-        float eps = *(float*)e->aux_data;
-        int last_dim = a->dims[a->ndims - 1];
-        int batch_size = a->size / last_dim;
-        
-        for (int b = 0; b < batch_size; b++) {
-            float ms = 0.0f;
-            for (int i = 0; i < last_dim; i++) {
-                float val = a->data[b * last_dim + i];
-                ms += val * val;
-            }
-            ms /= last_dim;
-            float scale = 1.0f / sqrt(ms + eps);
-            
-            float sum_grad_times_val = 0.0f;
-            for (int i = 0; i < last_dim; i++) {
-                sum_grad_times_val += r->grad[b * last_dim + i] * 
-                                    a->data[b * last_dim + i];
-            }
-            
-            for (int i = 0; i < last_dim; i++) {
-                float val = a->data[b * last_dim + i];
-                a->grad[b * last_dim + i] += scale * r->grad[b * last_dim + i] -
-                    (scale * scale * scale) * val * sum_grad_times_val / last_dim;
-            }
-        }
-    }
-    break;
-        }
-        
-        free(e->aux_data);
-        e->aux_data = NULL;
-    }
-    tape_len = 0;
-}
 
 Tensor* tensor_reshape(Tensor* a, int ndims, const int* dims) {
     int size = 1;
@@ -293,7 +161,6 @@ Tensor* tensor_reshape(Tensor* a, int ndims, const int* dims) {
 
 Tensor* tensor_permute(Tensor* a, const int* perm, int perm_size) {
     if (!a || !perm || perm_size != a->ndims) return NULL;
-    
     int* used = calloc(perm_size, sizeof(int));
     for (int i = 0; i < perm_size; i++) {
         if (perm[i] < 0 || perm[i] >= perm_size || used[perm[i]]) {
@@ -306,7 +173,6 @@ Tensor* tensor_permute(Tensor* a, const int* perm, int perm_size) {
     
     int* new_dims = malloc(a->ndims * sizeof(int));
     for (int i = 0; i < a->ndims; i++) new_dims[i] = a->dims[perm[i]];
-    
     Tensor* r = tensor_new(a->ndims, new_dims, NULL, a->requires_grad);
     
     int* a_strides = malloc(a->ndims * sizeof(int));
@@ -338,6 +204,125 @@ Tensor* tensor_permute(Tensor* a, const int* perm, int perm_size) {
     return r;
 }
 
+void backward() {
+    for (int t = tape_len-1; t >= 0; t--) {
+        TapeEntry* e = &tape[t];
+        Tensor *r = e->result, *a = e->input1, *b = e->input2;
+        
+        switch(e->op) {
+            case ADD:
+            case SUB:
+            case HADAMARD:
+                for (int i = 0; i < r->size; i++) {
+                    float grad = r->grad[i];
+                    if (a->requires_grad) {
+                        int a_idx = get_index(i, a->dims, a->ndims, r->dims, r->ndims);
+                        if (e->op == HADAMARD)
+                            a->grad[a_idx] += grad * b->data[get_index(i, b->dims, b->ndims, r->dims, r->ndims)];
+                        else
+                            a->grad[a_idx] += grad;
+                    }
+                    if (b->requires_grad) {
+                        int b_idx = get_index(i, b->dims, b->ndims, r->dims, r->ndims);
+                        if (e->op == HADAMARD)
+                            b->grad[b_idx] += grad * a->data[get_index(i, a->dims, a->ndims, r->dims, r->ndims)];
+                        else
+                            b->grad[b_idx] += (e->op == ADD ? 1 : -1) * grad;
+                    }
+                }
+                break;
+            case MATMUL: {
+                int M = a->dims[a->ndims-2], K = a->dims[a->ndims-1], N = b->dims[b->ndims-1];
+                int batch = r->size / (M * N);
+                for (int n = 0; n < batch; n++)
+                    for (int i = 0; i < M; i++)
+                        for (int j = 0; j < N; j++) {
+                            float g = r->grad[n*M*N + i*N + j];
+                            for (int k = 0; k < K; k++) {
+                                if (a->requires_grad) 
+                                    a->grad[n*M*K + i*K + k] += g * b->data[n*K*N + k*N + j];
+                                if (b->requires_grad) 
+                                    b->grad[n*K*N + k*N + j] += g * a->data[n*M*K + i*K + k];
+                            }
+                        }
+                break;
+            }
+            case SOFTMAX:
+                if (a->requires_grad) {
+                    int last_dim = a->dims[a->ndims - 1];
+                    int outer_size = a->size / last_dim;
+                    for (int i = 0; i < outer_size; i++) {
+                        float sum = 0;
+                        for (int j = 0; j < last_dim; j++)
+                            sum += r->grad[i * last_dim + j] * r->data[i * last_dim + j];
+                        for (int j = 0; j < last_dim; j++)
+                            a->grad[i * last_dim + j] += r->data[i * last_dim + j] * (r->grad[i * last_dim + j] - sum);
+                    }
+                }
+                break;
+            case RESHAPE:
+                if (a->requires_grad)
+                    for (int i = 0; i < a->size; i++)
+                        a->grad[i] += r->grad[i];
+                break;
+            case PERMUTE:
+                if (a->requires_grad) {
+                    int* inv_perm = malloc(a->ndims * sizeof(int));
+                    for (int i = 0; i < a->ndims; i++) 
+                        inv_perm[e->aux_data[i]] = i;
+                    
+                    int* a_strides = malloc(a->ndims * sizeof(int));
+                    int* r_strides = malloc(r->ndims * sizeof(int));
+                    
+                    a_strides[a->ndims - 1] = r_strides[r->ndims - 1] = 1;
+                    for (int i = a->ndims - 2; i >= 0; i--) {
+                        a_strides[i] = a_strides[i + 1] * a->dims[i + 1];
+                        r_strides[i] = r_strides[i + 1] * r->dims[i + 1];
+                    }
+                    
+                    for (int i = 0; i < r->size; i++) {
+                        int temp = i, old_idx = 0;
+                        for (int d = 0; d < r->ndims; d++) {
+                            int coord = temp / r_strides[d];
+                            temp %= r_strides[d];
+                            old_idx += coord * a_strides[inv_perm[d]];
+                        }
+                        a->grad[old_idx] += r->grad[i];
+                    }
+                    free(a_strides); free(r_strides); free(inv_perm);
+                }
+                break;
+            case RMSNORM:
+                if (a->requires_grad) {
+                    float eps = *(float*)e->aux_data;
+                    int last_dim = a->dims[a->ndims - 1];
+                    int batch_size = a->size / last_dim;
+                    for (int b = 0; b < batch_size; b++) {
+                        float ms = 0.0f;
+                        for (int i = 0; i < last_dim; i++) {
+                            float val = a->data[b * last_dim + i];
+                            ms += val * val;
+                        }
+                        ms /= last_dim;
+                        float scale = 1.0f / sqrt(ms + eps);
+                        float sum_grad_times_val = 0.0f;
+                        for (int i = 0; i < last_dim; i++)
+                            sum_grad_times_val += r->grad[b * last_dim + i] * a->data[b * last_dim + i];
+                        for (int i = 0; i < last_dim; i++) {
+                            float val = a->data[b * last_dim + i];
+                            a->grad[b * last_dim + i] += scale * r->grad[b * last_dim + i] -
+                                (scale * scale * scale) * val * sum_grad_times_val / last_dim;
+                        }
+                    }
+                }
+                break;
+        }
+        free(e->aux_data);
+        e->aux_data = NULL;
+    }
+    tape_len = 0;
+}
+
 Tensor* tensor_multihead_attention(Tensor* Q, Tensor* K, Tensor* V, int num_heads) {
     if (!Q || !K || !V || Q->ndims != 3 || K->ndims != 3 || V->ndims != 3) return NULL;
     
@@ -353,7 +338,6 @@ Tensor* tensor_multihead_attention(Tensor* Q, Tensor* K, Tensor* V, int num_head
     int d_head = d_model / num_heads;
     tape_len = 0;
 
-    // Reshape and permute Q, K, V
     int reshape_dims[] = {batch_size, -1, num_heads, d_head};
     int perm[] = {0, 2, 1, 3};
     
@@ -366,7 +350,6 @@ Tensor* tensor_multihead_attention(Tensor* Q, Tensor* K, Tensor* V, int num_head
     
     if (!Q_perm || !K_perm || !V_perm) return NULL;
 
-    // Compute attention
     Tensor* K_transpose = tensor_permute(K_perm, (int[]){0, 1, 3, 2}, 4);
     if (!K_transpose) return NULL;
 
@@ -381,7 +364,6 @@ Tensor* tensor_multihead_attention(Tensor* Q, Tensor* K, Tensor* V, int num_head
     Tensor* attention = tensor_matmul(tensor_softmax(scaled_scores), V_perm);
     if (!attention) return NULL;
 
-    // Final reshape
     return tensor_reshape(
         tensor_permute(attention, (int[]){0,2,1,3}, 4),
         3, (int[]){batch_size, seq_len_q, d_model}
@@ -389,19 +371,17 @@ Tensor* tensor_multihead_attention(Tensor* Q, Tensor* K, Tensor* V, int num_head
 }
 
 int main() {
-    // Test 1: Basic functionality with clear attention patterns
 {
     printf("\nTest 1: Basic Multi-Head Attention with Simple Values\n");
     int batch_size = 1;
-    int seq_len = 2;  // Simplified sequence length
+    int seq_len = 2;
     int d_model = 4;
     int num_heads = 2;
     int qkv_dims[] = {batch_size, seq_len, d_model};
     
-    // Simple values for easy tracking
     float q_data[] = {
-        1.0f, 1.0f, 0.0f, 0.0f,  // First sequence position, split across 2 heads
-        0.0f, 0.0f, 1.0f, 1.0f   // Second sequence position
+        1.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 1.0f
     };
     float k_data[] = {
         1.0f, 1.0f, 0.0f, 0.0f,
@@ -433,7 +413,6 @@ int main() {
         printf("\n");
     }
     
-    // Test gradients
     printf("\nSetting output gradients to 1.0\n");
     for (int i = 0; i < output->size; i++) {
         output->grad[i] = 1.0f;
@@ -461,7 +440,6 @@ int main() {
     printf("\n");
 }
 
-    // Test 2: Uniform attention pattern
     {
         printf("Test 2: Uniform Attention Pattern\n");
         int batch_size = 1;
@@ -470,12 +448,11 @@ int main() {
         int num_heads = 2;
         int qkv_dims[] = {batch_size, seq_len, d_model};
         
-        // Create uniform attention by setting all Q and K values to the same value
         float q_data[12], k_data[12], v_data[12];
         for (int i = 0; i < seq_len * d_model; i++) {
             q_data[i] = 1.0f;
             k_data[i] = 1.0f;
-            v_data[i] = (i / d_model) + 1.0f;  // Different values per position
+            v_data[i] = (i / d_model) + 1.0f;
         }
 
         Tensor* Q = tensor_new(3, qkv_dims, q_data, 1);
@@ -494,7 +471,6 @@ int main() {
         printf("\n");
     }
 
-    // Test 3: Gradient Flow
 {
     printf("\nTest 3: Gradient Flow\n");
     int batch_size = 1;
@@ -503,7 +479,6 @@ int main() {
     int num_heads = 2;
     int dims[] = {batch_size, seq_len, d_model};
     
-    // Use same pattern as Test 1 for consistency
     float q_data[] = {
         1.0f, 1.0f, 0.0f, 0.0f,
         0.0f, 0.0f, 1.0f, 1.0f
@@ -523,7 +498,6 @@ int main() {
     
     Tensor* output = tensor_multihead_attention(Q, K, V, num_heads);
     
-    // Set gradients
     for (int i = 0; i < output->size; i++) {
         output->grad[i] = 1.0f;
     }
@@ -540,10 +514,8 @@ int main() {
     }
 }
 
-
-    // Test 4: Error cases
     {
-        printf("Test 4: Error Cases\n");
+        printf("\nTest 4: Error Cases\n");
         int batch_size = 2;
         int seq_len = 3;
         int d_model = 4;
