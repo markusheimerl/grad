@@ -263,96 +263,95 @@ Tensor* tensor_permute(Tensor* a, const int* p) {
 }
 
 int main() {
-    // Helper function to verify expected vs actual values
     void verify(const char* test, float* expected, float* actual, int size) {
         float eps = 1e-5;
         int pass = 1;
         for(int i = 0; i < size; i++) {
             if (fabs(expected[i] - actual[i]) > eps) {
                 pass = 0;
-                printf("FAIL: %s at index %d: expected %.1f, got %.1f\n", 
-                       test, i, expected[i], actual[i]);
+                printf("FAIL: %s at index %d: expected %.1f, got %.1f\n", test, i, expected[i], actual[i]);
             }
         }
         if (pass) printf("PASS: %s\n", test);
     }
 
-    // Test 1: Complex shapes broadcasting (2,2,3) + (1,1,3)
-    float d1[] = {1,2,3,4,5,6,7,8,9,10,11,12};
-    float d2[] = {1,10,100};
-    int dims1[] = {2,2,3};
-    int dims2[] = {1,1,3};
-    Tensor* t1 = tensor_new(3, dims1, d1, 1);
-    Tensor* t2 = tensor_new(3, dims2, d2, 1);
-    Tensor* add1 = tensor_add(t1, t2);
-    float expected1[] = {
-        2,12,103, 5,15,106, 8,18,109, 11,21,112
-    };
-    verify("3D Broadcasting Add", expected1, add1->data, 12);
+    // Test 1: Basic same-shape addition/subtraction
+    float d1[] = {1,2,3};
+    int dims1[] = {3};
+    Tensor* t1 = tensor_new(1, dims1, d1, 1);
+    Tensor* t2 = tensor_new(1, dims1, d1, 1);
+    verify("Basic Add", (float[]){2,4,6}, tensor_add(t1, t2)->data, 3);
+    verify("Basic Sub", (float[]){0,0,0}, tensor_sub(t1, t2)->data, 3);
 
-    // Test 2: Different dimensionalities (2,3) - (1,)
-    float d3[] = {1,2,3,4,5,6};
-    float d4[] = {10};
-    int dims3[] = {2,3};
-    int dims4[] = {1};
-    Tensor* t3 = tensor_new(2, dims3, d3, 1);
-    Tensor* t4 = tensor_new(1, dims4, d4, 1);
-    Tensor* sub1 = tensor_sub(t3, t4);
-    float expected2[] = {-9,-8,-7,-6,-5,-4};
-    verify("2D-1D Broadcasting Sub", expected2, sub1->data, 6);
+    // Test 2: Scalar broadcasting
+    float scalar[] = {2};
+    int dims_scalar[] = {1};
+    Tensor* ts = tensor_new(1, dims_scalar, scalar, 1);
+    verify("Scalar Add", (float[]){3,4,5}, tensor_add(t1, ts)->data, 3);
+    verify("Scalar Sub", (float[]){-1,0,1}, tensor_sub(t1, ts)->data, 3);
 
-    // Test 3: Broadcasting with 1s (3,3) + (1,3)
-    float d5[] = {1,2,3,4,5,6,7,8,9};
-    float d6[] = {0.1,0.2,0.3};
-    int dims5[] = {3,3};
-    int dims6[] = {1,3};
-    Tensor* t5 = tensor_new(2, dims5, d5, 1);
-    Tensor* t6 = tensor_new(2, dims6, d6, 1);
-    Tensor* add2 = tensor_add(t5, t6);
-    float expected3[] = {
-        1.1,2.2,3.3, 4.1,5.2,6.3, 7.1,8.2,9.3
-    };
-    verify("2D Broadcasting with 1s", expected3, add2->data, 9);
+    // Test 3: Complex 3D broadcasting
+    float d3[] = {1,2,3,4,5,6,7,8,9,10,11,12};  // (2,2,3)
+    float d4[] = {1,10,100};                     // (1,1,3)
+    int dims3[] = {2,2,3};
+    int dims4[] = {1,1,3};
+    Tensor* t3 = tensor_new(3, dims3, d3, 1);
+    Tensor* t4 = tensor_new(3, dims4, d4, 1);
+    float expected_add[] = {2,12,103, 5,15,106, 8,18,109, 11,21,112};
+    verify("3D Broadcasting Add", expected_add, tensor_add(t3, t4)->data, 12);
 
-    // Test 4: Chained operations
-    Tensor* chain = tensor_add(add1, tensor_sub(t3, t4));
-    float expected4[] = {
-        2+(-9), 12+(-8), 103+(-7),    // Layer 0, Row 0
-        5+(-6), 15+(-5), 106+(-4),    // Layer 0, Row 1
-        8+(-9), 18+(-8), 109+(-7),    // Layer 1, Row 0
-        11+(-6), 21+(-5), 112+(-4)    // Layer 1, Row 1
-    };
-    verify("Chained Broadcasting", expected4, chain->data, 12);
+    // Test 4: Broadcasting with empty dimensions
+    float d5[] = {1,2,3};  // (1,1,3)
+    float d6[] = {1};      // (1,1,1)
+    int dims5[] = {1,1,3};
+    int dims6[] = {1,1,1};
+    Tensor* t5 = tensor_new(3, dims5, d5, 1);
+    Tensor* t6 = tensor_new(3, dims6, d6, 1);
+    verify("Empty Dims Add", (float[]){2,3,4}, tensor_add(t5, t6)->data, 3);
 
-    // Test 5: Gradient flow
-    for(int i = 0; i < chain->size; i++) chain->grad[i] = 1.0;
-    backward();
-
-    float expected_grad_t1[] = {1,1,1, 1,1,1, 1,1,1, 1,1,1};  // One gradient per element
-    float expected_grad_t2[] = {4,4,4};  // Each element affects 4 outputs
-    float expected_grad_t3[] = {2,2,2, 2,2,2};  // Each element affects 2 outputs (not 3)
-    float expected_grad_t4[] = {-12};  // Affects all 12 outputs negatively
-
-    verify("t1 gradients", expected_grad_t1, t1->grad, 12);
-    verify("t2 gradients", expected_grad_t2, t2->grad, 3);
-    verify("t3 gradients", expected_grad_t3, t3->grad, 6);
-    verify("t4 gradient", expected_grad_t4, t4->grad, 1);
-
-    // Test 6: Error cases
-    float d7[] = {1,2,3,4};
-    int dims7[] = {2,2};
+    // Test 5: Different dimensionality broadcasting
+    float d7[] = {1,2,3,4,5,6};  // (2,3)
+    float d8[] = {10,20,30};     // (3,)
+    int dims7[] = {2,3};
+    int dims8[] = {3};
     Tensor* t7 = tensor_new(2, dims7, d7, 1);
-    Tensor* error1 = tensor_add(t7, t1);
-    if (error1 == NULL) printf("PASS: Error handling\n");
-    else printf("FAIL: Error handling - should return NULL for incompatible shapes\n");
-
-    // Additional edge cases
-    float d8[] = {1};
-    int dims8[] = {1};
     Tensor* t8 = tensor_new(1, dims8, d8, 1);
-    Tensor* add3 = tensor_add(t8, t8);
-    float expected5[] = {2};
-    verify("Scalar addition", expected5, add3->data, 1);
+    float expected_add2[] = {11,22,33, 14,25,36};
+    verify("Different Dims Add", expected_add2, tensor_add(t7, t8)->data, 6);
+
+    // Test 6: Edge case - all ones broadcasting
+    float d9[] = {5};  // (1,1,1)
+    float d10[] = {3}; // (1,1,1)
+    int dims9[] = {1,1,1};
+    Tensor* t9 = tensor_new(3, dims9, d9, 1);
+    Tensor* t10 = tensor_new(3, dims9, d10, 1);
+    verify("All Ones Add", (float[]){8}, tensor_add(t9, t10)->data, 1);
+
+    // Test 7: Gradient flow through complex broadcasting
+    Tensor* result = tensor_add(tensor_sub(t7, t8), t9);  // ((2,3) - (3,)) + (1,1,1)
+    for(int i = 0; i < result->size; i++) result->grad[i] = 1.0;
+    backward();
+    verify("t7 gradients", (float[]){1,1,1,1,1,1}, t7->grad, 6);
+    verify("t8 gradients", (float[]){-2,-2,-2}, t8->grad, 3);
+    verify("t9 gradients", (float[]){6}, t9->grad, 1);
+
+    // Test 8: Error cases
+    float d11[] = {1,2,3,4};
+    int dims11[] = {2,2};
+    Tensor* t11 = tensor_new(2, dims11, d11, 1);
+    if (tensor_add(t11, t3) != NULL) printf("FAIL: Should return NULL for incompatible shapes\n");
+    if (tensor_add(NULL, t11) != NULL) printf("FAIL: Should return NULL for NULL input\n");
+    if (tensor_add(t11, NULL) != NULL) printf("FAIL: Should return NULL for NULL input\n");
+
+    // Test 9: Large dimension difference broadcasting
+    float d12[] = {1};
+    float d13[] = {1,2,3,4,5,6,7,8};
+    int dims12[] = {1};
+    int dims13[] = {2,2,2};
+    Tensor* t12 = tensor_new(1, dims12, d12, 1);
+    Tensor* t13 = tensor_new(3, dims13, d13, 1);
+    float expected_add3[] = {2,3,4,5,6,7,8,9};
+    verify("Large Dim Diff Add", expected_add3, tensor_add(t13, t12)->data, 8);
 
     clean_registry();
     return 0;
