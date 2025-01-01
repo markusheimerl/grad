@@ -7,6 +7,7 @@ A minimal automatic differentiation library for tensor operations
 - Exp
 - Log
 - Reshape
+- Permute
 
 ## Composite Operations (Implemented via Fundamentals)
 1. Hadamard Product (Element-wise multiplication)
