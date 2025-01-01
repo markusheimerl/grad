@@ -43,12 +43,7 @@ Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_g
 }
 
 void clean_registry() {
-    for (int i = 0; i < registry_len; i++) {
-        free(registry[i]->data);
-        free(registry[i]->grad);
-        free(registry[i]->dims);
-        free(registry[i]);
-    }
+    for (int i = 0; i < registry_len; i++) free(registry[i]->data), free(registry[i]->grad), free(registry[i]->dims), free(registry[i]);
     registry_len = 0;
 }
 
@@ -62,32 +57,24 @@ Tensor* tensor_add(Tensor* a, Tensor* b) {
 }
 
 Tensor* tensor_matmul(Tensor* a, Tensor* b) {
-    if (a->ndims < 1 || b->ndims < 1 || a->dims[a->ndims-1] != b->dims[b->ndims-2]) 
-        return NULL;
-    
+    if (a->ndims < 1 || b->ndims < 1 || a->dims[a->ndims-1] != b->dims[b->ndims-2]) return NULL;
     int max_ndims = fmax(a->ndims, b->ndims);
     int* result_dims = malloc(max_ndims * sizeof(int));
     memcpy(result_dims, (a->ndims > b->ndims ? a : b)->dims, (max_ndims - 2) * sizeof(int));
     result_dims[max_ndims-2] = a->dims[a->ndims-2];
     result_dims[max_ndims-1] = b->dims[b->ndims-1];
-    
     Tensor* result = tensor_new(max_ndims, result_dims, NULL, a->requires_grad || b->requires_grad);
     free(result_dims);
-    
     int batch = result->size / (result->dims[max_ndims-2] * result->dims[max_ndims-1]);
     int M = a->dims[a->ndims-2], N = b->dims[b->ndims-1], K = a->dims[a->ndims-1];
-    
     for (int n = 0; n < batch; n++)
         for (int i = 0; i < M; i++)
             for (int j = 0; j < N; j++) {
                 float sum = 0;
-                for (int k = 0; k < K; k++)
-                    sum += a->data[n*M*K + i*K + k] * b->data[n*K*N + k*N + j];
+                for (int k = 0; k < K; k++) sum += a->data[n*M*K + i*K + k] * b->data[n*K*N + k*N + j];
                 result->data[n*M*N + i*N + j] = sum;
             }
-    
-    if (result->requires_grad) 
-        tape[tape_len++] = (TapeEntry){MATMUL, result, a, b, NULL};
+    if (result->requires_grad) tape[tape_len++] = (TapeEntry){MATMUL, result, a, b, NULL};
     return result;
 }
 
@@ -138,54 +125,39 @@ void backward() {
     for (int t = tape_len-1; t >= 0; t--) {
         TapeEntry* entry = &tape[t];
         Tensor *result = entry->result, *a = entry->input1, *b = entry->input2;
-        
         switch (entry->op) {
             case MATMUL: {
                 if (!a->requires_grad && !b->requires_grad) break;
                 int M = a->dims[a->ndims-2], K = a->dims[a->ndims-1], N = b->dims[b->ndims-1];
                 int batch = result->size / (M * N);
-                
                 for (int n = 0; n < batch; n++)
                     for (int i = 0; i < M; i++)
                         for (int j = 0; j < N; j++) {
                             float grad = result->grad[n*M*N + i*N + j];
                             for (int k = 0; k < K; k++) {
-                                if (a->requires_grad)
-                                    a->grad[n*M*K + i*K + k] += grad * b->data[n*K*N + k*N + j];
-                                if (b->requires_grad)
-                                    b->grad[n*K*N + k*N + j] += grad * a->data[n*M*K + i*K + k];
+                                if (a->requires_grad) a->grad[n*M*K + i*K + k] += grad * b->data[n*K*N + k*N + j];
+                                if (b->requires_grad) b->grad[n*K*N + k*N + j] += grad * a->data[n*M*K + i*K + k];
                             }
                         }
                 break;
             }
             case ADD:
-                if (a->requires_grad)
-                    for (int i = 0; i < a->size; i++) 
-                        a->grad[i] += result->grad[i];
-                if (b->requires_grad)
-                    for (int i = 0; i < b->size; i++) 
-                        b->grad[i] += result->grad[i];
+                if (a->requires_grad) for (int i = 0; i < a->size; i++) a->grad[i] += result->grad[i];
+                if (b->requires_grad) for (int i = 0; i < b->size; i++) b->grad[i] += result->grad[i];
                 break;
             case EXP:
-                if (a->requires_grad)
-                    for (int i = 0; i < a->size; i++)
-                        a->grad[i] += result->grad[i] * result->data[i];
+                if (a->requires_grad) for (int i = 0; i < a->size; i++) a->grad[i] += result->grad[i] * result->data[i];
                 break;
             case LOG:
-                if (a->requires_grad)
-                    for (int i = 0; i < a->size; i++)
-                        a->grad[i] += result->grad[i] / fmaxf(a->data[i], MIN_LOG);
+                if (a->requires_grad) for (int i = 0; i < a->size; i++) a->grad[i] += result->grad[i] / fmaxf(a->data[i], MIN_LOG);
                 break;
             case RESHAPE:
-                if (a->requires_grad)
-                    for (int i = 0; i < a->size; i++) 
-                        a->grad[i] += result->grad[i];
+                if (a->requires_grad) for (int i = 0; i < a->size; i++) a->grad[i] += result->grad[i];
                 break;
             case PERMUTE:
                 if (a->requires_grad) {
                     Tensor* permuted_grad = tensor_permute(tensor_new(result->ndims, result->dims, result->grad, 0), entry->perm);
-                    for (int i = 0; i < a->size; i++)
-                        a->grad[i] += permuted_grad->data[i];
+                    for (int i = 0; i < a->size; i++) a->grad[i] += permuted_grad->data[i];
                 }
                 free(entry->perm);
                 break;
@@ -228,12 +200,8 @@ Tensor* tensor_reduce_max(Tensor* a, int axis) {
 
 void print_tensor(Tensor* t, const char* name) {
     printf("%s: shape(", name);
-    for (int i = 0; i < t->ndims; i++) 
-        printf("%d%s", t->dims[i], i < t->ndims - 1 ? "," : ")");
-    printf(" first[%.4f,%.4f] grad[%.4f,%.4f]\n", 
-           t->data[0], t->data[1],
-           t->requires_grad ? t->grad[0] : 0.0f,
-           t->requires_grad ? t->grad[1] : 0.0f);
+    for (int i = 0; i < t->ndims; i++) printf("%d%s", t->dims[i], i < t->ndims - 1 ? "," : ")");
+    printf(" first[%.4f,%.4f] grad[%.4f,%.4f]\n", t->data[0], t->data[1], t->requires_grad ? t->grad[0] : 0.0f, t->requires_grad ? t->grad[1] : 0.0f);
 }
 
 int main() {
