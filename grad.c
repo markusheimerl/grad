@@ -8,7 +8,7 @@
 #define MIN_LOG 1e-7f
 #define MAX_EXP 88.0f
 
-typedef enum { MATMUL, ADD, SUB, RESHAPE, SOFTMAX, PERMUTE, RMSNORM } OpType;
+typedef enum { MATMUL, ADD, SUB, RESHAPE, SOFTMAX, PERMUTE, RMSNORM, HADAMARD } OpType;
 
 typedef struct Tensor {
     float *data, *grad;
@@ -78,6 +78,35 @@ Tensor* tensor_matmul(Tensor* a, Tensor* b) {
                 r->data[n*M*N + i*N + j] = sum;
             }
     if (r->requires_grad) tape[tape_len++] = (TapeEntry){MATMUL, r, a, b, NULL};
+    return r;
+}
+
+Tensor* tensor_hadamard(Tensor* a, Tensor* b) {
+    if (!a || !b) return NULL;
+    
+    // Similar broadcasting rules as ADD/SUB
+    int max_d = fmax(a->ndims, b->ndims);
+    int rd[32];
+    
+    for (int i = 0; i < max_d; i++) {
+        int d1 = i < a->ndims ? a->dims[a->ndims-1-i] : 1;
+        int d2 = i < b->ndims ? b->dims[b->ndims-1-i] : 1;
+        if (d1 != d2 && d1 != 1 && d2 != 1) return NULL;
+        rd[max_d-1-i] = fmax(d1, d2);
+    }
+    
+    Tensor* r = tensor_new(max_d, rd, NULL, a->requires_grad || b->requires_grad);
+    
+    // Element-wise multiplication with broadcasting
+    for (int i = 0; i < r->size; i++) {
+        float av = a->data[get_index(i, a->dims, a->ndims, rd, max_d)];
+        float bv = b->data[get_index(i, b->dims, b->ndims, rd, max_d)];
+        r->data[i] = av * bv;
+    }
+    
+    if (r->requires_grad) {
+        tape[tape_len++] = (TapeEntry){HADAMARD, r, a, b, NULL};
+    }
     return r;
 }
 
@@ -331,6 +360,17 @@ void backward() {
                     a->grad[i * last_dim + j] += softmax_j * (r->grad[i * last_dim + j] - sum);
                 }
             }
+        }else if (e->op == HADAMARD) {
+            for (int i = 0; i < r->size; i++) {
+                if (a->requires_grad) {
+                    int a_idx = get_index(i, a->dims, a->ndims, r->dims, r->ndims);
+                    a->grad[a_idx] += r->grad[i] * b->data[get_index(i, b->dims, b->ndims, r->dims, r->ndims)];
+                }
+                if (b->requires_grad) {
+                    int b_idx = get_index(i, b->dims, b->ndims, r->dims, r->ndims);
+                    b->grad[b_idx] += r->grad[i] * a->data[get_index(i, a->dims, a->ndims, r->dims, r->ndims)];
+                }
+            }
         }
         
         if (e->aux_data) {
@@ -342,6 +382,120 @@ void backward() {
 }
 
 int main() {
+    // Test 1: 3D tensors with exact shape match
+    int dims1[] = {2, 3, 4};
+    float data1[24];
+    for (int i = 0; i < 24; i++) data1[i] = i + 1;
+    Tensor* a = tensor_new(3, dims1, data1, 1);
+
+    int dims2[] = {2, 3, 4};
+    float data2[24];
+    for (int i = 0; i < 24; i++) data2[i] = (i % 4) + 1;
+    Tensor* b = tensor_new(3, dims2, data2, 1);
+
+    Tensor* c = tensor_hadamard(a, b);
+    
+    printf("Test 1 - 3D * 3D:\n");
+    for (int i = 0; i < 2; i++) {
+        for (int j = 0; j < 3; j++) {
+            for (int k = 0; k < 4; k++) {
+                printf("%6.2f ", c->data[i*12 + j*4 + k]);
+            }
+            printf("\n");
+        }
+        printf("\n");
+    }
+
+    // Test 2: Broadcasting 2D to 3D
+    int dims3[] = {1, 3, 4};
+    float data3[12];
+    for (int i = 0; i < 12; i++) data3[i] = i + 1;
+    Tensor* d = tensor_new(3, dims3, data3, 1);
+
+    Tensor* e = tensor_hadamard(a, d);
+    
+    printf("Test 2 - 3D * (1,3,4) broadcast:\n");
+    for (int i = 0; i < 2; i++) {
+        for (int j = 0; j < 3; j++) {
+            for (int k = 0; k < 4; k++) {
+                printf("%6.2f ", e->data[i*12 + j*4 + k]);
+            }
+            printf("\n");
+        }
+        printf("\n");
+    }
+
+    // Test 3: Broadcasting 1D to 3D
+    int dims4[] = {4};
+    float data4[] = {1, 2, 3, 4};
+    Tensor* f = tensor_new(1, dims4, data4, 1);
+
+    Tensor* g = tensor_hadamard(a, f);
+    
+    printf("Test 3 - 3D * (4) broadcast:\n");
+    for (int i = 0; i < 2; i++) {
+        for (int j = 0; j < 3; j++) {
+            for (int k = 0; k < 4; k++) {
+                printf("%6.2f ", g->data[i*12 + j*4 + k]);
+            }
+            printf("\n");
+        }
+        printf("\n");
+    }
+
+    // Test 4: Gradient checking
+    // Set specific gradients in the output
+    for (int i = 0; i < g->size; i++) {
+        g->grad[i] = 1.0f;
+    }
+    
+    backward();
+    
+    printf("Test 4 - Gradient check for first tensor (should match broadcast pattern):\n");
+    for (int i = 0; i < 2; i++) {
+        for (int j = 0; j < 3; j++) {
+            for (int k = 0; k < 4; k++) {
+                printf("%6.2f ", a->grad[i*12 + j*4 + k]);
+            }
+            printf("\n");
+        }
+        printf("\n");
+    }
+
+    printf("Gradient check for broadcast tensor:\n");
+    for (int i = 0; i < f->size; i++) {
+        printf("%6.2f ", f->grad[i]);
+    }
+    printf("\n\n");
+
+    // Test 5: Edge cases
+    int dims5[] = {2, 1, 4};
+    float data5[8];
+    for (int i = 0; i < 8; i++) data5[i] = i + 1;
+    Tensor* h = tensor_new(3, dims5, data5, 1);
+
+    Tensor* i = tensor_hadamard(a, h);
+    
+    printf("Test 5 - 3D * (2,1,4) broadcast:\n");
+    for (int x = 0; x < 2; x++) {
+        for (int y = 0; y < 3; y++) {
+            for (int z = 0; z < 4; z++) {
+                printf("%6.2f ", i->data[x*12 + y*4 + z]);
+            }
+            printf("\n");
+        }
+        printf("\n");
+    }
+
+    // Test 6: Error cases
+    int wrong_dims[] = {2, 2, 3};
+    float wrong_data[12];
+    for (int i = 0; i < 12; i++) wrong_data[i] = i;
+    Tensor* wrong = tensor_new(3, wrong_dims, wrong_data, 1);
+
+    Tensor* should_be_null = tensor_hadamard(a, wrong);
+    printf("Test 6 - Incompatible shapes should return NULL: %s\n", 
+           should_be_null == NULL ? "PASS" : "FAIL");
 
     clean_registry();
     return 0;
