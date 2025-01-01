@@ -144,12 +144,6 @@ Tensor* tensor_hadamard(Tensor* a, Tensor* b) {
     return tensor_exp(tensor_add(tensor_log(a), tensor_log(b)));
 }
 
-Tensor* tensor_ones(int ndims, const int* dims) {
-    Tensor* t = tensor_new(ndims, dims, NULL, 0);
-    for (int i = 0; i < t->size; i++) t->data[i] = 1.0f;
-    return t;
-}
-
 Tensor* tensor_permute(Tensor* a, const int* p) {
     if (!a || !p || a->ndims <= 1) return a ? tensor_new(a->ndims, a->dims, a->data, a->requires_grad) : NULL;
     char u[MAX_DIMS] = {0}; int n[MAX_DIMS], s = a->size, t[2][MAX_DIMS];
@@ -169,23 +163,6 @@ Tensor* tensor_permute(Tensor* a, const int* p) {
     Tensor* r = tensor_reshape(tensor_matmul(tensor_new(2, (int[]){s,s}, m, 0), tensor_reshape(a, 2, (int[]){s,1})), a->ndims, n);
     free(m);
     return r;
-}
-
-Tensor* tensor_reduce_sum(Tensor* a, int axis) {
-    if (!a || axis < 0 || axis >= a->ndims) return NULL;
-    int p[MAX_DIMS], d[MAX_DIMS], j = 0;
-    for (int i = 0; i < a->ndims; i++) if (i != axis) p[j] = i, d[j++] = a->dims[i];
-    p[a->ndims - 1] = axis;
-    Tensor* t = tensor_permute(a, p);
-    return tensor_reshape(tensor_matmul(tensor_reshape(t, 2, (int[]){t->size / t->dims[t->ndims - 1], 
-        t->dims[t->ndims - 1]}), tensor_reshape(tensor_ones(1, (int[]){t->dims[t->ndims - 1]}), 2, 
-        (int[]){t->dims[t->ndims - 1], 1})), a->ndims - 1, d);
-}
-
-void print_tensor(Tensor* t, const char* name) {
-    printf("%s: shape(", name);
-    for (int i = 0; i < t->ndims; i++) printf("%d%s", t->dims[i], i < t->ndims - 1 ? "," : ")");
-    printf(" first[%.4f,%.4f] grad[%.4f,%.4f]\n", t->data[0], t->data[1], t->requires_grad ? t->grad[0] : 0.0f, t->requires_grad ? t->grad[1] : 0.0f);
 }
 
 int main() {
