@@ -53,11 +53,24 @@ static int get_index(int idx, const int* dims, int ndims, const int* ref_dims, i
 }
 
 Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_grad) {
+    // Input validation
+    if (!dims || ndims <= 0) return NULL;
+    
+    // Check for zero-size dimensions
+    int size = 1;
+    for (int i = 0; i < ndims; i++) {
+        if (dims[i] <= 0) return NULL;  // Reject non-positive dimensions
+        size *= dims[i];
+    }
+    
+    // Check for overflow
+    if (size > MAX_TAPE * MAX_TAPE) return NULL;  // Arbitrary limit to prevent overflow
+    
+    // Proceed with tensor creation
     Tensor* t = calloc(1, sizeof(Tensor));
     t->ndims = ndims;
     t->dims = malloc(ndims * sizeof(int));
-    t->size = 1;
-    for (int i = 0; i < ndims; i++) t->size *= dims[i];
+    t->size = size;
     memcpy(t->dims, dims, ndims * sizeof(int));
     t->data = malloc(t->size * sizeof(float));
     if (data) memcpy(t->data, data, t->size * sizeof(float));
@@ -794,18 +807,391 @@ void test_stress() {
     }
 }
 
+void test_complex_broadcasting() {
+    printf("Testing complex broadcasting patterns...\n");
+    
+    // Test 4D broadcasting
+    {
+        int dims1[] = {2, 1, 3, 1};  // [2, 1, 3, 1]
+        int dims2[] = {1, 4, 1, 5};  // [1, 4, 1, 5]
+        float* data1 = malloc(2 * 1 * 3 * 1 * sizeof(float));
+        float* data2 = malloc(1 * 4 * 1 * 5 * sizeof(float));
+        
+        // Fill with recognizable patterns
+        for (int i = 0; i < 6; i++) data1[i] = i + 1;
+        for (int i = 0; i < 20; i++) data2[i] = (i + 1) * 0.1f;
+        
+        Tensor* t1 = tensor_new(4, dims1, data1, 1);
+        Tensor* t2 = tensor_new(4, dims2, data2, 1);
+        Tensor* result = tensor_add(t1, t2);
+        
+        // Result should be [2, 4, 3, 5]
+        assert_float_eq(result->ndims, 4, 1e-5, "Wrong number of dimensions");
+        assert_float_eq(result->dims[0], 2, 1e-5, "Wrong dimension 0");
+        assert_float_eq(result->dims[1], 4, 1e-5, "Wrong dimension 1");
+        assert_float_eq(result->dims[2], 3, 1e-5, "Wrong dimension 2");
+        assert_float_eq(result->dims[3], 5, 1e-5, "Wrong dimension 3");
+        
+        free(data1);
+        free(data2);
+    }
+    
+    // Test broadcasting with mixed dimensionality
+    {
+        int dims1[] = {3, 1};        // [3, 1]
+        int dims2[] = {2, 4, 1, 2};  // [2, 4, 1, 2]
+        float data1[] = {1, 2, 3};
+        float* data2 = malloc(16 * sizeof(float));
+        for (int i = 0; i < 16; i++) data2[i] = i * 0.1f;
+        
+        Tensor* t1 = tensor_new(2, dims1, data1, 1);
+        Tensor* t2 = tensor_new(4, dims2, data2, 1);
+        Tensor* result = tensor_add(t1, t2);
+        
+        // Result should be [2, 4, 3, 2]
+        assert_float_eq(result->ndims, 4, 1e-5, "Wrong number of dimensions");
+        assert_float_eq(result->dims[0], 2, 1e-5, "Wrong dimension 0");
+        assert_float_eq(result->dims[1], 4, 1e-5, "Wrong dimension 1");
+        assert_float_eq(result->dims[2], 3, 1e-5, "Wrong dimension 2");
+        assert_float_eq(result->dims[3], 2, 1e-5, "Wrong dimension 3");
+        
+        free(data2);
+    }
+}
+
+void test_edge_cases_comprehensive() {
+    printf("Testing comprehensive edge cases...\n");
+    
+    // Test zero-size dimension
+    {
+        int dims[] = {0, 2};
+        Tensor* t = tensor_new(2, dims, NULL, 0);
+        assert_float_eq(t == NULL ? 1.0f : 0.0f, 1.0f, 1e-5, "Should reject zero-size dimension");
+    }
+    
+    // Test negative dimension
+    {
+        int dims[] = {2, -1};
+        Tensor* t = tensor_new(2, dims, NULL, 0);
+        assert_float_eq(t == NULL ? 1.0f : 0.0f, 1.0f, 1e-5, "Should reject negative dimension");
+    }
+    
+    // Test zero dimensions
+    {
+        int dims[] = {1};
+        Tensor* t = tensor_new(0, dims, NULL, 0);
+        assert_float_eq(t == NULL ? 1.0f : 0.0f, 1.0f, 1e-5, "Should reject zero dimensions");
+    }
+    
+    // Test NULL dims
+    {
+        Tensor* t = tensor_new(1, NULL, NULL, 0);
+        assert_float_eq(t == NULL ? 1.0f : 0.0f, 1.0f, 1e-5, "Should reject NULL dims");
+    }
+    
+    // Test maximum dimension size
+    {
+        int dims[] = {1, MAX_TAPE};
+        float* data = malloc(MAX_TAPE * sizeof(float));
+        Tensor* t = tensor_new(2, dims, data, 0);
+        assert_float_eq(t != NULL ? 1.0f : 0.0f, 1.0f, 1e-5, "Should handle maximum size");
+        free(data);
+    }
+    
+    // Test invalid broadcasting
+    {
+        int dims1[] = {2, 3};
+        int dims2[] = {2, 2};
+        float data1[] = {1, 2, 3, 4, 5, 6};
+        float data2[] = {1, 2, 3, 4};
+        
+        Tensor* t1 = tensor_new(2, dims1, data1, 0);
+        Tensor* t2 = tensor_new(2, dims2, data2, 0);
+        Tensor* result = tensor_add(t1, t2);
+        assert_float_eq(result == NULL ? 1.0f : 0.0f, 1.0f, 1e-5, "Should reject invalid broadcasting");
+    }
+    
+    // Test single-element broadcasting
+    {
+        int dims1[] = {1};
+        int dims2[] = {2, 2};
+        float data1[] = {5};
+        float data2[] = {1, 2, 3, 4};
+        
+        Tensor* t1 = tensor_new(1, dims1, data1, 0);
+        Tensor* t2 = tensor_new(2, dims2, data2, 0);
+        Tensor* result = tensor_add(t1, t2);
+        assert_float_eq(result != NULL ? 1.0f : 0.0f, 1.0f, 1e-5, "Should allow scalar broadcasting");
+        if (result) {
+            assert_float_eq(result->data[0], 6.0f, 1e-5, "Incorrect scalar broadcasting result");
+            assert_float_eq(result->data[1], 7.0f, 1e-5, "Incorrect scalar broadcasting result");
+            assert_float_eq(result->data[2], 8.0f, 1e-5, "Incorrect scalar broadcasting result");
+            assert_float_eq(result->data[3], 9.0f, 1e-5, "Incorrect scalar broadcasting result");
+        }
+    }
+}
+
+typedef struct {
+    const char* name;
+    double time;
+    size_t memory;
+} BenchmarkResult;
+
+BenchmarkResult benchmark_operation(const char* name, void (*op)()) {
+    clock_t start = clock();
+    size_t initial_memory = 0;  // Would need platform-specific implementation
+    
+    op();
+    
+    clock_t end = clock();
+    size_t final_memory = 0;    // Would need platform-specific implementation
+    
+    return (BenchmarkResult){
+        .name = name,
+        .time = ((double)(end - start)) / CLOCKS_PER_SEC,
+        .memory = final_memory - initial_memory
+    };
+}
+
+void test_performance() {
+    printf("Running performance benchmarks...\n");
+    
+    // Benchmark large matrix multiplication
+    void bench_matmul() {
+        int dims1[] = {100, 100};
+        int dims2[] = {100, 100};
+        Tensor* t1 = tensor_randn(2, dims1, 1);
+        Tensor* t2 = tensor_randn(2, dims2, 1);
+        Tensor* result = tensor_matmul(t1, t2);
+        result->grad[0] = 1.0f;
+        backward();
+    }
+    
+    // Benchmark deep network
+    void bench_deep() {
+        int dims[] = {32, 32};
+        Tensor* x = tensor_randn(2, dims, 1);
+        Tensor* current = x;
+        for (int i = 0; i < 100; i++) {
+            current = tensor_gelu(tensor_rms_norm(current, 1e-5f));
+        }
+        current->grad[0] = 1.0f;
+        backward();
+    }
+    
+    BenchmarkResult results[] = {
+        benchmark_operation("Large MatMul", bench_matmul),
+        benchmark_operation("Deep Network", bench_deep)
+    };
+    
+    for (size_t i = 0; i < sizeof(results)/sizeof(results[0]); i++) {
+        printf("%s: %.3f seconds, %zu bytes\n", 
+               results[i].name, results[i].time, results[i].memory);
+    }
+}
+
+void test_memory_leaks() {
+    printf("Testing for memory leaks...\n");
+    
+    // Store initial registry state
+    size_t initial_allocs = registry_len;
+    
+    // Perform various operations that should all register their tensors
+    {
+        int dims[] = {10, 10};
+        Tensor* t1 = tensor_randn(2, dims, 1);
+        Tensor* t2 = tensor_randn(2, dims, 1);
+        Tensor* result = tensor_matmul(t1, t2);
+        result->grad[0] = 1.0f;
+        backward();
+    }
+    
+    // The number of tensors should be predictable:
+    // - t1 (1 tensor)
+    // - t2 (1 tensor)
+    // - result (1 tensor)
+    size_t expected_new_tensors = 3;
+    
+    // Verify the number of new allocations
+    assert_float_eq(registry_len - initial_allocs, expected_new_tensors, 1e-5, "Unexpected number of tensor allocations");
+}
+
+#include <pthread.h>
+
+void* thread_function(void* arg) {
+    (void)arg;  // Explicitly mark as unused
+    int dims[] = {10, 10};
+    Tensor* t1 = tensor_randn(2, dims, 1);
+    Tensor* t2 = tensor_randn(2, dims, 1);
+    Tensor* result = tensor_matmul(t1, t2);
+    result->grad[0] = 1.0f;
+    backward();
+    return NULL;
+}
+
+
+void test_thread_safety() {
+    printf("Testing thread safety...\n");
+    
+    #define NUM_THREADS 4
+    pthread_t threads[NUM_THREADS];
+    
+    for (int i = 0; i < NUM_THREADS; i++) {
+        pthread_create(&threads[i], NULL, thread_function, NULL);
+    }
+    
+    for (int i = 0; i < NUM_THREADS; i++) {
+        pthread_join(threads[i], NULL);
+    }
+}
+
+void test_gradients_comprehensive() {
+    printf("Testing comprehensive gradients...\n");
+    
+    // Test 1: Simple MatMul gradient
+    {
+        printf("Testing MatMul gradient...\n");
+        int dims[] = {2, 2};
+        float data1[] = {1.0f, 2.0f, 3.0f, 4.0f};
+        float data2[] = {1.0f, 2.0f, 3.0f, 4.0f};
+        
+        Tensor* x = tensor_new(2, dims, data1, 1);
+        Tensor* y = tensor_new(2, dims, data2, 1);
+        Tensor* out = tensor_matmul(x, y);
+        
+        float original_output = out->data[0];
+        out->grad[0] = 1.0f;
+        backward();
+        float analytical_grad = x->grad[0];
+        
+        // Compute numerical gradient
+        float epsilon = 1e-4f;
+        float original_x = x->data[0];
+        x->data[0] = original_x + epsilon;
+        Tensor* out2 = tensor_matmul(x, y);
+        float numerical_grad = (out2->data[0] - original_output) / epsilon;
+        x->data[0] = original_x;  // Restore original value
+        
+        printf("MatMul - Analytical: %f, Numerical: %f\n", analytical_grad, numerical_grad);
+        
+        // Calculate relative error
+        float abs_diff = fabsf(analytical_grad - numerical_grad);
+        float avg_magnitude = (fabsf(analytical_grad) + fabsf(numerical_grad)) / 2.0f;
+        float relative_error = abs_diff / (avg_magnitude + 1e-10f);
+        
+        printf("Relative error: %f\n", relative_error);
+        assert_float_eq(relative_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5, 
+                       "MatMul gradient verification failed");
+    }
+    
+    // Test 2: Simple GELU gradient
+    {
+        printf("Testing GELU gradient...\n");
+        int dims[] = {1};
+        float data[] = {0.5f};
+        
+        Tensor* x = tensor_new(1, dims, data, 1);
+        Tensor* out = tensor_gelu(x);
+        
+        float original_output = out->data[0];
+        out->grad[0] = 1.0f;
+        backward();
+        float analytical_grad = x->grad[0];
+        
+        // Compute numerical gradient
+        float epsilon = 1e-4f;
+        float original_x = x->data[0];
+        x->data[0] = original_x + epsilon;
+        Tensor* out2 = tensor_gelu(x);
+        float numerical_grad = (out2->data[0] - original_output) / epsilon;
+        x->data[0] = original_x;
+        
+        printf("GELU - Analytical: %f, Numerical: %f\n", analytical_grad, numerical_grad);
+        float relative_error = fabsf(analytical_grad - numerical_grad) / 
+                             (fabsf(analytical_grad) + fabsf(numerical_grad) + 1e-10f);
+        assert_float_eq(relative_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5, 
+                       "GELU gradient verification failed");
+    }
+    
+    // Test 3: Simple RMSNorm gradient
+    {
+        printf("Testing RMSNorm gradient...\n");
+        int dims[] = {2};
+        float data[] = {1.0f, 2.0f};
+        
+        Tensor* x = tensor_new(1, dims, data, 1);
+        Tensor* out = tensor_rms_norm(x, 1e-5f);
+        
+        float original_output = out->data[0];
+        out->grad[0] = 1.0f;
+        backward();
+        float analytical_grad = x->grad[0];
+        
+        // Compute numerical gradient
+        float epsilon = 1e-4f;
+        float original_x = x->data[0];
+        x->data[0] = original_x + epsilon;
+        Tensor* out2 = tensor_rms_norm(x, 1e-5f);
+        float numerical_grad = (out2->data[0] - original_output) / epsilon;
+        x->data[0] = original_x;
+        
+        printf("RMSNorm - Analytical: %f, Numerical: %f\n", analytical_grad, numerical_grad);
+        float relative_error = fabsf(analytical_grad - numerical_grad) / 
+                             (fabsf(analytical_grad) + fabsf(numerical_grad) + 1e-10f);
+        assert_float_eq(relative_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5, 
+                       "RMSNorm gradient verification failed");
+    }
+    
+    // Test 4: Simple Softmax gradient
+    {
+        printf("Testing Softmax gradient...\n");
+        int dims[] = {2};
+        float data[] = {1.0f, 2.0f};
+        
+        Tensor* x = tensor_new(1, dims, data, 1);
+        Tensor* out = tensor_softmax(x);
+        
+        float original_output = out->data[0];
+        out->grad[0] = 1.0f;
+        backward();
+        float analytical_grad = x->grad[0];
+        
+        // Compute numerical gradient
+        float epsilon = 1e-4f;
+        float original_x = x->data[0];
+        x->data[0] = original_x + epsilon;
+        Tensor* out2 = tensor_softmax(x);
+        float numerical_grad = (out2->data[0] - original_output) / epsilon;
+        x->data[0] = original_x;
+        
+        printf("Softmax - Analytical: %f, Numerical: %f\n", analytical_grad, numerical_grad);
+        float relative_error = fabsf(analytical_grad - numerical_grad) / 
+                             (fabsf(analytical_grad) + fabsf(numerical_grad) + 1e-10f);
+        assert_float_eq(relative_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5, 
+                       "Softmax gradient verification failed");
+    }
+}
+
 int main() {
     test_basic_ops();
     test_broadcasting();
+    test_complex_broadcasting();
     test_matmul();
     test_softmax();
     test_backward();
     test_gelu();
     test_rms_norm();
     test_edge_cases();
+    test_edge_cases_comprehensive();
     test_numerical_stability();
     test_gradient_accumulation();
+    test_gradients_comprehensive();
     test_stress();
+    test_performance();
+    test_memory_leaks();
+    #ifdef ENABLE_THREADING
+    test_thread_safety();
+    #endif
     
     printf("All tests passed!\n");
     clean_registry();
