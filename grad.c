@@ -293,17 +293,31 @@ void backward() {
             case MATMUL: {
                 int M = a->dims[a->ndims-2], K = a->dims[a->ndims-1], N = b->dims[b->ndims-1];
                 int batch = r->size/(M*N);
-                for (int n = 0; n < batch; n++)
-                    for (int i = 0; i < M; i++)
-                        for (int j = 0; j < N; j++) {
-                            float g = r->grad[n*M*N + i*N + j];
+                
+                for (int n = 0; n < batch; n++) {
+                    if (a->requires_grad) {
+                        for (int i = 0; i < M; i++) {
                             for (int k = 0; k < K; k++) {
-                                if (a->requires_grad)
-                                    a->grad[n*M*K + i*K + k] += g * b->data[n*K*N + k*N + j];
-                                if (b->requires_grad)
-                                    b->grad[n*K*N + k*N + j] += g * a->data[n*M*K + i*K + k];
+                                float sum = 0.0f;
+                                for (int j = 0; j < N; j++) {
+                                    sum += r->grad[n*M*N + i*N + j] * b->data[n*K*N + k*N + j];
+                                }
+                                a->grad[n*M*K + i*K + k] += sum;
                             }
                         }
+                    }
+                    if (b->requires_grad) {
+                        for (int k = 0; k < K; k++) {
+                            for (int j = 0; j < N; j++) {
+                                float sum = 0.0f;
+                                for (int i = 0; i < M; i++) {
+                                    sum += r->grad[n*M*N + i*N + j] * a->data[n*M*K + i*K + k];
+                                }
+                                b->grad[n*K*N + k*N + j] += sum;
+                            }
+                        }
+                    }
+                }
                 break;
             }
             
@@ -355,40 +369,53 @@ void backward() {
                 }
                 break;
                 
-            case RMSNORM:
-                if (a->requires_grad) {
-                    float eps = *(float*)e->aux_data;
-                    int last_dim = a->dims[a->ndims-1], batch_size = a->size/last_dim;
-                    for (int b = 0; b < batch_size; b++) {
-                        float ms = 0.0f;
-                        for (int i = 0; i < last_dim; i++)
-                            ms += a->data[b*last_dim+i] * a->data[b*last_dim+i];
-                        ms /= last_dim;
-                        float scale = 1.0f/sqrt(ms+eps);
-                        float sum_grad_times_val = 0.0f;
-                        for (int i = 0; i < last_dim; i++)
-                            sum_grad_times_val += r->grad[b*last_dim+i] * a->data[b*last_dim+i];
-                        for (int i = 0; i < last_dim; i++)
-                            a->grad[b*last_dim+i] += scale * r->grad[b*last_dim+i] -
-                                (scale*scale*scale) * a->data[b*last_dim+i] * sum_grad_times_val/last_dim;
-                    }
-                }
-                break;
-                
-            case GELU:
+            case GELU: {
                 if (a->requires_grad) {
                     const float sqrt_2_pi = 0.7978845608028654f;
                     for (int i = 0; i < a->size; i++) {
-                        float x = a->data[i], cube = x * x * x;
-                        float inner = sqrt_2_pi * (x + 0.044715f * cube);
-                        float tanh_inner = tanhf(inner);
-                        float sech_squared = 1.0f - tanh_inner * tanh_inner;
-                        float derivative = 0.5f * (1.0f + tanh_inner +
-                            x * sech_squared * sqrt_2_pi * (1.0f + 0.134145f * cube));
-                        a->grad[i] += r->grad[i] * derivative;
+                        float x = a->data[i];
+                        float cdf = 0.5f * (1.0f + tanhf(sqrt_2_pi * (x + 0.044715f * x * x * x)));
+                        float pdf = sqrt_2_pi * (1.0f + 0.134145f * x * x) * 
+                                  (1.0f - tanhf(sqrt_2_pi * (x + 0.044715f * x * x * x)) * 
+                                   tanhf(sqrt_2_pi * (x + 0.044715f * x * x * x))) * 0.5f;
+                        a->grad[i] += r->grad[i] * (cdf + x * pdf);
                     }
                 }
                 break;
+            }
+            
+            case RMSNORM: {
+                if (a->requires_grad) {
+                    float eps = *(float*)e->aux_data;
+                    int last_dim = a->dims[a->ndims-1];
+                    int batch_size = a->size/last_dim;
+                    
+                    for (int b = 0; b < batch_size; b++) {
+                        float ms = 0.0f;
+                        for (int i = 0; i < last_dim; i++) {
+                            float val = a->data[b*last_dim + i];
+                            ms += val * val;
+                        }
+                        ms /= last_dim;
+                        
+                        float inv_rms = 1.0f / sqrtf(ms + eps);
+                        float inv_rms_cubed = inv_rms * inv_rms * inv_rms;
+                        
+                        float sum_xdout = 0.0f;
+                        for (int i = 0; i < last_dim; i++) {
+                            sum_xdout += a->data[b*last_dim + i] * r->grad[b*last_dim + i];
+                        }
+                        
+                        for (int i = 0; i < last_dim; i++) {
+                            float x_i = a->data[b*last_dim + i];
+                            float dout_i = r->grad[b*last_dim + i];
+                            a->grad[b*last_dim + i] += inv_rms * dout_i - 
+                                (x_i * sum_xdout * inv_rms_cubed) / last_dim;
+                        }
+                    }
+                }
+                break;
+            }
         }
         free(e->aux_data);
     }
@@ -1172,6 +1199,248 @@ void test_gradients_comprehensive() {
     }
 }
 
+float tensor_grad_max(Tensor* t) {
+    if (!t || !t->grad) return 0.0f;
+    float max_grad = fabsf(t->grad[0]);
+    for (int i = 1; i < t->size; i++) {
+        float abs_grad = fabsf(t->grad[i]);
+        if (abs_grad > max_grad) max_grad = abs_grad;
+    }
+    return max_grad;
+}
+
+void print_tensor_stats(Tensor* t, const char* name) {
+    if (!t) return;
+    float min_val = t->data[0], max_val = t->data[0], sum = 0.0f;
+    for (int i = 0; i < t->size; i++) {
+        if (t->data[i] < min_val) min_val = t->data[i];
+        if (t->data[i] > max_val) max_val = t->data[i];
+        sum += t->data[i];
+    }
+    float mean = sum / t->size;
+    
+    printf("%s stats:\n", name);
+    printf("  min: %.6f\n", min_val);
+    printf("  max: %.6f\n", max_val);
+    printf("  mean: %.6f\n", mean);
+    if (t->grad) {
+        printf("  grad_max: %.6f\n", tensor_grad_max(t));
+    }
+}
+
+// Helper function for gradient mean
+float tensor_grad_mean(Tensor* t) {
+    if (!t || !t->grad) return 0.0f;
+    float sum = 0.0f;
+    for (int i = 0; i < t->size; i++) {
+        sum += fabsf(t->grad[i]);
+    }
+    return sum / t->size;
+}
+
+void test_individual_gradients() {
+    printf("Testing individual operation gradients...\n");
+    
+    // Test MatMul gradient
+    {
+        printf("\nTesting MatMul gradient...\n");
+        int dims[] = {2, 2};
+        float a_data[] = {1.0f, 0.0f, 0.0f, 1.0f};  // Identity matrix
+        float b_data[] = {2.0f, 1.0f, 1.0f, 2.0f};
+        
+        Tensor* a = tensor_new(2, dims, a_data, 1);
+        Tensor* b = tensor_new(2, dims, b_data, 0);
+        Tensor* c = tensor_matmul(a, b);
+        
+        float original = c->data[0];
+        c->grad[0] = 1.0f;
+        backward();
+        
+        // Compute numerical gradient
+        float epsilon = 1e-5f;
+        float saved = a->data[0];
+        a->data[0] += epsilon;
+        Tensor* c_new = tensor_matmul(a, b);
+        float numerical = (c_new->data[0] - original) / epsilon;
+        a->data[0] = saved;
+        
+        printf("MatMul - Analytical: %.6f, Numerical: %.6f\n", a->grad[0], numerical);
+        
+        // Calculate relative error
+        float rel_error = fabsf(a->grad[0] - numerical) / 
+                         (fabsf(a->grad[0]) + fabsf(numerical) + 1e-10f);
+        printf("Relative error: %.6f\n", rel_error);
+        
+        // Use 1% relative error tolerance
+        assert_float_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
+                       "MatMul gradient incorrect");
+    }
+    
+    // Test GELU gradient
+    {
+        printf("\nTesting GELU gradient...\n");
+        int dims[] = {1};
+        float x_data[] = {0.5f};
+        
+        Tensor* x = tensor_new(1, dims, x_data, 1);
+        Tensor* y = tensor_gelu(x);
+        
+        float original = y->data[0];
+        y->grad[0] = 1.0f;
+        backward();
+        
+        // Compute numerical gradient
+        float epsilon = 1e-5f;
+        float saved = x->data[0];
+        x->data[0] += epsilon;
+        Tensor* y_new = tensor_gelu(x);
+        float numerical = (y_new->data[0] - original) / epsilon;
+        x->data[0] = saved;
+        
+        printf("GELU - Analytical: %.6f, Numerical: %.6f\n", x->grad[0], numerical);
+        float rel_error = fabsf(x->grad[0] - numerical) / 
+                         (fabsf(x->grad[0]) + fabsf(numerical) + 1e-10f);
+        printf("Relative error: %.6f\n", rel_error);
+        assert_float_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
+                       "GELU gradient incorrect");
+    }
+    
+    // Test RMSNorm gradient
+    {
+        printf("\nTesting RMSNorm gradient...\n");
+        int dims[] = {2};
+        float x_data[] = {1.0f, 2.0f};
+        
+        Tensor* x = tensor_new(1, dims, x_data, 1);
+        Tensor* y = tensor_rms_norm(x, 1e-5f);
+        
+        float original = y->data[0];
+        y->grad[0] = 1.0f;
+        backward();
+        
+        // Compute numerical gradient
+        float epsilon = 1e-5f;
+        float saved = x->data[0];
+        x->data[0] += epsilon;
+        Tensor* y_new = tensor_rms_norm(x, 1e-5f);
+        float numerical = (y_new->data[0] - original) / epsilon;
+        x->data[0] = saved;
+        
+        printf("RMSNorm - Analytical: %.6f, Numerical: %.6f\n", x->grad[0], numerical);
+        float rel_error = fabsf(x->grad[0] - numerical) / 
+                         (fabsf(x->grad[0]) + fabsf(numerical) + 1e-10f);
+        printf("Relative error: %.6f\n", rel_error);
+        assert_float_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
+                       "RMSNorm gradient incorrect");
+    }
+    
+    // Test simple chain of operations
+    {
+        printf("\nTesting simple operation chain...\n");
+        int dims[] = {2};
+        float x_data[] = {0.5f, 0.5f};
+        
+        Tensor* x = tensor_new(1, dims, x_data, 1);
+        Tensor* y = tensor_gelu(x);
+        Tensor* z = tensor_rms_norm(y, 1e-5f);
+        
+        float original = z->data[0];
+        z->grad[0] = 1.0f;
+        backward();
+        
+        // Compute numerical gradient
+        float epsilon = 1e-5f;
+        float saved = x->data[0];
+        x->data[0] += epsilon;
+        Tensor* y_new = tensor_gelu(x);
+        Tensor* z_new = tensor_rms_norm(y_new, 1e-5f);
+        float numerical = (z_new->data[0] - original) / epsilon;
+        x->data[0] = saved;
+        
+        printf("Chain - Analytical: %.6f, Numerical: %.6f\n", x->grad[0], numerical);
+        float rel_error = fabsf(x->grad[0] - numerical) / 
+                         (fabsf(x->grad[0]) + fabsf(numerical) + 1e-10f);
+        printf("Relative error: %.6f\n", rel_error);
+        assert_float_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
+                       "Operation chain gradient incorrect");
+    }
+}
+
+void test_gradient_edge_cases() {
+    printf("Testing gradient edge cases...\n");
+    
+    // Test 1: Very large values
+    {
+        int dims[] = {2};
+        float data[] = {1000.0f, 1000.0f};
+        Tensor* x = tensor_new(1, dims, data, 1);
+        Tensor* out = tensor_softmax(x);
+        out->grad[0] = 1.0f;
+        backward();
+        printf("Large value gradient: %.6f\n", x->grad[0]);
+    }
+    
+    // Test 2: Very small values
+    {
+        int dims[] = {2};
+        float data[] = {1e-6f, 1e-6f};
+        Tensor* x = tensor_new(1, dims, data, 1);
+        Tensor* out = tensor_rms_norm(x, 1e-5f);
+        out->grad[0] = 1.0f;
+        backward();
+        printf("Small value gradient: %.6e\n", x->grad[0]);
+    }
+    
+    // Test 3: Mixed scale values
+    {
+        int dims[] = {3};
+        float data[] = {1e-6f, 1.0f, 1e6f};
+        Tensor* x = tensor_new(1, dims, data, 1);
+        Tensor* out = tensor_rms_norm(x, 1e-5f);
+        out->grad[0] = 1.0f;
+        backward();
+        printf("Mixed scale gradients: %.6e, %.6f, %.6e\n", 
+               x->grad[0], x->grad[1], x->grad[2]);
+    }
+}
+
+void benchmark_gradients() {
+    printf("Benchmarking gradient computation...\n");
+    
+    // Benchmark 1: Large matrix operations
+    {
+        clock_t start = clock();
+        int dims[] = {256, 256};
+        Tensor* x = tensor_randn(2, dims, 1);
+        Tensor* w = tensor_randn(2, dims, 1);
+        Tensor* out = tensor_matmul(x, w);
+        out->grad[0] = 1.0f;
+        backward();
+        clock_t end = clock();
+        printf("Large matrix gradient time: %.3f seconds\n", 
+               ((double)(end - start)) / CLOCKS_PER_SEC);
+    }
+    
+    // Benchmark 2: Deep network
+    {
+        clock_t start = clock();
+        int dims[] = {32, 32};
+        Tensor* x = tensor_randn(2, dims, 1);
+        Tensor* w = tensor_randn(2, dims, 1);
+        Tensor* current = x;
+        for (int i = 0; i < 50; i++) {
+            current = tensor_rms_norm(tensor_gelu(tensor_matmul(current, w)), 1e-5f);
+        }
+        current->grad[0] = 1.0f;
+        backward();
+        clock_t end = clock();
+        printf("Deep network gradient time: %.3f seconds\n", 
+               ((double)(end - start)) / CLOCKS_PER_SEC);
+    }
+}
+
+
+
 int main() {
     test_basic_ops();
     test_broadcasting();
@@ -1192,6 +1461,9 @@ int main() {
     #ifdef ENABLE_THREADING
     test_thread_safety();
     #endif
+    test_individual_gradients();
+    test_gradient_edge_cases();
+    benchmark_gradients();
     
     printf("All tests passed!\n");
     clean_registry();
