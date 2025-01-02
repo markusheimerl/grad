@@ -2423,6 +2423,308 @@ check_attention_stats(cross_attn, "Cross-attention", batch_size, n_head,
     }
 }
 
+typedef struct {
+    // Layer-specific weights
+    Tensor* W_self_q;
+    Tensor* W_self_k;
+    Tensor* W_self_v;
+    Tensor* W_self_o;
+    Tensor* W_cross_q;
+    Tensor* W_cross_k;
+    Tensor* W_cross_v;
+    Tensor* W_cross_o;
+    Tensor* W_ff1;  // First feed-forward layer
+    Tensor* W_ff2;  // Second feed-forward layer
+} DecoderLayer;
+
+Tensor* compute_decoder_layer(Tensor* input, Tensor* encoder_output, DecoderLayer* layer,
+                            int batch_size, int dec_seq_len, int enc_seq_len,
+                            int n_head, int d_head, int d_model, int d_ff) {
+    (void)d_ff;  // Silence unused parameter warning
+    
+    // Store initial registry state
+    int initial_registry = (int)registry_len;
+    
+    printf("  Computing self-attention...\n");
+    
+    // Self-attention block
+    Tensor* self_q = tensor_matmul(input, layer->W_self_q);
+    Tensor* self_k = tensor_matmul(input, layer->W_self_k);
+    Tensor* self_v = tensor_matmul(input, layer->W_self_v);
+    
+    int qkv_dims[] = {batch_size, dec_seq_len, n_head, d_head};
+    self_q = tensor_reshape(self_q, 4, qkv_dims);
+    self_k = tensor_reshape(self_k, 4, qkv_dims);
+    self_v = tensor_reshape(self_v, 4, qkv_dims);
+    
+    int perm[] = {0, 2, 1, 3};
+    self_q = tensor_permute(self_q, perm, 4);
+    self_k = tensor_permute(self_k, perm, 4);
+    self_v = tensor_permute(self_v, perm, 4);
+    
+    int perm_k[] = {0, 1, 3, 2};
+    Tensor* self_k_t = tensor_permute(self_k, perm_k, 4);
+    Tensor* self_qk = tensor_matmul(self_q, self_k_t);
+    
+    float scale = 1.0f / sqrtf(d_head);
+    for (int i = 0; i < self_qk->size; i++) {
+        self_qk->data[i] *= scale;
+    }
+    
+    // Apply causal mask
+    for (int b = 0; b < batch_size; b++) {
+        for (int h = 0; h < n_head; h++) {
+            for (int i = 0; i < dec_seq_len; i++) {
+                for (int j = i + 1; j < dec_seq_len; j++) {
+                    self_qk->data[((b * n_head + h) * dec_seq_len + i) * dec_seq_len + j] = -INFINITY;
+                }
+            }
+        }
+    }
+    
+    Tensor* self_attn = tensor_softmax(self_qk);
+    Tensor* self_out = tensor_matmul(self_attn, self_v);
+    
+    printf("  Reshaping and projecting self-attention...\n");
+    
+    int perm_back[] = {0, 2, 1, 3};
+    self_out = tensor_permute(self_out, perm_back, 4);
+    
+    int out_dims[] = {batch_size, dec_seq_len, d_model};
+    self_out = tensor_reshape(self_out, 3, out_dims);
+    
+    Tensor* self_proj = tensor_matmul(self_out, layer->W_self_o);
+    Tensor* self_residual = tensor_add(self_proj, input);
+    Tensor* self_norm = tensor_rms_norm(self_residual, 1e-5f);
+    
+    printf("  Computing cross-attention...\n");
+    
+    // Cross-attention block
+    Tensor* cross_q = tensor_matmul(self_norm, layer->W_cross_q);
+    Tensor* cross_k = tensor_matmul(encoder_output, layer->W_cross_k);
+    Tensor* cross_v = tensor_matmul(encoder_output, layer->W_cross_v);
+    
+    int cross_q_dims[] = {batch_size, dec_seq_len, n_head, d_head};
+    int cross_kv_dims[] = {batch_size, enc_seq_len, n_head, d_head};
+    cross_q = tensor_reshape(cross_q, 4, cross_q_dims);
+    cross_k = tensor_reshape(cross_k, 4, cross_kv_dims);
+    cross_v = tensor_reshape(cross_v, 4, cross_kv_dims);
+    
+    cross_q = tensor_permute(cross_q, perm, 4);
+    cross_k = tensor_permute(cross_k, perm, 4);
+    cross_v = tensor_permute(cross_v, perm, 4);
+    
+    Tensor* cross_k_t = tensor_permute(cross_k, perm_k, 4);
+    Tensor* cross_qk = tensor_matmul(cross_q, cross_k_t);
+    
+    for (int i = 0; i < cross_qk->size; i++) {
+        cross_qk->data[i] *= scale;
+    }
+    
+    Tensor* cross_attn = tensor_softmax(cross_qk);
+    Tensor* cross_out = tensor_matmul(cross_attn, cross_v);
+    
+    printf("  Reshaping and projecting cross-attention...\n");
+    
+    cross_out = tensor_permute(cross_out, perm_back, 4);
+    cross_out = tensor_reshape(cross_out, 3, out_dims);
+    
+    Tensor* cross_proj = tensor_matmul(cross_out, layer->W_cross_o);
+    Tensor* cross_residual = tensor_add(cross_proj, self_norm);
+    Tensor* cross_norm = tensor_rms_norm(cross_residual, 1e-5f);
+    
+    printf("  Computing feed-forward...\n");
+    
+    // Feed-forward block
+    Tensor* ff1 = tensor_matmul(cross_norm, layer->W_ff1);
+    Tensor* ff_gelu = tensor_gelu(ff1);
+    Tensor* ff2 = tensor_matmul(ff_gelu, layer->W_ff2);
+    Tensor* ff_residual = tensor_add(ff2, cross_norm);
+    Tensor* result = tensor_rms_norm(ff_residual, 1e-5f);
+    
+    // Clean up intermediate tensors
+    printf("  Cleaning up intermediates...\n");
+    while (registry_len > initial_registry) {
+        if (registry[registry_len-1] != result) {
+            registry_len--;
+        } else {
+            break;
+        }
+    }
+    
+    return result;
+}
+
+void test_multilayer_decoder() {
+    printf("\nTesting Multi-layer Decoder...\n");
+    
+    // Configuration - even smaller for debugging
+    const int batch_size = 1;
+    const int enc_seq_len = 4;  // Further reduced
+    const int dec_seq_len = 2;  // Further reduced
+    const int d_model = 8;      // Further reduced
+    const int n_head = 2;
+    const int d_head = d_model / n_head;
+    const int n_layers = 2;
+    const int d_ff = d_model * 2;
+    
+    printf("Configuration:\n");
+    printf("batch_size: %d, enc_seq_len: %d, dec_seq_len: %d\n", 
+           batch_size, enc_seq_len, dec_seq_len);
+    printf("d_model: %d, n_head: %d, d_head: %d, n_layers: %d\n", 
+           d_model, n_head, d_head, n_layers);
+    
+    // Store initial registry state
+    int initial_registry = (int)registry_len;
+    
+    // Create inputs with controlled values
+    int enc_dims[] = {batch_size, enc_seq_len, d_model};
+    int dec_dims[] = {batch_size, dec_seq_len, d_model};
+    
+    Tensor* encoder_output = tensor_new(3, enc_dims, NULL, 1);
+    Tensor* decoder_input = tensor_new(3, dec_dims, NULL, 1);
+    
+    // Initialize with small, controlled values
+    for (int i = 0; i < encoder_output->size; i++) {
+        encoder_output->data[i] = ((float)rand() / RAND_MAX - 0.5f) * 0.1f;
+    }
+    for (int i = 0; i < decoder_input->size; i++) {
+        decoder_input->data[i] = ((float)rand() / RAND_MAX - 0.5f) * 0.1f;
+    }
+    
+    // Initialize decoder layers with controlled weights
+    DecoderLayer* layers = malloc(n_layers * sizeof(DecoderLayer));
+    
+    // Weight initialization scale
+    float w_scale = sqrtf(2.0f / d_model) * 0.1f;  // Reduced scale
+    float ff_scale = sqrtf(2.0f / d_ff) * 0.1f;    // Reduced scale
+    
+    int weight_dims[] = {d_model, d_model};
+    int ff1_dims[] = {d_model, d_ff};
+    int ff2_dims[] = {d_ff, d_model};
+    
+    for (int l = 0; l < n_layers; l++) {
+        printf("\nInitializing layer %d...\n", l + 1);
+        
+        // Initialize weights with controlled values
+        layers[l].W_self_q = tensor_new(2, weight_dims, NULL, 1);
+        layers[l].W_self_k = tensor_new(2, weight_dims, NULL, 1);
+        layers[l].W_self_v = tensor_new(2, weight_dims, NULL, 1);
+        layers[l].W_self_o = tensor_new(2, weight_dims, NULL, 1);
+        
+        layers[l].W_cross_q = tensor_new(2, weight_dims, NULL, 1);
+        layers[l].W_cross_k = tensor_new(2, weight_dims, NULL, 1);
+        layers[l].W_cross_v = tensor_new(2, weight_dims, NULL, 1);
+        layers[l].W_cross_o = tensor_new(2, weight_dims, NULL, 1);
+        
+        layers[l].W_ff1 = tensor_new(2, ff1_dims, NULL, 1);
+        layers[l].W_ff2 = tensor_new(2, ff2_dims, NULL, 1);
+        
+        // Initialize with small, controlled values
+        for (int i = 0; i < d_model * d_model; i++) {
+            float r = ((float)rand() / RAND_MAX - 0.5f);
+            layers[l].W_self_q->data[i] = r * w_scale;
+            layers[l].W_self_k->data[i] = r * w_scale;
+            layers[l].W_self_v->data[i] = r * w_scale;
+            layers[l].W_self_o->data[i] = r * w_scale;
+            layers[l].W_cross_q->data[i] = r * w_scale;
+            layers[l].W_cross_k->data[i] = r * w_scale;
+            layers[l].W_cross_v->data[i] = r * w_scale;
+            layers[l].W_cross_o->data[i] = r * w_scale;
+        }
+        
+        for (int i = 0; i < d_model * d_ff; i++) {
+            float r = ((float)rand() / RAND_MAX - 0.5f);
+            layers[l].W_ff1->data[i] = r * ff_scale;
+        }
+        for (int i = 0; i < d_ff * d_model; i++) {
+            float r = ((float)rand() / RAND_MAX - 0.5f);
+            layers[l].W_ff2->data[i] = r * ff_scale;
+        }
+    }
+    
+    // Forward pass
+    printf("\nForward pass through decoder layers:\n");
+    Tensor* current = decoder_input;
+    Tensor** layer_outputs = malloc(n_layers * sizeof(Tensor*));
+    
+    for (int l = 0; l < n_layers; l++) {
+        printf("\nLayer %d:\n", l + 1);
+        layer_outputs[l] = compute_decoder_layer(current, encoder_output, &layers[l],
+                                               batch_size, dec_seq_len, enc_seq_len,
+                                               n_head, d_head, d_model, d_ff);
+        current = layer_outputs[l];
+        
+        printf("Layer %d output stats:\n", l + 1);
+        print_tensor_stats_full(current, "Layer output");
+    }
+    
+    // Gradient checking
+    printf("\nChecking gradients...\n");
+    
+    // Store original values
+    float* original_input = malloc(decoder_input->size * sizeof(float));
+    memcpy(original_input, decoder_input->data, decoder_input->size * sizeof(float));
+    float original_output = current->data[0];
+    
+    // Forward gradient
+    current->grad[0] = 1.0f;
+    backward();
+    float analytical_grad = decoder_input->grad[0];
+    
+    printf("Analytical gradient computation complete.\n");
+    printf("Analytical gradient: %.6e\n", analytical_grad);
+    
+    // Reset gradients
+    for (int i = 0; i < decoder_input->size; i++) {
+        decoder_input->grad[i] = 0.0f;
+    }
+    
+    // Numerical gradient
+    float epsilon = 1e-5f;
+    decoder_input->data[0] = original_input[0] + epsilon;
+    
+    // Recompute forward pass
+    current = decoder_input;
+    for (int l = 0; l < n_layers; l++) {
+        current = compute_decoder_layer(current, encoder_output, &layers[l],
+                                      batch_size, dec_seq_len, enc_seq_len,
+                                      n_head, d_head, d_model, d_ff);
+    }
+    
+    float numerical_grad = (current->data[0] - original_output) / epsilon;
+    
+    printf("Numerical gradient computation complete.\n");
+    printf("Numerical gradient: %.6e\n", numerical_grad);
+    
+    // Restore original input
+    memcpy(decoder_input->data, original_input, decoder_input->size * sizeof(float));
+    
+    // Compare gradients
+    float abs_diff = fabsf(analytical_grad - numerical_grad);
+    float avg_magnitude = (fabsf(analytical_grad) + fabsf(numerical_grad)) / 2.0f;
+    float rel_error = abs_diff / (avg_magnitude + 1e-10f);
+    
+    printf("\nGradient comparison:\n");
+    printf("Absolute difference: %.6e\n", abs_diff);
+    printf("Average magnitude: %.6e\n", avg_magnitude);
+    printf("Relative error: %.6f\n", rel_error);
+    
+    // Use more appropriate tolerance for complex network
+    assert_float_eq(rel_error < 0.2f ? 1.0f : 0.0f, 1.0f, 1e-5,
+                   "Multi-layer decoder gradient verification failed");
+    
+    printf("\nMulti-layer decoder test passed!\n");
+    
+    // Cleanup
+    free(layers);
+    free(layer_outputs);
+    free(original_input);
+    while (registry_len > initial_registry) {
+        registry_len--;
+    }
+}
+
 // Update main to use safer benchmarking
 int main() {
     print_memory_usage("start");
@@ -2478,6 +2780,7 @@ int main() {
 
     printf("\nTesting decoder...\n");
     test_transformer_decoder();
+    test_multilayer_decoder();
     
     printf("\nAll tests passed!\n");
     print_memory_usage("before cleanup");
