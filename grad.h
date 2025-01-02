@@ -28,6 +28,8 @@ static TapeEntry tape[MAX_TAPE];
 static int tape_len = 0;
 static Tensor* registry[MAX_TENSORS];
 static int registry_len = 0;
+static int* temp_buffer = NULL;
+static int temp_buffer_size = 0;
 
 #define REGISTRY_SAFETY_CHECK() \
     if (registry_len >= MAX_TENSORS) { \
@@ -35,9 +37,17 @@ static int registry_len = 0;
         return NULL; \
     }
 
+static int* get_temp_buffer(int size) {
+    if (size > temp_buffer_size) {
+        free(temp_buffer);
+        temp_buffer = malloc(size * sizeof(int));
+        temp_buffer_size = size;
+    }
+    return temp_buffer;
+}
+
 static int get_index(int idx, const int* dims, int ndims, const int* ref_dims, int ref_ndims) {
-    // Calculate coordinates in the reference shape
-    int coords[32];  // Assuming max dimensions is 32
+    int coords[32];
     int temp = idx;
     int stride = 1;
     
@@ -47,7 +57,6 @@ static int get_index(int idx, const int* dims, int ndims, const int* ref_dims, i
         stride *= ref_dims[d];
     }
     
-    // Map these coordinates to the input tensor
     int result = 0;
     stride = 1;
     int offset = ref_ndims - ndims;
@@ -61,40 +70,44 @@ static int get_index(int idx, const int* dims, int ndims, const int* ref_dims, i
     return result;
 }
 
-Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_grad) {
-    // Input validation
+static Tensor* tensor_create(int ndims, const int* dims, const float* data, int requires_grad) {
     if (!dims || ndims <= 0) return NULL;
-    
-    // Check registry capacity
     REGISTRY_SAFETY_CHECK();
     
-    // Check for zero-size dimensions
     int size = 1;
     for (int i = 0; i < ndims; i++) {
         if (dims[i] <= 0) return NULL;
         size *= dims[i];
     }
-    
-    // Check for overflow
     if (size > MAX_TAPE * MAX_TAPE) return NULL;
     
-    // Proceed with tensor creation
     Tensor* t = calloc(1, sizeof(Tensor));
     t->ndims = ndims;
     t->dims = malloc(ndims * sizeof(int));
     t->size = size;
     memcpy(t->dims, dims, ndims * sizeof(int));
-    t->data = malloc(t->size * sizeof(float));
-    if (data) memcpy(t->data, data, t->size * sizeof(float));
-    if ((t->requires_grad = requires_grad)) t->grad = calloc(t->size, sizeof(float));
+    t->data = malloc(size * sizeof(float));
+    if (data) memcpy(t->data, data, size * sizeof(float));
+    if ((t->requires_grad = requires_grad)) t->grad = calloc(size, sizeof(float));
     registry[registry_len++] = t;
     return t;
+}
+
+Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_grad) {
+    return tensor_create(ndims, dims, data, requires_grad);
+}
+
+Tensor* tensor_zeros(int ndims, const int* dims, int requires_grad) {
+    return tensor_create(ndims, dims, NULL, requires_grad);
 }
 
 Tensor* tensor_randn(int ndims, const int* dims, int requires_grad) {
     static int seed_set = 0;
     if (!seed_set) { srand(time(NULL)); seed_set = 1; }
-    Tensor* t = tensor_new(ndims, dims, NULL, requires_grad);
+    
+    Tensor* t = tensor_create(ndims, dims, NULL, requires_grad);
+    if (!t) return NULL;
+    
     for (int i = 0; i < t->size; i++) {
         float u1 = (float)rand() / RAND_MAX;
         float u2 = (float)rand() / RAND_MAX;
@@ -103,14 +116,20 @@ Tensor* tensor_randn(int ndims, const int* dims, int requires_grad) {
     return t;
 }
 
-Tensor* tensor_zeros(int ndims, const int* dims, int requires_grad) {
-    return tensor_new(ndims, dims, NULL, requires_grad);
-}
-
 void clean_registry() {
     while (registry_len > 0) {
         Tensor* t = registry[--registry_len];
         free(t->data); free(t->grad); free(t->dims); free(t);
+    }
+    free(temp_buffer);
+    temp_buffer = NULL;
+    temp_buffer_size = 0;
+}
+
+static void compute_strides(const int* dims, int ndims, int* strides) {
+    strides[ndims-1] = 1;
+    for (int i = ndims-2; i >= 0; i--) {
+        strides[i] = strides[i+1] * dims[i+1];
     }
 }
 
@@ -137,64 +156,49 @@ Tensor* tensor_add(Tensor* a, Tensor* b) { return tensor_op(a, b, ADD); }
 Tensor* tensor_hadamard(Tensor* a, Tensor* b) { return tensor_op(a, b, HADAMARD); }
 
 Tensor* tensor_matmul(Tensor* a, Tensor* b) {
-    if (!a || !b) return NULL;
+    if (!a || !b || a->dims[a->ndims-1] != b->dims[b->ndims-2]) return NULL;
     
-    // Check if last two dimensions are compatible for matrix multiplication
-    if (a->dims[a->ndims-1] != b->dims[b->ndims-2]) return NULL;
-    
-    // Get matrix dimensions
     int M = a->dims[a->ndims-2];
     int K = a->dims[a->ndims-1];
     int N = b->dims[b->ndims-1];
-    
-    // Calculate batch dimensions
     int a_batch_dims = a->ndims - 2;
     int b_batch_dims = b->ndims - 2;
     int max_batch_dims = fmax(a_batch_dims, b_batch_dims);
     
-    // Create output dimensions array
-    int out_dims[32];  // Assuming max dimensions is 32
+    int out_dims[32];
     int out_ndims = max_batch_dims + 2;
-    
-    // Handle batch dimensions
     int total_batch = 1;
+    
     for (int i = 0; i < max_batch_dims; i++) {
         int a_dim = (i < a_batch_dims) ? a->dims[i] : 1;
         int b_dim = (i < b_batch_dims) ? b->dims[i] : 1;
-        
-        // Check if dimensions are compatible for broadcasting
         if (a_dim != b_dim && a_dim != 1 && b_dim != 1) return NULL;
-        
         out_dims[i] = fmax(a_dim, b_dim);
         total_batch *= out_dims[i];
     }
     
-    // Add matrix dimensions
     out_dims[max_batch_dims] = M;
     out_dims[max_batch_dims + 1] = N;
     
-    // Create output tensor
     Tensor* r = tensor_new(out_ndims, out_dims, NULL, a->requires_grad || b->requires_grad);
     if (!r) return NULL;
     
-    // Calculate strides for batch dimensions
-    int a_strides[32], b_strides[32];
-    int a_stride = M * K, b_stride = K * N;
+    int* a_strides = get_temp_buffer(32);
+    int* b_strides = a_strides + 16;
     
+    int a_stride = M * K;
     for (int i = a_batch_dims - 1; i >= 0; i--) {
         a_strides[i] = a_stride;
         a_stride *= a->dims[i];
     }
     
-    b_stride = K * N;
+    int b_stride = K * N;
     for (int i = b_batch_dims - 1; i >= 0; i--) {
         b_strides[i] = b_stride;
         b_stride *= b->dims[i];
     }
     
-    // Perform batched matrix multiplication
     for (int batch = 0; batch < total_batch; batch++) {
-        // Calculate indices for this batch
         int a_offset = 0, b_offset = 0;
         int tmp = batch;
         
@@ -210,7 +214,6 @@ Tensor* tensor_matmul(Tensor* a, Tensor* b) {
             }
         }
         
-        // Perform matrix multiplication for this batch
         for (int i = 0; i < M; i++) {
             for (int j = 0; j < N; j++) {
                 float sum = 0;
@@ -248,49 +251,48 @@ Tensor* tensor_softmax(Tensor* a) {
 }
 
 Tensor* tensor_reshape(Tensor* a, int ndims, const int* dims) {
+    if (!a) return NULL;
     int size = 1;
     for (int i = 0; i < ndims; i++) size *= dims[i];
     if (size != a->size) return NULL;
     
     Tensor* r = tensor_new(ndims, dims, a->data, a->requires_grad);
-    if (r->requires_grad) tape[tape_len++] = (TapeEntry){RESHAPE, r, a, NULL, NULL};
+    if (r && r->requires_grad) tape[tape_len++] = (TapeEntry){RESHAPE, r, a, NULL, NULL};
     return r;
 }
 
 Tensor* tensor_permute(Tensor* a, const int* perm, int perm_size) {
     if (!a || !perm || perm_size != a->ndims) return NULL;
     
-    int* used = calloc(perm_size, sizeof(int));
+    int* used = get_temp_buffer(perm_size);
+    memset(used, 0, perm_size * sizeof(int));
+    
     for (int i = 0; i < perm_size; i++)
-        if (perm[i] < 0 || perm[i] >= perm_size || used[perm[i]]) {
-            free(used);
+        if (perm[i] < 0 || perm[i] >= perm_size || used[perm[i]]++)
             return NULL;
-        } else used[perm[i]] = 1;
-    free(used);
     
     int* new_dims = malloc(a->ndims * sizeof(int));
     for (int i = 0; i < a->ndims; i++) new_dims[i] = a->dims[perm[i]];
     
     Tensor* r = tensor_new(a->ndims, new_dims, NULL, a->requires_grad);
-    int *a_strides = malloc(a->ndims * sizeof(int)), *r_strides = malloc(r->ndims * sizeof(int));
+    free(new_dims);
+    if (!r) return NULL;
     
-    a_strides[a->ndims-1] = r_strides[r->ndims-1] = 1;
-    for (int i = a->ndims-2; i >= 0; i--) {
-        a_strides[i] = a_strides[i+1] * a->dims[i+1];
-        r_strides[i] = r_strides[i+1] * r->dims[i+1];
-    }
+    int* strides = get_temp_buffer(2 * a->ndims);
+    int* r_strides = strides + a->ndims;
+    
+    compute_strides(a->dims, a->ndims, strides);
+    compute_strides(r->dims, r->ndims, r_strides);
     
     for (int i = 0; i < r->size; i++) {
         int temp = i, old_idx = 0;
         for (int d = 0; d < r->ndims; d++) {
             int coord = temp / r_strides[d];
             temp %= r_strides[d];
-            old_idx += coord * a_strides[perm[d]];
+            old_idx += coord * strides[perm[d]];
         }
         r->data[i] = a->data[old_idx];
     }
-    
-    free(a_strides); free(r_strides); free(new_dims);
     
     if (r->requires_grad) {
         int* stored_perm = malloc(perm_size * sizeof(int));
@@ -306,7 +308,6 @@ Tensor* tensor_rms_norm(Tensor* x, float eps) {
     int last_dim = x->dims[x->ndims - 1], batch_size = x->size / last_dim;
     
     for (int b = 0; b < batch_size; b++) {
-        // Calculate mean square
         float ms = 0.0f;
         for (int i = 0; i < last_dim; i++) {
             float val = x->data[b * last_dim + i];
@@ -314,7 +315,6 @@ Tensor* tensor_rms_norm(Tensor* x, float eps) {
         }
         ms /= last_dim;
         
-        // Normalize
         float scale = 1.0f / sqrtf(ms + eps);
         for (int i = 0; i < last_dim; i++) {
             out->data[b * last_dim + i] = x->data[b * last_dim + i] * scale;
@@ -373,30 +373,25 @@ void backward() {
                 int a_batch_dims = a->ndims - 2;
                 int b_batch_dims = b->ndims - 2;
                 int r_batch_dims = r->ndims - 2;
-                
-                // Calculate total batch size
                 int total_batch = 1;
-                for (int i = 0; i < r_batch_dims; i++) {
-                    total_batch *= r->dims[i];
-                }
+                for (int i = 0; i < r_batch_dims; i++) total_batch *= r->dims[i];
                 
-                // Calculate strides for batch dimensions
-                int a_strides[32] = {0}, b_strides[32] = {0};
-                int a_stride = M * K, b_stride = K * N;
+                int* a_strides = get_temp_buffer(32);
+                int* b_strides = a_strides + 16;
                 
+                int a_stride = M * K;
                 for (int i = a_batch_dims - 1; i >= 0; i--) {
                     a_strides[i] = a_stride;
                     a_stride *= a->dims[i];
                 }
                 
+                int b_stride = K * N;
                 for (int i = b_batch_dims - 1; i >= 0; i--) {
                     b_strides[i] = b_stride;
                     b_stride *= b->dims[i];
                 }
                 
-                // For each batch
                 for (int batch = 0; batch < total_batch; batch++) {
-                    // Calculate batch offsets
                     int a_offset = 0, b_offset = 0;
                     int tmp = batch;
                     
@@ -412,7 +407,6 @@ void backward() {
                         }
                     }
                     
-                    // Compute gradients for this batch
                     if (a->requires_grad) {
                         for (int i = 0; i < M; i++) {
                             for (int k = 0; k < K; k++) {
@@ -450,7 +444,8 @@ void backward() {
                         for (int j = 0; j < last_dim; j++)
                             sum += r->grad[i*last_dim+j] * r->data[i*last_dim+j];
                         for (int j = 0; j < last_dim; j++)
-                            a->grad[i*last_dim+j] += r->data[i*last_dim+j] * (r->grad[i*last_dim+j] - sum);
+                            a->grad[i*last_dim+j] += r->data[i*last_dim+j] * 
+                                (r->grad[i*last_dim+j] - sum);
                     }
                 }
                 break;
@@ -463,34 +458,30 @@ void backward() {
                 
             case PERMUTE:
                 if (a->requires_grad) {
-                    int *inv_perm = malloc(a->ndims * sizeof(int));
-                    int *a_strides = malloc(a->ndims * sizeof(int));
-                    int *r_strides = malloc(r->ndims * sizeof(int));
+                    int* perm = (int*)e->aux_data;
+                    int* inv_perm = get_temp_buffer(a->ndims);
+                    int* strides = inv_perm + a->ndims;
+                    int* r_strides = strides + a->ndims;
                     
                     for (int i = 0; i < a->ndims; i++)
-                        inv_perm[((int*)e->aux_data)[i]] = i;
+                        inv_perm[perm[i]] = i;
                     
-                    a_strides[a->ndims-1] = r_strides[r->ndims-1] = 1;
-                    for (int i = a->ndims-2; i >= 0; i--) {
-                        a_strides[i] = a_strides[i+1] * a->dims[i+1];
-                        r_strides[i] = r_strides[i+1] * r->dims[i+1];
-                    }
+                    compute_strides(a->dims, a->ndims, strides);
+                    compute_strides(r->dims, r->ndims, r_strides);
                     
                     for (int i = 0; i < r->size; i++) {
                         int temp = i, old_idx = 0;
                         for (int d = 0; d < r->ndims; d++) {
                             int coord = temp / r_strides[d];
                             temp %= r_strides[d];
-                            old_idx += coord * a_strides[inv_perm[d]];
+                            old_idx += coord * strides[inv_perm[d]];
                         }
                         a->grad[old_idx] += r->grad[i];
                     }
-                    
-                    free(a_strides); free(r_strides); free(inv_perm);
                 }
                 break;
                 
-            case GELU: {
+            case GELU:
                 if (a->requires_grad) {
                     const float sqrt_2_pi = 0.7978845608028654f;
                     for (int i = 0; i < a->size; i++) {
@@ -503,9 +494,8 @@ void backward() {
                     }
                 }
                 break;
-            }
-            
-            case RMSNORM: {
+                
+            case RMSNORM:
                 if (a->requires_grad) {
                     float eps = *(float*)e->aux_data;
                     int last_dim = a->dims[a->ndims-1];
@@ -536,7 +526,6 @@ void backward() {
                     }
                 }
                 break;
-            }
         }
         free(e->aux_data);
     }
