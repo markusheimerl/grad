@@ -16,6 +16,7 @@ typedef struct {
     float *data, *grad;
     int *dims, ndims, size;
     int requires_grad;
+    int is_permanent;
 } Tensor;
 
 typedef struct {
@@ -70,7 +71,7 @@ static int get_index(int idx, const int* dims, int ndims, const int* ref_dims, i
     return result;
 }
 
-static Tensor* tensor_create(int ndims, const int* dims, const float* data, int requires_grad) {
+static Tensor* tensor_create(int ndims, const int* dims, const float* data, int requires_grad, int is_permanent) {
     if (!dims || ndims <= 0) return NULL;
     REGISTRY_SAFETY_CHECK();
     
@@ -89,23 +90,32 @@ static Tensor* tensor_create(int ndims, const int* dims, const float* data, int 
     t->data = malloc(size * sizeof(float));
     if (data) memcpy(t->data, data, size * sizeof(float));
     if ((t->requires_grad = requires_grad)) t->grad = calloc(size, sizeof(float));
+    t->is_permanent = is_permanent;
     registry[registry_len++] = t;
     return t;
 }
 
 Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_grad) {
-    return tensor_create(ndims, dims, data, requires_grad);
+    return tensor_create(ndims, dims, data, requires_grad, 0);
+}
+
+Tensor* tensor_new_permanent(int ndims, const int* dims, const float* data, int requires_grad) {
+    return tensor_create(ndims, dims, data, requires_grad, 1);
 }
 
 Tensor* tensor_zeros(int ndims, const int* dims, int requires_grad) {
-    return tensor_create(ndims, dims, NULL, requires_grad);
+    return tensor_create(ndims, dims, NULL, requires_grad, 0);
+}
+
+Tensor* tensor_zeros_permanent(int ndims, const int* dims, int requires_grad) {
+    return tensor_create(ndims, dims, NULL, requires_grad, 1);
 }
 
 Tensor* tensor_randn(int ndims, const int* dims, int requires_grad) {
     static int seed_set = 0;
     if (!seed_set) { srand(time(NULL)); seed_set = 1; }
     
-    Tensor* t = tensor_create(ndims, dims, NULL, requires_grad);
+    Tensor* t = tensor_create(ndims, dims, NULL, requires_grad, 0);
     if (!t) return NULL;
     
     for (int i = 0; i < t->size; i++) {
@@ -116,14 +126,47 @@ Tensor* tensor_randn(int ndims, const int* dims, int requires_grad) {
     return t;
 }
 
+Tensor* tensor_randn_permanent(int ndims, const int* dims, int requires_grad) {
+    Tensor* t = tensor_randn(ndims, dims, requires_grad);
+    if (t) t->is_permanent = 1;
+    return t;
+}
+
 void clean_registry() {
-    while (registry_len > 0) {
-        Tensor* t = registry[--registry_len];
-        free(t->data); free(t->grad); free(t->dims); free(t);
+    int write = 0;
+    for (int read = 0; read < registry_len; read++) {
+        Tensor* t = registry[read];
+        if (t->is_permanent) {
+            registry[write++] = t;
+        } else {
+            free(t->data);
+            free(t->grad);
+            free(t->dims);
+            free(t);
+        }
     }
+    registry_len = write;
+    
     free(temp_buffer);
     temp_buffer = NULL;
     temp_buffer_size = 0;
+}
+
+void free_permanent_tensor(Tensor* t) {
+    if (!t || !t->is_permanent) return;
+    
+    // Find and remove from registry
+    for (int i = 0; i < registry_len; i++) {
+        if (registry[i] == t) {
+            registry[i] = registry[--registry_len];
+            break;
+        }
+    }
+    
+    free(t->data);
+    free(t->grad);
+    free(t->dims);
+    free(t);
 }
 
 static void compute_strides(const int* dims, int ndims, int* strides) {
