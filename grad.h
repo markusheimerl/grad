@@ -13,7 +13,7 @@
 typedef enum { MATMUL, ADD, RESHAPE, SOFTMAX, PERMUTE, RMSNORM, HADAMARD, GELU } OpType;
 
 typedef struct {
-    float *data, *grad;
+    double *data, *grad;
     int *dims, ndims, size;
     int requires_grad;
     int is_permanent;
@@ -71,7 +71,7 @@ static int get_index(int idx, const int* dims, int ndims, const int* ref_dims, i
     return result;
 }
 
-static Tensor* tensor_create(int ndims, const int* dims, const float* data, int requires_grad, int is_permanent) {
+static Tensor* tensor_create(int ndims, const int* dims, const double* data, int requires_grad, int is_permanent) {
     if (!dims || ndims <= 0) return NULL;
     REGISTRY_SAFETY_CHECK();
     
@@ -87,19 +87,19 @@ static Tensor* tensor_create(int ndims, const int* dims, const float* data, int 
     t->dims = malloc(ndims * sizeof(int));
     t->size = size;
     memcpy(t->dims, dims, ndims * sizeof(int));
-    t->data = malloc(size * sizeof(float));
-    if (data) memcpy(t->data, data, size * sizeof(float));
-    if ((t->requires_grad = requires_grad)) t->grad = calloc(size, sizeof(float));
+    t->data = malloc(size * sizeof(double));
+    if (data) memcpy(t->data, data, size * sizeof(double));
+    if ((t->requires_grad = requires_grad)) t->grad = calloc(size, sizeof(double));
     t->is_permanent = is_permanent;
     registry[registry_len++] = t;
     return t;
 }
 
-Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_grad) {
+Tensor* tensor_new(int ndims, const int* dims, const double* data, int requires_grad) {
     return tensor_create(ndims, dims, data, requires_grad, 0);
 }
 
-Tensor* tensor_new_permanent(int ndims, const int* dims, const float* data, int requires_grad) {
+Tensor* tensor_new_permanent(int ndims, const int* dims, const double* data, int requires_grad) {
     return tensor_create(ndims, dims, data, requires_grad, 1);
 }
 
@@ -119,8 +119,8 @@ Tensor* tensor_randn(int ndims, const int* dims, int requires_grad) {
     if (!t) return NULL;
     
     for (int i = 0; i < t->size; i++) {
-        float u1 = (float)rand() / RAND_MAX;
-        float u2 = (float)rand() / RAND_MAX;
+        double u1 = (double)rand() / RAND_MAX;
+        double u2 = (double)rand() / RAND_MAX;
         t->data[i] = sqrtf(-2.0f * logf(u1)) * cosf(2.0f * M_PI * u2);
     }
     return t;
@@ -187,8 +187,8 @@ static Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
     }
     Tensor* r = tensor_new(max_d, dims, NULL, a->requires_grad || b->requires_grad);
     for (int i = 0; i < r->size; i++) {
-        float av = a->data[get_index(i, a->dims, a->ndims, dims, max_d)];
-        float bv = b->data[get_index(i, b->dims, b->ndims, dims, max_d)];
+        double av = a->data[get_index(i, a->dims, a->ndims, dims, max_d)];
+        double bv = b->data[get_index(i, b->dims, b->ndims, dims, max_d)];
         r->data[i] = op == HADAMARD ? av * bv : av + bv;
     }
     if (r->requires_grad) tape[tape_len++] = (TapeEntry){op, r, a, b, NULL};
@@ -259,7 +259,7 @@ Tensor* tensor_matmul(Tensor* a, Tensor* b) {
         
         for (int i = 0; i < M; i++) {
             for (int j = 0; j < N; j++) {
-                float sum = 0;
+                double sum = 0;
                 for (int k = 0; k < K; k++) {
                     sum += a->data[a_offset + i*K + k] * b->data[b_offset + k*N + j];
                 }
@@ -278,11 +278,11 @@ Tensor* tensor_softmax(Tensor* a) {
     int last_dim = a->dims[a->ndims - 1], outer_size = a->size / last_dim;
     
     for (int i = 0; i < outer_size; i++) {
-        float max_val = a->data[i * last_dim];
+        double max_val = a->data[i * last_dim];
         for (int j = 1; j < last_dim; j++)
             max_val = fmaxf(max_val, a->data[i * last_dim + j]);
         
-        float sum = 0;
+        double sum = 0;
         for (int j = 0; j < last_dim; j++)
             sum += (r->data[i * last_dim + j] = expf(a->data[i * last_dim + j] - max_val));
         for (int j = 0; j < last_dim; j++)
@@ -345,27 +345,27 @@ Tensor* tensor_permute(Tensor* a, const int* perm, int perm_size) {
     return r;
 }
 
-Tensor* tensor_rms_norm(Tensor* x, float eps) {
+Tensor* tensor_rms_norm(Tensor* x, double eps) {
     if (!x) return NULL;
     Tensor* out = tensor_new(x->ndims, x->dims, NULL, x->requires_grad);
     int last_dim = x->dims[x->ndims - 1], batch_size = x->size / last_dim;
     
     for (int b = 0; b < batch_size; b++) {
-        float ms = 0.0f;
+        double ms = 0.0f;
         for (int i = 0; i < last_dim; i++) {
-            float val = x->data[b * last_dim + i];
+            double val = x->data[b * last_dim + i];
             ms += val * val;
         }
         ms /= last_dim;
         
-        float scale = 1.0f / sqrtf(ms + eps);
+        double scale = 1.0f / sqrtf(ms + eps);
         for (int i = 0; i < last_dim; i++) {
             out->data[b * last_dim + i] = x->data[b * last_dim + i] * scale;
         }
     }
     
     if (out->requires_grad) {
-        float* eps_ptr = malloc(sizeof(float));
+        double* eps_ptr = malloc(sizeof(double));
         *eps_ptr = eps;
         tape[tape_len++] = (TapeEntry){RMSNORM, out, x, NULL, eps_ptr};
     }
@@ -375,12 +375,12 @@ Tensor* tensor_rms_norm(Tensor* x, float eps) {
 Tensor* tensor_gelu(Tensor* x) {
     if (!x) return NULL;
     Tensor* out = tensor_new(x->ndims, x->dims, NULL, x->requires_grad);
-    const float sqrt_2_pi = 0.7978845608028654f;
+    const double sqrt_2_pi = 0.7978845608028654f;
     
     for (int i = 0; i < x->size; i++) {
-        float val = x->data[i];
-        float cube = val * val * val;
-        float inner = sqrt_2_pi * (val + 0.044715f * cube);
+        double val = x->data[i];
+        double cube = val * val * val;
+        double inner = sqrt_2_pi * (val + 0.044715f * cube);
         out->data[i] = 0.5f * val * (1.0f + tanhf(inner));
     }
     
@@ -397,7 +397,7 @@ void backward() {
             case ADD:
             case HADAMARD:
                 for (int i = 0; i < r->size; i++) {
-                    float grad = r->grad[i];
+                    double grad = r->grad[i];
                     if (a->requires_grad) {
                         int a_idx = get_index(i, a->dims, a->ndims, r->dims, r->ndims);
                         a->grad[a_idx] += e->op == HADAMARD ? 
@@ -453,7 +453,7 @@ void backward() {
                     if (a->requires_grad) {
                         for (int i = 0; i < M; i++) {
                             for (int k = 0; k < K; k++) {
-                                float sum = 0.0f;
+                                double sum = 0.0f;
                                 for (int j = 0; j < N; j++) {
                                     sum += r->grad[batch*M*N + i*N + j] * 
                                         b->data[b_offset + k*N + j];
@@ -466,7 +466,7 @@ void backward() {
                     if (b->requires_grad) {
                         for (int k = 0; k < K; k++) {
                             for (int j = 0; j < N; j++) {
-                                float sum = 0.0f;
+                                double sum = 0.0f;
                                 for (int i = 0; i < M; i++) {
                                     sum += r->grad[batch*M*N + i*N + j] * 
                                         a->data[a_offset + i*K + k];
@@ -483,7 +483,7 @@ void backward() {
                 if (a->requires_grad) {
                     int last_dim = a->dims[a->ndims - 1], outer_size = a->size / last_dim;
                     for (int i = 0; i < outer_size; i++) {
-                        float sum = 0;
+                        double sum = 0;
                         for (int j = 0; j < last_dim; j++)
                             sum += r->grad[i*last_dim+j] * r->data[i*last_dim+j];
                         for (int j = 0; j < last_dim; j++)
@@ -526,11 +526,11 @@ void backward() {
                 
             case GELU:
                 if (a->requires_grad) {
-                    const float sqrt_2_pi = 0.7978845608028654f;
+                    const double sqrt_2_pi = 0.7978845608028654f;
                     for (int i = 0; i < a->size; i++) {
-                        float x = a->data[i];
-                        float cdf = 0.5f * (1.0f + tanhf(sqrt_2_pi * (x + 0.044715f * x * x * x)));
-                        float pdf = sqrt_2_pi * (1.0f + 0.134145f * x * x) * 
+                        double x = a->data[i];
+                        double cdf = 0.5f * (1.0f + tanhf(sqrt_2_pi * (x + 0.044715f * x * x * x)));
+                        double pdf = sqrt_2_pi * (1.0f + 0.134145f * x * x) * 
                                   (1.0f - tanhf(sqrt_2_pi * (x + 0.044715f * x * x * x)) * 
                                    tanhf(sqrt_2_pi * (x + 0.044715f * x * x * x))) * 0.5f;
                         a->grad[i] += r->grad[i] * (cdf + x * pdf);
@@ -540,29 +540,29 @@ void backward() {
                 
             case RMSNORM:
                 if (a->requires_grad) {
-                    float eps = *(float*)e->aux_data;
+                    double eps = *(double*)e->aux_data;
                     int last_dim = a->dims[a->ndims-1];
                     int batch_size = a->size/last_dim;
                     
                     for (int b = 0; b < batch_size; b++) {
-                        float ms = 0.0f;
+                        double ms = 0.0f;
                         for (int i = 0; i < last_dim; i++) {
-                            float val = a->data[b*last_dim + i];
+                            double val = a->data[b*last_dim + i];
                             ms += val * val;
                         }
                         ms /= last_dim;
                         
-                        float inv_rms = 1.0f / sqrtf(ms + eps);
-                        float inv_rms_cubed = inv_rms * inv_rms * inv_rms;
+                        double inv_rms = 1.0f / sqrtf(ms + eps);
+                        double inv_rms_cubed = inv_rms * inv_rms * inv_rms;
                         
-                        float sum_xdout = 0.0f;
+                        double sum_xdout = 0.0f;
                         for (int i = 0; i < last_dim; i++) {
                             sum_xdout += a->data[b*last_dim + i] * r->grad[b*last_dim + i];
                         }
                         
                         for (int i = 0; i < last_dim; i++) {
-                            float x_i = a->data[b*last_dim + i];
-                            float dout_i = r->grad[b*last_dim + i];
+                            double x_i = a->data[b*last_dim + i];
+                            double dout_i = r->grad[b*last_dim + i];
                             a->grad[b*last_dim + i] += inv_rms * dout_i - 
                                 (x_i * sum_xdout * inv_rms_cubed) / last_dim;
                         }

@@ -1,6 +1,6 @@
 #include "grad.h"
 
-void assert_float_eq(float a, float b, float eps, const char* msg) {
+void assert_double_eq(double a, double b, double eps, const char* msg) {
     if (fabsf(a - b) > eps) {
         printf("ASSERTION FAILED: %s\n", msg);
         printf("Expected: %f, Got: %f\n", b, a);
@@ -8,13 +8,13 @@ void assert_float_eq(float a, float b, float eps, const char* msg) {
     }
 }
 
-void assert_tensor_eq(Tensor* a, Tensor* b, float eps, const char* msg) {
+void assert_tensor_eq(Tensor* a, Tensor* b, double eps, const char* msg) {
     if (a->size != b->size) {
         printf("ASSERTION FAILED: %s (size mismatch)\n", msg);
         exit(1);
     }
     for (int i = 0; i < a->size; i++) {
-        assert_float_eq(a->data[i], b->data[i], eps, msg);
+        assert_double_eq(a->data[i], b->data[i], eps, msg);
     }
 }
 
@@ -35,9 +35,9 @@ void test_basic_ops() {
     
     // Test addition
     int dims[] = {2, 2};
-    float data1[] = {1, 2, 3, 4};
-    float data2[] = {5, 6, 7, 8};
-    float expected_add[] = {6, 8, 10, 12};
+    double data1[] = {1, 2, 3, 4};
+    double data2[] = {5, 6, 7, 8};
+    double expected_add[] = {6, 8, 10, 12};
     
     Tensor* t1 = tensor_new(2, dims, data1, 1);
     Tensor* t2 = tensor_new(2, dims, data2, 1);
@@ -49,8 +49,8 @@ void test_basic_ops() {
     int dims1[] = {2, 1};  // [[1],
                           //  [2]]
     int dims2[] = {1, 2};  // [[3, 4]]
-    float data3[] = {1, 2};
-    float data4[] = {3, 4};
+    double data3[] = {1, 2};
+    double data4[] = {3, 4};
     
     t1 = tensor_new(2, dims1, data3, 1);
     t2 = tensor_new(2, dims2, data4, 1);
@@ -69,7 +69,7 @@ void test_basic_ops() {
     //  [2, 2]] +           =  [5, 6]]
     
     int expected_dims[] = {2, 2};
-    float expected_broadcast[] = {4, 5, 5, 6};
+    double expected_broadcast[] = {4, 5, 5, 6};
     Tensor* expected = tensor_new(2, expected_dims, expected_broadcast, 0);
     print_tensor(expected, "expected");
     
@@ -83,9 +83,9 @@ void test_broadcasting() {
     {
         int dims1[] = {2, 1};
         int dims2[] = {1, 2};
-        float data1[] = {1, 2};
-        float data2[] = {3, 4};
-        float expected[] = {4, 5, 5, 6};
+        double data1[] = {1, 2};
+        double data2[] = {3, 4};
+        double expected[] = {4, 5, 5, 6};
         
         Tensor* t1 = tensor_new(2, dims1, data1, 1);
         Tensor* t2 = tensor_new(2, dims2, data2, 1);
@@ -99,9 +99,9 @@ void test_broadcasting() {
     {
         int dims1[] = {3, 1, 2};
         int dims2[] = {2};
-        float data1[] = {1, 2, 3, 4, 5, 6};
-        float data2[] = {7, 8};
-        float expected[] = {8, 10, 10, 12, 12, 14};
+        double data1[] = {1, 2, 3, 4, 5, 6};
+        double data2[] = {7, 8};
+        double expected[] = {8, 10, 10, 12, 12, 14};
         
         Tensor* t1 = tensor_new(3, dims1, data1, 1);
         Tensor* t2 = tensor_new(1, dims2, data2, 1);
@@ -115,9 +115,9 @@ void test_broadcasting() {
     {
         int dims1[] = {2, 2};
         int dims2[] = {1};
-        float data1[] = {1, 2, 3, 4};
-        float data2[] = {5};
-        float expected[] = {6, 7, 8, 9};
+        double data1[] = {1, 2, 3, 4};
+        double data2[] = {5};
+        double expected[] = {6, 7, 8, 9};
         
         Tensor* t1 = tensor_new(2, dims1, data1, 1);
         Tensor* t2 = tensor_new(1, dims2, data2, 1);
@@ -133,9 +133,9 @@ void test_matmul() {
     
     int dims1[] = {2, 3};
     int dims2[] = {3, 2};
-    float data1[] = {1, 2, 3, 4, 5, 6};
-    float data2[] = {7, 8, 9, 10, 11, 12};
-    float expected[] = {58, 64, 139, 154};
+    double data1[] = {1, 2, 3, 4, 5, 6};
+    double data2[] = {7, 8, 9, 10, 11, 12};
+    double expected[] = {58, 64, 139, 154};
     
     Tensor* t1 = tensor_new(2, dims1, data1, 1);
     Tensor* t2 = tensor_new(2, dims2, data2, 1);
@@ -149,24 +149,24 @@ void test_softmax() {
     printf("Testing softmax...\n");
     
     int dims[] = {1, 3};
-    float data[] = {1.0f, 2.0f, 3.0f};
+    double data[] = {1.0f, 2.0f, 3.0f};
     Tensor* t = tensor_new(2, dims, data, 1);
     Tensor* result = tensor_softmax(t);
     
-    float sum = 0;
+    double sum = 0;
     for (int i = 0; i < result->size; i++) {
         sum += result->data[i];
-        assert_float_eq(result->data[i], result->data[i], 1e-5, "Softmax produced NaN");
+        assert_double_eq(result->data[i], result->data[i], 1e-5, "Softmax produced NaN");
     }
-    assert_float_eq(sum, 1.0f, 1e-5, "Softmax sum != 1");
+    assert_double_eq(sum, 1.0f, 1e-5, "Softmax sum != 1");
 }
 
 void test_backward() {
     printf("Testing backward pass...\n");
     
     int dims[] = {2, 2};
-    float data1[] = {1, 2, 3, 4};
-    float data2[] = {5, 6, 7, 8};
+    double data1[] = {1, 2, 3, 4};
+    double data2[] = {5, 6, 7, 8};
     
     Tensor* t1 = tensor_new(2, dims, data1, 1);
     Tensor* t2 = tensor_new(2, dims, data2, 1);
@@ -181,8 +181,8 @@ void test_backward() {
     
     // For addition, gradients should flow through unchanged
     for (int i = 0; i < t1->size; i++) {
-        assert_float_eq(t1->grad[i], 1.0f, 1e-5, "Addition backward pass failed for t1");
-        assert_float_eq(t2->grad[i], 1.0f, 1e-5, "Addition backward pass failed for t2");
+        assert_double_eq(t1->grad[i], 1.0f, 1e-5, "Addition backward pass failed for t1");
+        assert_double_eq(t2->grad[i], 1.0f, 1e-5, "Addition backward pass failed for t2");
     }
 }
 
@@ -192,7 +192,7 @@ void test_gelu() {
     // Test GELU with specific values we know
     {
         int dims[] = {5};
-        float data[] = {-2.0f, -1.0f, 0.0f, 1.0f, 2.0f};
+        double data[] = {-2.0f, -1.0f, 0.0f, 1.0f, 2.0f};
         Tensor* t = tensor_new(1, dims, data, 1);
         Tensor* result = tensor_gelu(t);
 
@@ -200,16 +200,16 @@ void test_gelu() {
         // x < 0: smaller activation
         // x = 0: 0
         // x > 0: closer to x
-        assert_float_eq(result->data[2], 0.0f, 1e-5, "GELU(0) should be 0");
-        assert_float_eq(result->data[3], 0.841192f, 1e-5, "GELU(1) incorrect");
+        assert_double_eq(result->data[2], 0.0f, 1e-5, "GELU(0) should be 0");
+        assert_double_eq(result->data[3], 0.841192f, 1e-5, "GELU(1) incorrect");
         
         // Test that outputs are reasonable
         for (int i = 0; i < result->size; i++) {
             // Output should be bounded
-            assert_float_eq(result->data[i] <= fabsf(data[i]), 1.0f, 1e-5, "GELU output too large");
+            assert_double_eq(result->data[i] <= fabsf(data[i]), 1.0f, 1e-5, "GELU output too large");
             // Output should have same sign as input (except very near 0)
             if (fabsf(data[i]) > 0.1f) {
-                assert_float_eq(signbit(result->data[i]) == signbit(data[i]), 1.0f, 1e-5, "GELU sign mismatch");
+                assert_double_eq(signbit(result->data[i]) == signbit(data[i]), 1.0f, 1e-5, "GELU sign mismatch");
             }
         }
     }
@@ -217,14 +217,14 @@ void test_gelu() {
     // Test GELU derivative
     {
         int dims[] = {1};
-        float data[] = {1.0f};
+        double data[] = {1.0f};
         Tensor* t = tensor_new(1, dims, data, 1);
         Tensor* result = tensor_gelu(t);
         result->grad[0] = 1.0f;
         backward();
         
         // GELU derivative at x=1 should be approximately 1.0837
-        assert_float_eq(t->grad[0], 1.0837f, 1e-3, "GELU derivative incorrect");
+        assert_double_eq(t->grad[0], 1.0837f, 1e-3, "GELU derivative incorrect");
     }
 }
 
@@ -232,17 +232,17 @@ void test_rms_norm() {
     printf("Testing RMSNorm...\n");
     
     int dims[] = {1, 4};
-    float data[] = {1.0f, 2.0f, 3.0f, 4.0f};
+    double data[] = {1.0f, 2.0f, 3.0f, 4.0f};
     Tensor* t = tensor_new(2, dims, data, 1);
     Tensor* result = tensor_rms_norm(t, 1e-5f);
     
     // Check that the RMS of the output is approximately 1
-    float sum_sq = 0;
+    double sum_sq = 0;
     for (int i = 0; i < result->size; i++) {
         sum_sq += result->data[i] * result->data[i];
     }
-    float rms = sqrt(sum_sq / result->size);
-    assert_float_eq(rms, 1.0f, 1e-4, "RMSNorm failed to normalize");
+    double rms = sqrt(sum_sq / result->size);
+    assert_double_eq(rms, 1.0f, 1e-4, "RMSNorm failed to normalize");
 }
 
 void test_edge_cases() {
@@ -251,28 +251,28 @@ void test_edge_cases() {
     // Test single-element tensors
     {
         int dims[] = {1};
-        float data1[] = {2.0f};
-        float data2[] = {3.0f};
+        double data1[] = {2.0f};
+        double data2[] = {3.0f};
         Tensor* t1 = tensor_new(1, dims, data1, 1);
         Tensor* t2 = tensor_new(1, dims, data2, 1);
         Tensor* result = tensor_add(t1, t2);
-        assert_float_eq(result->data[0], 5.0f, 1e-5, "Single element addition failed");
+        assert_double_eq(result->data[0], 5.0f, 1e-5, "Single element addition failed");
     }
     
     // Test broadcasting with 1s in different positions
     {
         int dims1[] = {2, 1, 3};
         int dims2[] = {1, 4, 1};
-        float data1[] = {1, 2, 3, 4, 5, 6};
-        float data2[] = {10, 20, 30, 40};
+        double data1[] = {1, 2, 3, 4, 5, 6};
+        double data2[] = {10, 20, 30, 40};
         
         Tensor* t1 = tensor_new(3, dims1, data1, 1);
         Tensor* t2 = tensor_new(3, dims2, data2, 1);
         Tensor* result = tensor_add(t1, t2);
         
-        assert_float_eq(result->dims[0], 2, 1e-5, "Complex broadcasting shape mismatch");
-        assert_float_eq(result->dims[1], 4, 1e-5, "Complex broadcasting shape mismatch");
-        assert_float_eq(result->dims[2], 3, 1e-5, "Complex broadcasting shape mismatch");
+        assert_double_eq(result->dims[0], 2, 1e-5, "Complex broadcasting shape mismatch");
+        assert_double_eq(result->dims[1], 4, 1e-5, "Complex broadcasting shape mismatch");
+        assert_double_eq(result->dims[2], 3, 1e-5, "Complex broadcasting shape mismatch");
     }
 }
 
@@ -282,75 +282,75 @@ void test_numerical_stability() {
     // Test softmax with large numbers
     {
         int dims[] = {2};
-        float data[] = {1000.0f, 1000.1f};
+        double data[] = {1000.0f, 1000.1f};
         Tensor* t = tensor_new(1, dims, data, 1);
         Tensor* result = tensor_softmax(t);
-        float sum = result->data[0] + result->data[1];
-        assert_float_eq(sum, 1.0f, 1e-5, "Softmax normalization failed for large inputs");
+        double sum = result->data[0] + result->data[1];
+        assert_double_eq(sum, 1.0f, 1e-5, "Softmax normalization failed for large inputs");
     }
     
     // Test RMSNorm basic functionality
     {
         int dims[] = {4};
-        float data[] = {2.0f, 2.0f, 2.0f, 2.0f};  // Using uniform non-zero values
+        double data[] = {2.0f, 2.0f, 2.0f, 2.0f};  // Using uniform non-zero values
         Tensor* t = tensor_new(1, dims, data, 1);
         Tensor* result = tensor_rms_norm(t, 1e-5f);
         
         // For identical inputs, outputs should all be equal and the RMS should be 1
         // If all inputs are 2.0, then ms = 4.0, and scale = 1/sqrt(4) = 1/2
         // So each output should be 2.0 * (1/2) = 1.0
-        float expected = 1.0f;  // Corrected expected value
+        double expected = 1.0f;  // Corrected expected value
         for (int i = 0; i < 4; i++) {
-            assert_float_eq(result->data[i], expected, 1e-5, "RMSNorm failed for uniform inputs");
+            assert_double_eq(result->data[i], expected, 1e-5, "RMSNorm failed for uniform inputs");
         }
         
         // Verify RMS = 1
-        float sum_sq = 0.0f;
+        double sum_sq = 0.0f;
         for (int i = 0; i < 4; i++) {
             sum_sq += result->data[i] * result->data[i];
         }
-        float rms = sqrtf(sum_sq / 4.0f);
-        assert_float_eq(rms, 1.0f, 1e-5, "RMSNorm output RMS != 1");
+        double rms = sqrtf(sum_sq / 4.0f);
+        assert_double_eq(rms, 1.0f, 1e-5, "RMSNorm output RMS != 1");
     }
     
     // Test RMSNorm with mixed values
     {
         int dims[] = {3};
-        float data[] = {1.0f, 2.0f, 3.0f};
+        double data[] = {1.0f, 2.0f, 3.0f};
         Tensor* t = tensor_new(1, dims, data, 1);
         Tensor* result = tensor_rms_norm(t, 1e-5f);
         
         // Calculate expected values
-        float ms = (1.0f + 4.0f + 9.0f) / 3.0f;  // = 4.666...
-        float scale = 1.0f / sqrtf(ms);
-        float expected[] = {1.0f * scale, 2.0f * scale, 3.0f * scale};
+        double ms = (1.0f + 4.0f + 9.0f) / 3.0f;  // = 4.666...
+        double scale = 1.0f / sqrtf(ms);
+        double expected[] = {1.0f * scale, 2.0f * scale, 3.0f * scale};
         
         // Verify outputs
         for (int i = 0; i < 3; i++) {
-            assert_float_eq(result->data[i], expected[i], 1e-5, "RMSNorm failed for mixed values");
+            assert_double_eq(result->data[i], expected[i], 1e-5, "RMSNorm failed for mixed values");
         }
         
         // Verify unit RMS
-        float sum_sq = 0.0f;
+        double sum_sq = 0.0f;
         for (int i = 0; i < 3; i++) {
             sum_sq += result->data[i] * result->data[i];
         }
-        float output_rms = sqrtf(sum_sq / 3.0f);
-        assert_float_eq(output_rms, 1.0f, 1e-5, "RMSNorm failed to normalize to unit RMS");
+        double output_rms = sqrtf(sum_sq / 3.0f);
+        assert_double_eq(output_rms, 1.0f, 1e-5, "RMSNorm failed to normalize to unit RMS");
     }
     
     // Test RMSNorm with small but reasonable values
     {
         int dims[] = {3};
-        float data[] = {0.01f, 0.02f, 0.03f};
+        double data[] = {0.01f, 0.02f, 0.03f};
         Tensor* t = tensor_new(1, dims, data, 1);
         Tensor* result = tensor_rms_norm(t, 1e-5f);
         
         // Verify ratios are preserved
-        float ratio1 = result->data[1] / result->data[0];
-        float ratio2 = result->data[2] / result->data[1];
-        assert_float_eq(ratio1, 2.0f, 1e-5, "RMSNorm failed to preserve ratios for small values");
-        assert_float_eq(ratio2, 1.5f, 1e-5, "RMSNorm failed to preserve ratios for small values");
+        double ratio1 = result->data[1] / result->data[0];
+        double ratio2 = result->data[2] / result->data[1];
+        assert_double_eq(ratio1, 2.0f, 1e-5, "RMSNorm failed to preserve ratios for small values");
+        assert_double_eq(ratio2, 1.5f, 1e-5, "RMSNorm failed to preserve ratios for small values");
     }
 }
 
@@ -358,8 +358,8 @@ void test_gradient_accumulation() {
     printf("Testing gradient accumulation...\n");
     
     int dims[] = {2, 2};
-    float data1[] = {1, 2, 3, 4};
-    float data2[] = {5, 6, 7, 8};
+    double data1[] = {1, 2, 3, 4};
+    double data2[] = {5, 6, 7, 8};
     
     Tensor* t1 = tensor_new(2, dims, data1, 1);
     Tensor* t2 = tensor_new(2, dims, data2, 1);
@@ -378,8 +378,8 @@ void test_gradient_accumulation() {
     
     // Each input tensor should have accumulated gradient = 2
     for (int i = 0; i < t1->size; i++) {
-        assert_float_eq(t1->grad[i], 2.0f, 1e-5, "Gradient accumulation failed");
-        assert_float_eq(t2->grad[i], 2.0f, 1e-5, "Gradient accumulation failed");
+        assert_double_eq(t1->grad[i], 2.0f, 1e-5, "Gradient accumulation failed");
+        assert_double_eq(t2->grad[i], 2.0f, 1e-5, "Gradient accumulation failed");
     }
 }
 
@@ -392,7 +392,7 @@ void test_stress() {
         Tensor* t1 = tensor_randn(2, dims, 1);
         Tensor* t2 = tensor_randn(2, dims, 1);
         Tensor* result = tensor_add(t1, t2);
-        assert_float_eq(result->size, 10000, 1e-5, "Large tensor operation failed");
+        assert_double_eq(result->size, 10000, 1e-5, "Large tensor operation failed");
     }
     
     // Test deep computation graph
@@ -419,8 +419,8 @@ void test_complex_broadcasting() {
     {
         int dims1[] = {2, 1, 3, 1};  // [2, 1, 3, 1]
         int dims2[] = {1, 4, 1, 5};  // [1, 4, 1, 5]
-        float* data1 = malloc(2 * 1 * 3 * 1 * sizeof(float));
-        float* data2 = malloc(1 * 4 * 1 * 5 * sizeof(float));
+        double* data1 = malloc(2 * 1 * 3 * 1 * sizeof(double));
+        double* data2 = malloc(1 * 4 * 1 * 5 * sizeof(double));
         
         // Fill with recognizable patterns
         for (int i = 0; i < 6; i++) data1[i] = i + 1;
@@ -431,11 +431,11 @@ void test_complex_broadcasting() {
         Tensor* result = tensor_add(t1, t2);
         
         // Result should be [2, 4, 3, 5]
-        assert_float_eq(result->ndims, 4, 1e-5, "Wrong number of dimensions");
-        assert_float_eq(result->dims[0], 2, 1e-5, "Wrong dimension 0");
-        assert_float_eq(result->dims[1], 4, 1e-5, "Wrong dimension 1");
-        assert_float_eq(result->dims[2], 3, 1e-5, "Wrong dimension 2");
-        assert_float_eq(result->dims[3], 5, 1e-5, "Wrong dimension 3");
+        assert_double_eq(result->ndims, 4, 1e-5, "Wrong number of dimensions");
+        assert_double_eq(result->dims[0], 2, 1e-5, "Wrong dimension 0");
+        assert_double_eq(result->dims[1], 4, 1e-5, "Wrong dimension 1");
+        assert_double_eq(result->dims[2], 3, 1e-5, "Wrong dimension 2");
+        assert_double_eq(result->dims[3], 5, 1e-5, "Wrong dimension 3");
         
         free(data1);
         free(data2);
@@ -445,8 +445,8 @@ void test_complex_broadcasting() {
     {
         int dims1[] = {3, 1};        // [3, 1]
         int dims2[] = {2, 4, 1, 2};  // [2, 4, 1, 2]
-        float data1[] = {1, 2, 3};
-        float* data2 = malloc(16 * sizeof(float));
+        double data1[] = {1, 2, 3};
+        double* data2 = malloc(16 * sizeof(double));
         for (int i = 0; i < 16; i++) data2[i] = i * 0.1f;
         
         Tensor* t1 = tensor_new(2, dims1, data1, 1);
@@ -454,11 +454,11 @@ void test_complex_broadcasting() {
         Tensor* result = tensor_add(t1, t2);
         
         // Result should be [2, 4, 3, 2]
-        assert_float_eq(result->ndims, 4, 1e-5, "Wrong number of dimensions");
-        assert_float_eq(result->dims[0], 2, 1e-5, "Wrong dimension 0");
-        assert_float_eq(result->dims[1], 4, 1e-5, "Wrong dimension 1");
-        assert_float_eq(result->dims[2], 3, 1e-5, "Wrong dimension 2");
-        assert_float_eq(result->dims[3], 2, 1e-5, "Wrong dimension 3");
+        assert_double_eq(result->ndims, 4, 1e-5, "Wrong number of dimensions");
+        assert_double_eq(result->dims[0], 2, 1e-5, "Wrong dimension 0");
+        assert_double_eq(result->dims[1], 4, 1e-5, "Wrong dimension 1");
+        assert_double_eq(result->dims[2], 3, 1e-5, "Wrong dimension 2");
+        assert_double_eq(result->dims[3], 2, 1e-5, "Wrong dimension 3");
         
         free(data2);
     }
@@ -471,35 +471,35 @@ void test_edge_cases_comprehensive() {
     {
         int dims[] = {0, 2};
         Tensor* t = tensor_new(2, dims, NULL, 0);
-        assert_float_eq(t == NULL ? 1.0f : 0.0f, 1.0f, 1e-5, "Should reject zero-size dimension");
+        assert_double_eq(t == NULL ? 1.0f : 0.0f, 1.0f, 1e-5, "Should reject zero-size dimension");
     }
     
     // Test negative dimension
     {
         int dims[] = {2, -1};
         Tensor* t = tensor_new(2, dims, NULL, 0);
-        assert_float_eq(t == NULL ? 1.0f : 0.0f, 1.0f, 1e-5, "Should reject negative dimension");
+        assert_double_eq(t == NULL ? 1.0f : 0.0f, 1.0f, 1e-5, "Should reject negative dimension");
     }
     
     // Test zero dimensions
     {
         int dims[] = {1};
         Tensor* t = tensor_new(0, dims, NULL, 0);
-        assert_float_eq(t == NULL ? 1.0f : 0.0f, 1.0f, 1e-5, "Should reject zero dimensions");
+        assert_double_eq(t == NULL ? 1.0f : 0.0f, 1.0f, 1e-5, "Should reject zero dimensions");
     }
     
     // Test NULL dims
     {
         Tensor* t = tensor_new(1, NULL, NULL, 0);
-        assert_float_eq(t == NULL ? 1.0f : 0.0f, 1.0f, 1e-5, "Should reject NULL dims");
+        assert_double_eq(t == NULL ? 1.0f : 0.0f, 1.0f, 1e-5, "Should reject NULL dims");
     }
     
     // Test maximum dimension size
     {
         int dims[] = {1, MAX_TAPE};
-        float* data = malloc(MAX_TAPE * sizeof(float));
+        double* data = malloc(MAX_TAPE * sizeof(double));
         Tensor* t = tensor_new(2, dims, data, 0);
-        assert_float_eq(t != NULL ? 1.0f : 0.0f, 1.0f, 1e-5, "Should handle maximum size");
+        assert_double_eq(t != NULL ? 1.0f : 0.0f, 1.0f, 1e-5, "Should handle maximum size");
         free(data);
     }
     
@@ -507,31 +507,31 @@ void test_edge_cases_comprehensive() {
     {
         int dims1[] = {2, 3};
         int dims2[] = {2, 2};
-        float data1[] = {1, 2, 3, 4, 5, 6};
-        float data2[] = {1, 2, 3, 4};
+        double data1[] = {1, 2, 3, 4, 5, 6};
+        double data2[] = {1, 2, 3, 4};
         
         Tensor* t1 = tensor_new(2, dims1, data1, 0);
         Tensor* t2 = tensor_new(2, dims2, data2, 0);
         Tensor* result = tensor_add(t1, t2);
-        assert_float_eq(result == NULL ? 1.0f : 0.0f, 1.0f, 1e-5, "Should reject invalid broadcasting");
+        assert_double_eq(result == NULL ? 1.0f : 0.0f, 1.0f, 1e-5, "Should reject invalid broadcasting");
     }
     
     // Test single-element broadcasting
     {
         int dims1[] = {1};
         int dims2[] = {2, 2};
-        float data1[] = {5};
-        float data2[] = {1, 2, 3, 4};
+        double data1[] = {5};
+        double data2[] = {1, 2, 3, 4};
         
         Tensor* t1 = tensor_new(1, dims1, data1, 0);
         Tensor* t2 = tensor_new(2, dims2, data2, 0);
         Tensor* result = tensor_add(t1, t2);
-        assert_float_eq(result != NULL ? 1.0f : 0.0f, 1.0f, 1e-5, "Should allow scalar broadcasting");
+        assert_double_eq(result != NULL ? 1.0f : 0.0f, 1.0f, 1e-5, "Should allow scalar broadcasting");
         if (result) {
-            assert_float_eq(result->data[0], 6.0f, 1e-5, "Incorrect scalar broadcasting result");
-            assert_float_eq(result->data[1], 7.0f, 1e-5, "Incorrect scalar broadcasting result");
-            assert_float_eq(result->data[2], 8.0f, 1e-5, "Incorrect scalar broadcasting result");
-            assert_float_eq(result->data[3], 9.0f, 1e-5, "Incorrect scalar broadcasting result");
+            assert_double_eq(result->data[0], 6.0f, 1e-5, "Incorrect scalar broadcasting result");
+            assert_double_eq(result->data[1], 7.0f, 1e-5, "Incorrect scalar broadcasting result");
+            assert_double_eq(result->data[2], 8.0f, 1e-5, "Incorrect scalar broadcasting result");
+            assert_double_eq(result->data[3], 9.0f, 1e-5, "Incorrect scalar broadcasting result");
         }
     }
 }
@@ -618,7 +618,7 @@ void test_memory_leaks() {
     size_t expected_new_tensors = 3;
     
     // Verify the number of new allocations
-    assert_float_eq(registry_len - initial_allocs, expected_new_tensors, 1e-5, "Unexpected number of tensor allocations");
+    assert_double_eq(registry_len - initial_allocs, expected_new_tensors, 1e-5, "Unexpected number of tensor allocations");
 }
 
 #include <pthread.h>
@@ -657,35 +657,35 @@ void test_gradients_comprehensive() {
     {
         printf("Testing MatMul gradient...\n");
         int dims[] = {2, 2};
-        float data1[] = {1.0f, 2.0f, 3.0f, 4.0f};
-        float data2[] = {1.0f, 2.0f, 3.0f, 4.0f};
+        double data1[] = {1.0f, 2.0f, 3.0f, 4.0f};
+        double data2[] = {1.0f, 2.0f, 3.0f, 4.0f};
         
         Tensor* x = tensor_new(2, dims, data1, 1);
         Tensor* y = tensor_new(2, dims, data2, 1);
         Tensor* out = tensor_matmul(x, y);
         
-        float original_output = out->data[0];
+        double original_output = out->data[0];
         out->grad[0] = 1.0f;
         backward();
-        float analytical_grad = x->grad[0];
+        double analytical_grad = x->grad[0];
         
         // Compute numerical gradient
-        float epsilon = 1e-4f;
-        float original_x = x->data[0];
+        double epsilon = 1e-4f;
+        double original_x = x->data[0];
         x->data[0] = original_x + epsilon;
         Tensor* out2 = tensor_matmul(x, y);
-        float numerical_grad = (out2->data[0] - original_output) / epsilon;
+        double numerical_grad = (out2->data[0] - original_output) / epsilon;
         x->data[0] = original_x;  // Restore original value
         
         printf("MatMul - Analytical: %f, Numerical: %f\n", analytical_grad, numerical_grad);
         
         // Calculate relative error
-        float abs_diff = fabsf(analytical_grad - numerical_grad);
-        float avg_magnitude = (fabsf(analytical_grad) + fabsf(numerical_grad)) / 2.0f;
-        float relative_error = abs_diff / (avg_magnitude + 1e-10f);
+        double abs_diff = fabsf(analytical_grad - numerical_grad);
+        double avg_magnitude = (fabsf(analytical_grad) + fabsf(numerical_grad)) / 2.0f;
+        double relative_error = abs_diff / (avg_magnitude + 1e-10f);
         
         printf("Relative error: %f\n", relative_error);
-        assert_float_eq(relative_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5, 
+        assert_double_eq(relative_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5, 
                        "MatMul gradient verification failed");
     }
     
@@ -693,28 +693,28 @@ void test_gradients_comprehensive() {
     {
         printf("Testing GELU gradient...\n");
         int dims[] = {1};
-        float data[] = {0.5f};
+        double data[] = {0.5f};
         
         Tensor* x = tensor_new(1, dims, data, 1);
         Tensor* out = tensor_gelu(x);
         
-        float original_output = out->data[0];
+        double original_output = out->data[0];
         out->grad[0] = 1.0f;
         backward();
-        float analytical_grad = x->grad[0];
+        double analytical_grad = x->grad[0];
         
         // Compute numerical gradient
-        float epsilon = 1e-4f;
-        float original_x = x->data[0];
+        double epsilon = 1e-4f;
+        double original_x = x->data[0];
         x->data[0] = original_x + epsilon;
         Tensor* out2 = tensor_gelu(x);
-        float numerical_grad = (out2->data[0] - original_output) / epsilon;
+        double numerical_grad = (out2->data[0] - original_output) / epsilon;
         x->data[0] = original_x;
         
         printf("GELU - Analytical: %f, Numerical: %f\n", analytical_grad, numerical_grad);
-        float relative_error = fabsf(analytical_grad - numerical_grad) / 
+        double relative_error = fabsf(analytical_grad - numerical_grad) / 
                              (fabsf(analytical_grad) + fabsf(numerical_grad) + 1e-10f);
-        assert_float_eq(relative_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5, 
+        assert_double_eq(relative_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5, 
                        "GELU gradient verification failed");
     }
     
@@ -722,28 +722,28 @@ void test_gradients_comprehensive() {
     {
         printf("Testing RMSNorm gradient...\n");
         int dims[] = {2};
-        float data[] = {1.0f, 2.0f};
+        double data[] = {1.0f, 2.0f};
         
         Tensor* x = tensor_new(1, dims, data, 1);
         Tensor* out = tensor_rms_norm(x, 1e-5f);
         
-        float original_output = out->data[0];
+        double original_output = out->data[0];
         out->grad[0] = 1.0f;
         backward();
-        float analytical_grad = x->grad[0];
+        double analytical_grad = x->grad[0];
         
         // Compute numerical gradient
-        float epsilon = 1e-4f;
-        float original_x = x->data[0];
+        double epsilon = 1e-4f;
+        double original_x = x->data[0];
         x->data[0] = original_x + epsilon;
         Tensor* out2 = tensor_rms_norm(x, 1e-5f);
-        float numerical_grad = (out2->data[0] - original_output) / epsilon;
+        double numerical_grad = (out2->data[0] - original_output) / epsilon;
         x->data[0] = original_x;
         
         printf("RMSNorm - Analytical: %f, Numerical: %f\n", analytical_grad, numerical_grad);
-        float relative_error = fabsf(analytical_grad - numerical_grad) / 
+        double relative_error = fabsf(analytical_grad - numerical_grad) / 
                              (fabsf(analytical_grad) + fabsf(numerical_grad) + 1e-10f);
-        assert_float_eq(relative_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5, 
+        assert_double_eq(relative_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5, 
                        "RMSNorm gradient verification failed");
     }
     
@@ -751,37 +751,37 @@ void test_gradients_comprehensive() {
     {
         printf("Testing Softmax gradient...\n");
         int dims[] = {2};
-        float data[] = {1.0f, 2.0f};
+        double data[] = {1.0f, 2.0f};
         
         Tensor* x = tensor_new(1, dims, data, 1);
         Tensor* out = tensor_softmax(x);
         
-        float original_output = out->data[0];
+        double original_output = out->data[0];
         out->grad[0] = 1.0f;
         backward();
-        float analytical_grad = x->grad[0];
+        double analytical_grad = x->grad[0];
         
         // Compute numerical gradient
-        float epsilon = 1e-4f;
-        float original_x = x->data[0];
+        double epsilon = 1e-4f;
+        double original_x = x->data[0];
         x->data[0] = original_x + epsilon;
         Tensor* out2 = tensor_softmax(x);
-        float numerical_grad = (out2->data[0] - original_output) / epsilon;
+        double numerical_grad = (out2->data[0] - original_output) / epsilon;
         x->data[0] = original_x;
         
         printf("Softmax - Analytical: %f, Numerical: %f\n", analytical_grad, numerical_grad);
-        float relative_error = fabsf(analytical_grad - numerical_grad) / 
+        double relative_error = fabsf(analytical_grad - numerical_grad) / 
                              (fabsf(analytical_grad) + fabsf(numerical_grad) + 1e-10f);
-        assert_float_eq(relative_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5, 
+        assert_double_eq(relative_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5, 
                        "Softmax gradient verification failed");
     }
 }
 
-float tensor_grad_max(Tensor* t) {
+double tensor_grad_max(Tensor* t) {
     if (!t || !t->grad) return 0.0f;
-    float max_grad = fabsf(t->grad[0]);
+    double max_grad = fabsf(t->grad[0]);
     for (int i = 1; i < t->size; i++) {
-        float abs_grad = fabsf(t->grad[i]);
+        double abs_grad = fabsf(t->grad[i]);
         if (abs_grad > max_grad) max_grad = abs_grad;
     }
     return max_grad;
@@ -789,13 +789,13 @@ float tensor_grad_max(Tensor* t) {
 
 void print_tensor_stats(Tensor* t, const char* name) {
     if (!t) return;
-    float min_val = t->data[0], max_val = t->data[0], sum = 0.0f;
+    double min_val = t->data[0], max_val = t->data[0], sum = 0.0f;
     for (int i = 0; i < t->size; i++) {
         if (t->data[i] < min_val) min_val = t->data[i];
         if (t->data[i] > max_val) max_val = t->data[i];
         sum += t->data[i];
     }
-    float mean = sum / t->size;
+    double mean = sum / t->size;
     
     printf("%s stats:\n", name);
     printf("  min: %.6f\n", min_val);
@@ -807,9 +807,9 @@ void print_tensor_stats(Tensor* t, const char* name) {
 }
 
 // Helper function for gradient mean
-float tensor_grad_mean(Tensor* t) {
+double tensor_grad_mean(Tensor* t) {
     if (!t || !t->grad) return 0.0f;
-    float sum = 0.0f;
+    double sum = 0.0f;
     for (int i = 0; i < t->size; i++) {
         sum += fabsf(t->grad[i]);
     }
@@ -823,34 +823,34 @@ void test_individual_gradients() {
     {
         printf("\nTesting MatMul gradient...\n");
         int dims[] = {2, 2};
-        float a_data[] = {1.0f, 0.0f, 0.0f, 1.0f};  // Identity matrix
-        float b_data[] = {2.0f, 1.0f, 1.0f, 2.0f};
+        double a_data[] = {1.0f, 0.0f, 0.0f, 1.0f};  // Identity matrix
+        double b_data[] = {2.0f, 1.0f, 1.0f, 2.0f};
         
         Tensor* a = tensor_new(2, dims, a_data, 1);
         Tensor* b = tensor_new(2, dims, b_data, 0);
         Tensor* c = tensor_matmul(a, b);
         
-        float original = c->data[0];
+        double original = c->data[0];
         c->grad[0] = 1.0f;
         backward();
         
         // Compute numerical gradient
-        float epsilon = 1e-5f;
-        float saved = a->data[0];
+        double epsilon = 1e-5f;
+        double saved = a->data[0];
         a->data[0] += epsilon;
         Tensor* c_new = tensor_matmul(a, b);
-        float numerical = (c_new->data[0] - original) / epsilon;
+        double numerical = (c_new->data[0] - original) / epsilon;
         a->data[0] = saved;
         
         printf("MatMul - Analytical: %.6f, Numerical: %.6f\n", a->grad[0], numerical);
         
         // Calculate relative error
-        float rel_error = fabsf(a->grad[0] - numerical) / 
+        double rel_error = fabsf(a->grad[0] - numerical) / 
                          (fabsf(a->grad[0]) + fabsf(numerical) + 1e-10f);
         printf("Relative error: %.6f\n", rel_error);
         
         // Use 1% relative error tolerance
-        assert_float_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
+        assert_double_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
                        "MatMul gradient incorrect");
     }
     
@@ -858,28 +858,28 @@ void test_individual_gradients() {
     {
         printf("\nTesting GELU gradient...\n");
         int dims[] = {1};
-        float x_data[] = {0.5f};
+        double x_data[] = {0.5f};
         
         Tensor* x = tensor_new(1, dims, x_data, 1);
         Tensor* y = tensor_gelu(x);
         
-        float original = y->data[0];
+        double original = y->data[0];
         y->grad[0] = 1.0f;
         backward();
         
         // Compute numerical gradient
-        float epsilon = 1e-5f;
-        float saved = x->data[0];
+        double epsilon = 1e-5f;
+        double saved = x->data[0];
         x->data[0] += epsilon;
         Tensor* y_new = tensor_gelu(x);
-        float numerical = (y_new->data[0] - original) / epsilon;
+        double numerical = (y_new->data[0] - original) / epsilon;
         x->data[0] = saved;
         
         printf("GELU - Analytical: %.6f, Numerical: %.6f\n", x->grad[0], numerical);
-        float rel_error = fabsf(x->grad[0] - numerical) / 
+        double rel_error = fabsf(x->grad[0] - numerical) / 
                          (fabsf(x->grad[0]) + fabsf(numerical) + 1e-10f);
         printf("Relative error: %.6f\n", rel_error);
-        assert_float_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
+        assert_double_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
                        "GELU gradient incorrect");
     }
     
@@ -887,28 +887,28 @@ void test_individual_gradients() {
     {
         printf("\nTesting RMSNorm gradient...\n");
         int dims[] = {2};
-        float x_data[] = {1.0f, 2.0f};
+        double x_data[] = {1.0f, 2.0f};
         
         Tensor* x = tensor_new(1, dims, x_data, 1);
         Tensor* y = tensor_rms_norm(x, 1e-5f);
         
-        float original = y->data[0];
+        double original = y->data[0];
         y->grad[0] = 1.0f;
         backward();
         
         // Compute numerical gradient
-        float epsilon = 1e-5f;
-        float saved = x->data[0];
+        double epsilon = 1e-5f;
+        double saved = x->data[0];
         x->data[0] += epsilon;
         Tensor* y_new = tensor_rms_norm(x, 1e-5f);
-        float numerical = (y_new->data[0] - original) / epsilon;
+        double numerical = (y_new->data[0] - original) / epsilon;
         x->data[0] = saved;
         
         printf("RMSNorm - Analytical: %.6f, Numerical: %.6f\n", x->grad[0], numerical);
-        float rel_error = fabsf(x->grad[0] - numerical) / 
+        double rel_error = fabsf(x->grad[0] - numerical) / 
                          (fabsf(x->grad[0]) + fabsf(numerical) + 1e-10f);
         printf("Relative error: %.6f\n", rel_error);
-        assert_float_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
+        assert_double_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
                        "RMSNorm gradient incorrect");
     }
     
@@ -916,30 +916,30 @@ void test_individual_gradients() {
     {
         printf("\nTesting simple operation chain...\n");
         int dims[] = {2};
-        float x_data[] = {0.5f, 0.5f};
+        double x_data[] = {0.5f, 0.5f};
         
         Tensor* x = tensor_new(1, dims, x_data, 1);
         Tensor* y = tensor_gelu(x);
         Tensor* z = tensor_rms_norm(y, 1e-5f);
         
-        float original = z->data[0];
+        double original = z->data[0];
         z->grad[0] = 1.0f;
         backward();
         
         // Compute numerical gradient
-        float epsilon = 1e-5f;
-        float saved = x->data[0];
+        double epsilon = 1e-5f;
+        double saved = x->data[0];
         x->data[0] += epsilon;
         Tensor* y_new = tensor_gelu(x);
         Tensor* z_new = tensor_rms_norm(y_new, 1e-5f);
-        float numerical = (z_new->data[0] - original) / epsilon;
+        double numerical = (z_new->data[0] - original) / epsilon;
         x->data[0] = saved;
         
         printf("Chain - Analytical: %.6f, Numerical: %.6f\n", x->grad[0], numerical);
-        float rel_error = fabsf(x->grad[0] - numerical) / 
+        double rel_error = fabsf(x->grad[0] - numerical) / 
                          (fabsf(x->grad[0]) + fabsf(numerical) + 1e-10f);
         printf("Relative error: %.6f\n", rel_error);
-        assert_float_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
+        assert_double_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
                        "Operation chain gradient incorrect");
     }
 }
@@ -950,7 +950,7 @@ void test_gradient_edge_cases() {
     // Test 1: Very large values
     {
         int dims[] = {2};
-        float data[] = {1000.0f, 1000.0f};
+        double data[] = {1000.0f, 1000.0f};
         Tensor* x = tensor_new(1, dims, data, 1);
         Tensor* out = tensor_softmax(x);
         out->grad[0] = 1.0f;
@@ -961,7 +961,7 @@ void test_gradient_edge_cases() {
     // Test 2: Very small values
     {
         int dims[] = {2};
-        float data[] = {1e-6f, 1e-6f};
+        double data[] = {1e-6f, 1e-6f};
         Tensor* x = tensor_new(1, dims, data, 1);
         Tensor* out = tensor_rms_norm(x, 1e-5f);
         out->grad[0] = 1.0f;
@@ -972,7 +972,7 @@ void test_gradient_edge_cases() {
     // Test 3: Mixed scale values
     {
         int dims[] = {3};
-        float data[] = {1e-6f, 1.0f, 1e6f};
+        double data[] = {1e-6f, 1.0f, 1e6f};
         Tensor* x = tensor_new(1, dims, data, 1);
         Tensor* out = tensor_rms_norm(x, 1e-5f);
         out->grad[0] = 1.0f;
@@ -1018,18 +1018,18 @@ void benchmark_gradients() {
 }
 
 typedef struct {
-    float min;
-    float max;
-    float mean;
-    float std;
+    double min;
+    double max;
+    double mean;
+    double std;
 } TensorStats;
 
 TensorStats compute_tensor_stats(Tensor* t) {
     TensorStats stats = {t->data[0], t->data[0], 0.0f, 0.0f};
-    float sum = 0.0f, sum_sq = 0.0f;
+    double sum = 0.0f, sum_sq = 0.0f;
     
     for (int i = 0; i < t->size; i++) {
-        float val = t->data[i];
+        double val = t->data[i];
         stats.min = fminf(stats.min, val);
         stats.max = fmaxf(stats.max, val);
         sum += val;
@@ -1068,11 +1068,11 @@ void test_complex_networks() {
         Tensor* w2 = tensor_new(2, dims, NULL, 1);
         
         // Use He initialization for weights
-        float w_scale = sqrtf(2.0f / dims[0]);
+        double w_scale = sqrtf(2.0f / dims[0]);
         for (int i = 0; i < x->size; i++) {
-            x->data[i] = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * 0.1f;  // Small inputs
-            w1->data[i] = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * w_scale;
-            w2->data[i] = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * w_scale;
+            x->data[i] = ((double)rand() / RAND_MAX * 2.0f - 1.0f) * 0.1f;  // Small inputs
+            w1->data[i] = ((double)rand() / RAND_MAX * 2.0f - 1.0f) * w_scale;
+            w2->data[i] = ((double)rand() / RAND_MAX * 2.0f - 1.0f) * w_scale;
         }
         
         printf("\nInput statistics:\n");
@@ -1106,9 +1106,9 @@ void test_complex_networks() {
         const char* names[] = {"Input", "MatMul1", "GELU", "MatMul2", "Skip Add", "RMSNorm"};
         
         // Store original values for gradient check
-        float* original_input = malloc(x->size * sizeof(float));
-        memcpy(original_input, x->data, x->size * sizeof(float));
-        float original_output = out->data[0];
+        double* original_input = malloc(x->size * sizeof(double));
+        memcpy(original_input, x->data, x->size * sizeof(double));
+        double original_output = out->data[0];
         
         // Backward pass
         printf("\nBackward pass:\n");
@@ -1118,7 +1118,7 @@ void test_complex_networks() {
         print_gradient_flow(layers, 6, names);
         
         // Numerical gradient check with smaller epsilon
-        float epsilon = 1e-6f;  // Smaller epsilon for better accuracy
+        double epsilon = 1e-6f;  // Smaller epsilon for better accuracy
         x->data[0] = original_input[0] + epsilon;
         
         // Recompute forward pass
@@ -1128,13 +1128,13 @@ void test_complex_networks() {
         Tensor* h4_new = tensor_add(h3_new, x);
         Tensor* out_new = tensor_rms_norm(h4_new, 1e-5f);
         
-        float numerical = (out_new->data[0] - original_output) / epsilon;
+        double numerical = (out_new->data[0] - original_output) / epsilon;
         
         // Restore original input
-        memcpy(x->data, original_input, x->size * sizeof(float));
+        memcpy(x->data, original_input, x->size * sizeof(double));
         free(original_input);
         
-        float rel_error = fabsf(x->grad[0] - numerical) / 
+        double rel_error = fabsf(x->grad[0] - numerical) / 
                          (fabsf(x->grad[0]) + fabsf(numerical) + 1e-10f);
         
         printf("\nSkip Connection Gradient Check:\n");
@@ -1144,7 +1144,7 @@ void test_complex_networks() {
         printf("Relative error: %.6f\n", rel_error);
         
         // Use more reasonable tolerance for complex network
-        assert_float_eq(rel_error < 0.1f ? 1.0f : 0.0f, 1.0f, 1e-5,
+        assert_double_eq(rel_error < 0.1f ? 1.0f : 0.0f, 1.0f, 1e-5,
                        "Skip connection gradient incorrect");
     }
 }
@@ -1217,7 +1217,7 @@ void test_numerical_stability_comprehensive() {
     {
         printf("\nTesting extreme values:\n");
         int dims[] = {4};
-        float extreme_data[] = {1e-10f, 1e10f, -1e-10f, -1e10f};
+        double extreme_data[] = {1e-10f, 1e10f, -1e-10f, -1e10f};
         Tensor* x = tensor_new(1, dims, extreme_data, 1);
         
         // Test RMSNorm
@@ -1231,7 +1231,7 @@ void test_numerical_stability_comprehensive() {
                stats.min, stats.max, stats.mean, stats.std);
         
         // Verify output is normalized
-        assert_float_eq(fabsf(stats.std - 1.0f) < 0.1f ? 1.0f : 0.0f, 1.0f, 1e-5,
+        assert_double_eq(fabsf(stats.std - 1.0f) < 0.1f ? 1.0f : 0.0f, 1.0f, 1e-5,
                        "RMSNorm failed to normalize extreme values");
     }
     
@@ -1286,7 +1286,7 @@ void test_transformer_block() {
         Tensor* QK = tensor_matmul(Q, Kt);
         
         // Scale and softmax
-        float scale = 1.0f / sqrtf(d_model);
+        double scale = 1.0f / sqrtf(d_model);
         for (int i = 0; i < QK->size; i++) {
             QK->data[i] *= scale;
         }
@@ -1295,11 +1295,11 @@ void test_transformer_block() {
         // Verify attention properties
         for (int b = 0; b < batch; b++) {
             for (int i = 0; i < seq_len; i++) {
-                float sum = 0;
+                double sum = 0;
                 for (int j = 0; j < seq_len; j++) {
                     sum += attention->data[b*seq_len*seq_len + i*seq_len + j];
                 }
-                assert_float_eq(sum, 1.0f, 1e-5, "Attention weights don't sum to 1");
+                assert_double_eq(sum, 1.0f, 1e-5, "Attention weights don't sum to 1");
             }
         }
         
@@ -1317,8 +1317,8 @@ size_t get_total_memory_usage() {
     for (int i = 0; i < registry_len; i++) {
         Tensor* t = registry[i];
         total += sizeof(Tensor);
-        total += t->size * sizeof(float);  // data
-        if (t->grad) total += t->size * sizeof(float);  // grad
+        total += t->size * sizeof(double);  // data
+        if (t->grad) total += t->size * sizeof(double);  // grad
         total += t->ndims * sizeof(int);  // dims
     }
     return total;
@@ -1335,10 +1335,10 @@ TensorStats compute_tensor_stats_grad(Tensor* t) {
     }
     
     TensorStats stats = {t->grad[0], t->grad[0], 0.0f, 0.0f};
-    float sum = 0.0f, sum_sq = 0.0f;
+    double sum = 0.0f, sum_sq = 0.0f;
     
     for (int i = 0; i < t->size; i++) {
-        float val = t->grad[i];
+        double val = t->grad[i];
         stats.min = fminf(stats.min, val);
         stats.max = fmaxf(stats.max, val);
         sum += val;
@@ -1411,7 +1411,7 @@ void test_transformer_encoder() {
     Tensor* QK = tensor_matmul(Q, K_t);
     
     // Scale
-    float scale = 1.0f / sqrtf(d_head);
+    double scale = 1.0f / sqrtf(d_head);
     for (int i = 0; i < QK->size; i++) {
         QK->data[i] *= scale;
     }
@@ -1450,11 +1450,11 @@ void test_transformer_encoder() {
     for (int b = 0; b < batch_size; b++) {
         for (int h = 0; h < n_head; h++) {
             for (int i = 0; i < seq_len; i++) {
-                float sum = 0;
+                double sum = 0;
                 for (int j = 0; j < seq_len; j++) {
                     sum += attn->data[((b * n_head + h) * seq_len + i) * seq_len + j];
                 }
-                assert_float_eq(sum, 1.0f, 1e-5, "Attention weights don't sum to 1");
+                assert_double_eq(sum, 1.0f, 1e-5, "Attention weights don't sum to 1");
             }
         }
     }
@@ -1530,7 +1530,7 @@ Tensor* compute_self_attention(Tensor* input, Tensor* Wq, Tensor* Wk, Tensor* Wv
     Tensor* QK = tensor_matmul(Q, K_t);
     
     // Scale
-    float scale = 1.0f / sqrtf(d_head);
+    double scale = 1.0f / sqrtf(d_head);
     for (int i = 0; i < QK->size; i++) {
         QK->data[i] *= scale;
     }
@@ -1598,7 +1598,7 @@ Tensor* compute_cross_attention(Tensor* input, Tensor* enc_output, Tensor* Wq, T
     Tensor* QK = tensor_matmul(Q, K_t);
     
     // Scale
-    float scale = 1.0f / sqrtf(d_head);
+    double scale = 1.0f / sqrtf(d_head);
     for (int i = 0; i < QK->size; i++) {
         QK->data[i] *= scale;
     }
@@ -1643,7 +1643,7 @@ void visualize_attention_pattern(Tensor* attn, const char* name, int batch_idx, 
     // Print attention matrix
     for (int i = 0; i < seq_len_q; i++) {
         for (int j = 0; j < seq_len_k; j++) {
-            float value = attn->data[((batch_idx * n_head + head_idx) * seq_len_q + i) * seq_len_k + j];
+            double value = attn->data[((batch_idx * n_head + head_idx) * seq_len_q + i) * seq_len_k + j];
             printf("%6.3f ", value);
         }
         printf("\n");
@@ -1655,19 +1655,19 @@ void check_attention_stats(Tensor* attn, const char* name, int batch_size, int n
                          int seq_len_q, int seq_len_k, int is_causal) {
     printf("\nChecking %s statistics:\n", name);
     
-    float min_val = 1.0f, max_val = 0.0f, avg_sparsity = 0.0f;
+    double min_val = 1.0f, max_val = 0.0f, avg_sparsity = 0.0f;
     int total_positions = 0;
     
     for (int b = 0; b < batch_size; b++) {
         for (int h = 0; h < n_head; h++) {
             for (int i = 0; i < seq_len_q; i++) {
-                float row_sum = 0.0f;
+                double row_sum = 0.0f;
                 int active_positions = 0;
                 
                 // Count non-zero attention weights
                 for (int j = 0; j < seq_len_k; j++) {
                     if (!is_causal || j <= i) {
-                        float value = attn->data[((b * n_head + h) * seq_len_q + i) * seq_len_k + j];
+                        double value = attn->data[((b * n_head + h) * seq_len_q + i) * seq_len_k + j];
                         min_val = fminf(min_val, value);
                         max_val = fmaxf(max_val, value);
                         row_sum += value;
@@ -1676,11 +1676,11 @@ void check_attention_stats(Tensor* attn, const char* name, int batch_size, int n
                 }
                 
                 // Check row sum
-                assert_float_eq(row_sum, 1.0f, 1e-5f, "Attention weights don't sum to 1");
+                assert_double_eq(row_sum, 1.0f, 1e-5f, "Attention weights don't sum to 1");
                 
                 // Calculate sparsity
                 int possible_positions = is_causal ? (i + 1) : seq_len_k;
-                avg_sparsity += (float)active_positions / possible_positions;
+                avg_sparsity += (double)active_positions / possible_positions;
                 total_positions++;
             }
         }
@@ -1781,7 +1781,7 @@ void test_transformer_decoder() {
     Tensor* self_QK = tensor_matmul(self_Q, self_K_t);
     
     // Scale
-    float scale = 1.0f / sqrtf(d_head);
+    double scale = 1.0f / sqrtf(d_head);
     for (int i = 0; i < self_QK->size; i++) {
         self_QK->data[i] *= scale;
     }
@@ -1891,24 +1891,24 @@ check_attention_stats(cross_attn, "Cross-attention", batch_size, n_head,
     {
         printf("\nTesting self-attention gradient:\n");
         int dims[] = {2, 2};
-        float data[] = {1.0f, 0.0f, 0.0f, 1.0f};
+        double data[] = {1.0f, 0.0f, 0.0f, 1.0f};
         Tensor* x = tensor_new(2, dims, data, 1);
         Tensor* w = tensor_new(2, dims, data, 1);
         
         // Forward
         Tensor* out = tensor_matmul(x, w);
-        float original = out->data[0];
+        double original = out->data[0];
         
         // Analytical gradient
         out->grad[0] = 1.0f;
         backward();
-        float analytical = x->grad[0];
+        double analytical = x->grad[0];
         
         // Numerical gradient
-        float epsilon = 1e-5f;
+        double epsilon = 1e-5f;
         x->data[0] += epsilon;
         Tensor* out_new = tensor_matmul(x, w);
-        float numerical = (out_new->data[0] - original) / epsilon;
+        double numerical = (out_new->data[0] - original) / epsilon;
         
         printf("Self-attention component - Analytical: %.6e, Numerical: %.6e\n",
                analytical, numerical);
@@ -1918,24 +1918,24 @@ check_attention_stats(cross_attn, "Cross-attention", batch_size, n_head,
     {
         printf("\nTesting cross-attention gradient:\n");
         int dims[] = {2, 2};
-        float data[] = {1.0f, 0.0f, 0.0f, 1.0f};
+        double data[] = {1.0f, 0.0f, 0.0f, 1.0f};
         Tensor* q = tensor_new(2, dims, data, 1);
         Tensor* k = tensor_new(2, dims, data, 0);
         
         // Forward
         Tensor* qk = tensor_matmul(q, k);
-        float original = qk->data[0];
+        double original = qk->data[0];
         
         // Analytical gradient
         qk->grad[0] = 1.0f;
         backward();
-        float analytical = q->grad[0];
+        double analytical = q->grad[0];
         
         // Numerical gradient
-        float epsilon = 1e-5f;
+        double epsilon = 1e-5f;
         q->data[0] += epsilon;
         Tensor* qk_new = tensor_matmul(q, k);
-        float numerical = (qk_new->data[0] - original) / epsilon;
+        double numerical = (qk_new->data[0] - original) / epsilon;
         
         printf("Cross-attention component - Analytical: %.6e, Numerical: %.6e\n",
                analytical, numerical);
@@ -1955,8 +1955,8 @@ check_attention_stats(cross_attn, "Cross-attention", batch_size, n_head,
         for (int h = 0; h < n_head; h++) {
             for (int i = 0; i < dec_seq_len; i++) {
                 for (int j = i + 1; j < dec_seq_len; j++) {
-                    float attn_value = self_attn->data[((b * n_head + h) * dec_seq_len + i) * dec_seq_len + j];
-                    assert_float_eq(attn_value, 0.0f, 1e-5f, "Self-attention causality violated");
+                    double attn_value = self_attn->data[((b * n_head + h) * dec_seq_len + i) * dec_seq_len + j];
+                    assert_double_eq(attn_value, 0.0f, 1e-5f, "Self-attention causality violated");
                 }
             }
         }
@@ -1967,19 +1967,19 @@ check_attention_stats(cross_attn, "Cross-attention", batch_size, n_head,
     for (int b = 0; b < batch_size; b++) {
         for (int h = 0; h < n_head; h++) {
             for (int i = 0; i < dec_seq_len; i++) {
-                float self_sum = 0.0f, cross_sum = 0.0f;
+                double self_sum = 0.0f, cross_sum = 0.0f;
                 
                 // Self-attention
                 for (int j = 0; j <= i; j++) {
                     self_sum += self_attn->data[((b * n_head + h) * dec_seq_len + i) * dec_seq_len + j];
                 }
-                assert_float_eq(self_sum, 1.0f, 1e-5f, "Self-attention weights don't sum to 1");
+                assert_double_eq(self_sum, 1.0f, 1e-5f, "Self-attention weights don't sum to 1");
                 
                 // Cross-attention
                 for (int j = 0; j < enc_seq_len; j++) {
                     cross_sum += cross_attn->data[((b * n_head + h) * dec_seq_len + i) * enc_seq_len + j];
                 }
-                assert_float_eq(cross_sum, 1.0f, 1e-5f, "Cross-attention weights don't sum to 1");
+                assert_double_eq(cross_sum, 1.0f, 1e-5f, "Cross-attention weights don't sum to 1");
             }
         }
     }
@@ -2035,7 +2035,7 @@ Tensor* compute_decoder_layer(Tensor* input, Tensor* encoder_output, DecoderLaye
     Tensor* self_k_t = tensor_permute(self_k, perm_k, 4);
     Tensor* self_qk = tensor_matmul(self_q, self_k_t);
     
-    float scale = 1.0f / sqrtf(d_head);
+    double scale = 1.0f / sqrtf(d_head);
     for (int i = 0; i < self_qk->size; i++) {
         self_qk->data[i] *= scale;
     }
@@ -2155,18 +2155,18 @@ void test_multilayer_decoder() {
     
     // Initialize with small, controlled values
     for (int i = 0; i < encoder_output->size; i++) {
-        encoder_output->data[i] = ((float)rand() / RAND_MAX - 0.5f) * 0.1f;
+        encoder_output->data[i] = ((double)rand() / RAND_MAX - 0.5f) * 0.1f;
     }
     for (int i = 0; i < decoder_input->size; i++) {
-        decoder_input->data[i] = ((float)rand() / RAND_MAX - 0.5f) * 0.1f;
+        decoder_input->data[i] = ((double)rand() / RAND_MAX - 0.5f) * 0.1f;
     }
     
     // Initialize decoder layers with controlled weights
     DecoderLayer* layers = malloc(n_layers * sizeof(DecoderLayer));
     
     // Weight initialization scale
-    float w_scale = sqrtf(2.0f / d_model) * 0.1f;  // Reduced scale
-    float ff_scale = sqrtf(2.0f / d_ff) * 0.1f;    // Reduced scale
+    double w_scale = sqrtf(2.0f / d_model) * 0.1f;  // Reduced scale
+    double ff_scale = sqrtf(2.0f / d_ff) * 0.1f;    // Reduced scale
     
     int weight_dims[] = {d_model, d_model};
     int ff1_dims[] = {d_model, d_ff};
@@ -2191,7 +2191,7 @@ void test_multilayer_decoder() {
         
         // Initialize with small, controlled values
         for (int i = 0; i < d_model * d_model; i++) {
-            float r = ((float)rand() / RAND_MAX - 0.5f);
+            double r = ((double)rand() / RAND_MAX - 0.5f);
             layers[l].W_self_q->data[i] = r * w_scale;
             layers[l].W_self_k->data[i] = r * w_scale;
             layers[l].W_self_v->data[i] = r * w_scale;
@@ -2203,11 +2203,11 @@ void test_multilayer_decoder() {
         }
         
         for (int i = 0; i < d_model * d_ff; i++) {
-            float r = ((float)rand() / RAND_MAX - 0.5f);
+            double r = ((double)rand() / RAND_MAX - 0.5f);
             layers[l].W_ff1->data[i] = r * ff_scale;
         }
         for (int i = 0; i < d_ff * d_model; i++) {
-            float r = ((float)rand() / RAND_MAX - 0.5f);
+            double r = ((double)rand() / RAND_MAX - 0.5f);
             layers[l].W_ff2->data[i] = r * ff_scale;
         }
     }
@@ -2232,14 +2232,14 @@ void test_multilayer_decoder() {
     printf("\nChecking gradients...\n");
     
     // Store original values
-    float* original_input = malloc(decoder_input->size * sizeof(float));
-    memcpy(original_input, decoder_input->data, decoder_input->size * sizeof(float));
-    float original_output = current->data[0];
+    double* original_input = malloc(decoder_input->size * sizeof(double));
+    memcpy(original_input, decoder_input->data, decoder_input->size * sizeof(double));
+    double original_output = current->data[0];
     
     // Forward gradient
     current->grad[0] = 1.0f;
     backward();
-    float analytical_grad = decoder_input->grad[0];
+    double analytical_grad = decoder_input->grad[0];
     
     printf("Analytical gradient computation complete.\n");
     printf("Analytical gradient: %.6e\n", analytical_grad);
@@ -2250,7 +2250,7 @@ void test_multilayer_decoder() {
     }
     
     // Numerical gradient
-    float epsilon = 1e-5f;
+    double epsilon = 1e-5f;
     decoder_input->data[0] = original_input[0] + epsilon;
     
     // Recompute forward pass
@@ -2261,18 +2261,18 @@ void test_multilayer_decoder() {
                                       n_head, d_head, d_model, d_ff);
     }
     
-    float numerical_grad = (current->data[0] - original_output) / epsilon;
+    double numerical_grad = (current->data[0] - original_output) / epsilon;
     
     printf("Numerical gradient computation complete.\n");
     printf("Numerical gradient: %.6e\n", numerical_grad);
     
     // Restore original input
-    memcpy(decoder_input->data, original_input, decoder_input->size * sizeof(float));
+    memcpy(decoder_input->data, original_input, decoder_input->size * sizeof(double));
     
     // Compare gradients
-    float abs_diff = fabsf(analytical_grad - numerical_grad);
-    float avg_magnitude = (fabsf(analytical_grad) + fabsf(numerical_grad)) / 2.0f;
-    float rel_error = abs_diff / (avg_magnitude + 1e-10f);
+    double abs_diff = fabsf(analytical_grad - numerical_grad);
+    double avg_magnitude = (fabsf(analytical_grad) + fabsf(numerical_grad)) / 2.0f;
+    double rel_error = abs_diff / (avg_magnitude + 1e-10f);
     
     printf("\nGradient comparison:\n");
     printf("Absolute difference: %.6e\n", abs_diff);
@@ -2280,7 +2280,7 @@ void test_multilayer_decoder() {
     printf("Relative error: %.6f\n", rel_error);
     
     // Use more appropriate tolerance for complex network
-    assert_float_eq(rel_error < 0.2f ? 1.0f : 0.0f, 1.0f, 1e-5,
+    assert_double_eq(rel_error < 0.2f ? 1.0f : 0.0f, 1.0f, 1e-5,
                    "Multi-layer decoder gradient verification failed");
     
     printf("\nMulti-layer decoder test passed!\n");
@@ -2301,8 +2301,8 @@ void test_matmul_broadcasting() {
     {
         int dims1[] = {1, 2, 3};  // [1, 2, 3]
         int dims2[] = {2, 3, 4};  // [2, 3, 4]
-        float data1[] = {1,2,3, 4,5,6};
-        float data2[] = {1,2,3,4, 5,6,7,8, 9,10,11,12,
+        double data1[] = {1,2,3, 4,5,6};
+        double data2[] = {1,2,3,4, 5,6,7,8, 9,10,11,12,
                         13,14,15,16, 17,18,19,20, 21,22,23,24};
         
         Tensor* a = tensor_new(3, dims1, data1, 1);
@@ -2313,7 +2313,7 @@ void test_matmul_broadcasting() {
         printf("Output shape: [2,2,4]\n");
         
         // First batch, first row
-        assert_float_eq(c->data[0], 38, 1e-5, "Batch broadcasting failed");
+        assert_double_eq(c->data[0], 38, 1e-5, "Batch broadcasting failed");
     }
     
     // Test 2: Multiple batch dimensions
@@ -2328,11 +2328,11 @@ void test_matmul_broadcasting() {
         printf("Input shape 1: [2,1,2,3], Input shape 2: [1,3,3,4]\n");
         printf("Output shape: [2,3,2,4]\n");
         
-        assert_float_eq(c->ndims, 4, 1e-5, "Wrong number of dimensions");
-        assert_float_eq(c->dims[0], 2, 1e-5, "Wrong batch dimension 0");
-        assert_float_eq(c->dims[1], 3, 1e-5, "Wrong batch dimension 1");
-        assert_float_eq(c->dims[2], 2, 1e-5, "Wrong output dimension M");
-        assert_float_eq(c->dims[3], 4, 1e-5, "Wrong output dimension N");
+        assert_double_eq(c->ndims, 4, 1e-5, "Wrong number of dimensions");
+        assert_double_eq(c->dims[0], 2, 1e-5, "Wrong batch dimension 0");
+        assert_double_eq(c->dims[1], 3, 1e-5, "Wrong batch dimension 1");
+        assert_double_eq(c->dims[2], 2, 1e-5, "Wrong output dimension M");
+        assert_double_eq(c->dims[3], 4, 1e-5, "Wrong output dimension N");
     }
     
     printf("Matrix multiplication broadcasting tests passed!\n");
@@ -2347,40 +2347,40 @@ void test_matmul_broadcasting_gradients() {
         int dims1[] = {1, 2, 3};  // [1, 2, 3]
         int dims2[] = {2, 3, 4};  // [2,3,4]
         
-        float* data1 = malloc(6 * sizeof(float));
-        float* data2 = malloc(24 * sizeof(float));
+        double* data1 = malloc(6 * sizeof(double));
+        double* data2 = malloc(24 * sizeof(double));
         
         // Initialize with controlled values
-        for (int i = 0; i < 6; i++) data1[i] = (float)(i + 1) * 0.1f;
-        for (int i = 0; i < 24; i++) data2[i] = (float)(i + 1) * 0.1f;
+        for (int i = 0; i < 6; i++) data1[i] = (double)(i + 1) * 0.1f;
+        for (int i = 0; i < 24; i++) data2[i] = (double)(i + 1) * 0.1f;
         
         Tensor* a = tensor_new(3, dims1, data1, 1);
         Tensor* b = tensor_new(3, dims2, data2, 1);
         Tensor* c = tensor_matmul(a, b);
         
         // Store original output for gradient checking
-        float original_output = c->data[0];
+        double original_output = c->data[0];
         
         // Compute analytical gradient
         c->grad[0] = 1.0f;
         backward();
-        float analytical_grad = a->grad[0];
+        double analytical_grad = a->grad[0];
         
         // Compute numerical gradient
-        float epsilon = 1e-5f;
-        float saved = a->data[0];
+        double epsilon = 1e-5f;
+        double saved = a->data[0];
         a->data[0] += epsilon;
         Tensor* c_new = tensor_matmul(a, b);
-        float numerical_grad = (c_new->data[0] - original_output) / epsilon;
+        double numerical_grad = (c_new->data[0] - original_output) / epsilon;
         a->data[0] = saved;
         
         printf("Basic broadcasting gradient check:\n");
         printf("Analytical gradient: %.6e\n", analytical_grad);
         printf("Numerical gradient:  %.6e\n", numerical_grad);
-        float rel_error = fabsf(analytical_grad - numerical_grad) / 
+        double rel_error = fabsf(analytical_grad - numerical_grad) / 
                          (fabsf(analytical_grad) + fabsf(numerical_grad) + 1e-10f);
         printf("Relative error: %.6f\n", rel_error);
-        assert_float_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
+        assert_double_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
                        "Basic broadcasting gradient check failed");
         
         free(data1);
@@ -2398,34 +2398,34 @@ void test_matmul_broadcasting_gradients() {
         Tensor* b = tensor_new(4, dims2, NULL, 1);
         
         // Initialize with small, controlled values
-        for (int i = 0; i < a->size; i++) a->data[i] = (float)(i + 1) * 0.01f;
-        for (int i = 0; i < b->size; i++) b->data[i] = (float)(i + 1) * 0.01f;
+        for (int i = 0; i < a->size; i++) a->data[i] = (double)(i + 1) * 0.01f;
+        for (int i = 0; i < b->size; i++) b->data[i] = (double)(i + 1) * 0.01f;
         
         Tensor* c = tensor_matmul(a, b);
         
         // Store original output
-        float original_output = c->data[0];
+        double original_output = c->data[0];
         
         // Compute analytical gradient
         c->grad[0] = 1.0f;
         backward();
-        float analytical_grad = a->grad[0];
+        double analytical_grad = a->grad[0];
         
         // Compute numerical gradient
-        float epsilon = 1e-5f;
-        float saved = a->data[0];
+        double epsilon = 1e-5f;
+        double saved = a->data[0];
         a->data[0] += epsilon;
         Tensor* c_new = tensor_matmul(a, b);
-        float numerical_grad = (c_new->data[0] - original_output) / epsilon;
+        double numerical_grad = (c_new->data[0] - original_output) / epsilon;
         a->data[0] = saved;
         
         printf("Multiple batch dimensions gradient check:\n");
         printf("Analytical gradient: %.6e\n", analytical_grad);
         printf("Numerical gradient:  %.6e\n", numerical_grad);
-        float rel_error = fabsf(analytical_grad - numerical_grad) / 
+        double rel_error = fabsf(analytical_grad - numerical_grad) / 
                          (fabsf(analytical_grad) + fabsf(numerical_grad) + 1e-10f);
         printf("Relative error: %.6f\n", rel_error);
-        assert_float_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
+        assert_double_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
                        "Multiple batch dimensions gradient check failed");
     }
     
@@ -2439,8 +2439,8 @@ void test_matmul_broadcasting_gradients() {
         Tensor* b = tensor_new(3, dims2, NULL, 1);
         
         // Initialize with controlled values
-        for (int i = 0; i < a->size; i++) a->data[i] = (float)(i + 1) * 0.1f;
-        for (int i = 0; i < b->size; i++) b->data[i] = (float)(i + 1) * 0.1f;
+        for (int i = 0; i < a->size; i++) a->data[i] = (double)(i + 1) * 0.1f;
+        for (int i = 0; i < b->size; i++) b->data[i] = (double)(i + 1) * 0.1f;
         
         // Multiple operations using the same broadcasted tensor
         Tensor* c1 = tensor_matmul(a, b);
@@ -2456,20 +2456,20 @@ void test_matmul_broadcasting_gradients() {
         printf("First gradient component: %.6f\n", a->grad[0]);
         
         // Verify that gradients are accumulated correctly
-        float epsilon = 1e-5f;
-        float saved = a->data[0];
+        double epsilon = 1e-5f;
+        double saved = a->data[0];
         a->data[0] += epsilon;
         Tensor* c1_new = tensor_matmul(a, b);
         Tensor* c2_new = tensor_matmul(a, b);
         Tensor* c3_new = tensor_add(c1_new, c2_new);
-        float numerical_grad = (c3_new->data[0] - c3->data[0]) / epsilon;
+        double numerical_grad = (c3_new->data[0] - c3->data[0]) / epsilon;
         a->data[0] = saved;
         
         printf("Numerical accumulated gradient: %.6f\n", numerical_grad);
-        float rel_error = fabsf(a->grad[0] - numerical_grad) / 
+        double rel_error = fabsf(a->grad[0] - numerical_grad) / 
                          (fabsf(a->grad[0]) + fabsf(numerical_grad) + 1e-10f);
         printf("Relative error: %.6f\n", rel_error);
-        assert_float_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
+        assert_double_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
                        "Gradient accumulation check failed");
     }
 
@@ -2483,42 +2483,42 @@ void test_matmul_broadcasting_gradients() {
         Tensor* b = tensor_new(6, dims2, NULL, 1);
         
         // Initialize with controlled values
-        float scale = 0.01f;  // Small scale to prevent overflow
-        for (int i = 0; i < a->size; i++) a->data[i] = ((float)i) * scale;
-        for (int i = 0; i < b->size; i++) b->data[i] = ((float)(i + 1)) * scale;
+        double scale = 0.01f;  // Small scale to prevent overflow
+        for (int i = 0; i < a->size; i++) a->data[i] = ((double)i) * scale;
+        for (int i = 0; i < b->size; i++) b->data[i] = ((double)(i + 1)) * scale;
         
         Tensor* c = tensor_matmul(a, b);
         printf("Output shape should be: [2,4,3,3,4,6]\n");
         
         // Verify output shape
-        assert_float_eq(c->ndims, 6, 1e-5, "Wrong number of dimensions");
-        assert_float_eq(c->dims[0], 2, 1e-5, "Wrong dimension 0");
-        assert_float_eq(c->dims[1], 4, 1e-5, "Wrong dimension 1");
-        assert_float_eq(c->dims[2], 3, 1e-5, "Wrong dimension 2");
-        assert_float_eq(c->dims[3], 3, 1e-5, "Wrong dimension 3");
-        assert_float_eq(c->dims[4], 4, 1e-5, "Wrong dimension 4");
-        assert_float_eq(c->dims[5], 6, 1e-5, "Wrong dimension 5");
+        assert_double_eq(c->ndims, 6, 1e-5, "Wrong number of dimensions");
+        assert_double_eq(c->dims[0], 2, 1e-5, "Wrong dimension 0");
+        assert_double_eq(c->dims[1], 4, 1e-5, "Wrong dimension 1");
+        assert_double_eq(c->dims[2], 3, 1e-5, "Wrong dimension 2");
+        assert_double_eq(c->dims[3], 3, 1e-5, "Wrong dimension 3");
+        assert_double_eq(c->dims[4], 4, 1e-5, "Wrong dimension 4");
+        assert_double_eq(c->dims[5], 6, 1e-5, "Wrong dimension 5");
         
         // Gradient check
-        float original = c->data[0];
+        double original = c->data[0];
         c->grad[0] = 1.0f;
         backward();
-        float analytical = a->grad[0];
+        double analytical = a->grad[0];
         
-        float epsilon = 1e-5f;
-        float saved = a->data[0];
+        double epsilon = 1e-5f;
+        double saved = a->data[0];
         a->data[0] += epsilon;
         Tensor* c_new = tensor_matmul(a, b);
-        float numerical = (c_new->data[0] - original) / epsilon;
+        double numerical = (c_new->data[0] - original) / epsilon;
         a->data[0] = saved;
         
         printf("Complex broadcasting gradient check:\n");
         printf("Analytical gradient: %.6e\n", analytical);
         printf("Numerical gradient:  %.6e\n", numerical);
-        float rel_error = fabsf(analytical - numerical) / 
+        double rel_error = fabsf(analytical - numerical) / 
                          (fabsf(analytical) + fabsf(numerical) + 1e-10f);
         printf("Relative error: %.6f\n", rel_error);
-        assert_float_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
+        assert_double_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
                        "Complex broadcasting gradient check failed");
     }
     
@@ -2542,28 +2542,28 @@ void test_matmul_broadcasting_gradients() {
         Tensor* d = tensor_matmul(a, b);  // Second path
         Tensor* e = tensor_add(c, d);     // Sum paths
         
-        float original = e->data[0];
+        double original = e->data[0];
         e->grad[0] = 1.0f;
         backward();
-        float analytical = a->grad[0];
+        double analytical = a->grad[0];
         
         // Numerical gradient check
-        float epsilon = 1e-5f;
-        float saved = a->data[0];
+        double epsilon = 1e-5f;
+        double saved = a->data[0];
         a->data[0] += epsilon;
         Tensor* c_new = tensor_matmul(a, b);
         Tensor* d_new = tensor_matmul(a, b);
         Tensor* e_new = tensor_add(c_new, d_new);
-        float numerical = (e_new->data[0] - original) / epsilon;
+        double numerical = (e_new->data[0] - original) / epsilon;
         a->data[0] = saved;
         
         printf("Extreme broadcasting gradient check:\n");
         printf("Analytical gradient: %.6e\n", analytical);
         printf("Numerical gradient:  %.6e\n", numerical);
-        float rel_error = fabsf(analytical - numerical) / 
+        double rel_error = fabsf(analytical - numerical) / 
                          (fabsf(analytical) + fabsf(numerical) + 1e-10f);
         printf("Relative error: %.6f\n", rel_error);
-        assert_float_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
+        assert_double_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
                        "Extreme broadcasting gradient check failed");
     }
     
@@ -2579,36 +2579,36 @@ void test_matmul_broadcasting_gradients() {
         Tensor* c = tensor_new(3, dims3, NULL, 1);
         
         // Initialize with controlled values
-        float scale = 0.01f;
-        for (int i = 0; i < a->size; i++) a->data[i] = ((float)i + 1) * scale;
-        for (int i = 0; i < b->size; i++) b->data[i] = ((float)i + 1) * scale;
-        for (int i = 0; i < c->size; i++) c->data[i] = ((float)i + 1) * scale;
+        double scale = 0.01f;
+        for (int i = 0; i < a->size; i++) a->data[i] = ((double)i + 1) * scale;
+        for (int i = 0; i < b->size; i++) b->data[i] = ((double)i + 1) * scale;
+        for (int i = 0; i < c->size; i++) c->data[i] = ((double)i + 1) * scale;
         
         // Create chain: (A @ B) @ C
         Tensor* ab = tensor_matmul(a, b);
         Tensor* abc = tensor_matmul(ab, c);
         
-        float original = abc->data[0];
+        double original = abc->data[0];
         abc->grad[0] = 1.0f;
         backward();
-        float analytical = a->grad[0];
+        double analytical = a->grad[0];
         
         // Numerical gradient
-        float epsilon = 1e-5f;
-        float saved = a->data[0];
+        double epsilon = 1e-5f;
+        double saved = a->data[0];
         a->data[0] += epsilon;
         Tensor* ab_new = tensor_matmul(a, b);
         Tensor* abc_new = tensor_matmul(ab_new, c);
-        float numerical = (abc_new->data[0] - original) / epsilon;
+        double numerical = (abc_new->data[0] - original) / epsilon;
         a->data[0] = saved;
         
         printf("Chain broadcasting gradient check:\n");
         printf("Analytical gradient: %.6e\n", analytical);
         printf("Numerical gradient:  %.6e\n", numerical);
-        float rel_error = fabsf(analytical - numerical) / 
+        double rel_error = fabsf(analytical - numerical) / 
                          (fabsf(analytical) + fabsf(numerical) + 1e-10f);
         printf("Relative error: %.6f\n", rel_error);
-        assert_float_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
+        assert_double_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
                        "Chain broadcasting gradient check failed");
     }
 
@@ -2624,36 +2624,36 @@ void test_matmul_broadcasting_gradients() {
         Tensor* c = tensor_new(3, dims3, NULL, 1);
         
         // Initialize with controlled values
-        float scale = 0.01f;
-        for (int i = 0; i < a->size; i++) a->data[i] = ((float)i + 1) * scale;
-        for (int i = 0; i < b->size; i++) b->data[i] = ((float)i + 1) * scale;
-        for (int i = 0; i < c->size; i++) c->data[i] = ((float)i + 1) * scale;
+        double scale = 0.01f;
+        for (int i = 0; i < a->size; i++) a->data[i] = ((double)i + 1) * scale;
+        for (int i = 0; i < b->size; i++) b->data[i] = ((double)i + 1) * scale;
+        for (int i = 0; i < c->size; i++) c->data[i] = ((double)i + 1) * scale;
         
         // Create mixed operation: (A @ B) * C
         Tensor* ab = tensor_matmul(a, b);
         Tensor* result = tensor_hadamard(ab, c);
         
-        float original = result->data[0];
+        double original = result->data[0];
         result->grad[0] = 1.0f;
         backward();
-        float analytical = a->grad[0];
+        double analytical = a->grad[0];
         
         // Numerical gradient
-        float epsilon = 1e-5f;
-        float saved = a->data[0];
+        double epsilon = 1e-5f;
+        double saved = a->data[0];
         a->data[0] += epsilon;
         Tensor* ab_new = tensor_matmul(a, b);
         Tensor* result_new = tensor_hadamard(ab_new, c);
-        float numerical = (result_new->data[0] - original) / epsilon;
+        double numerical = (result_new->data[0] - original) / epsilon;
         a->data[0] = saved;
         
         printf("Mixed operations gradient check:\n");
         printf("Analytical gradient: %.6e\n", analytical);
         printf("Numerical gradient:  %.6e\n", numerical);
-        float rel_error = fabsf(analytical - numerical) / 
+        double rel_error = fabsf(analytical - numerical) / 
                         (fabsf(analytical) + fabsf(numerical) + 1e-10f);
         printf("Relative error: %.6f\n", rel_error);
-        assert_float_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
+        assert_double_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
                     "Mixed operations gradient check failed");
     }
     
@@ -2701,8 +2701,8 @@ int main() {
     print_memory_usage("after medium benchmark");
     
     // Only run large benchmark if memory allows
-    size_t estimated_memory = (size_t)1024 * 1024 * 3 * sizeof(float);
-    if (estimated_memory < MAX_TAPE * sizeof(float)) {
+    size_t estimated_memory = (size_t)1024 * 1024 * 3 * sizeof(double);
+    if (estimated_memory < MAX_TAPE * sizeof(double)) {
         benchmark_operations(512);   // Large
         print_memory_usage("after large benchmark");
     } else {
