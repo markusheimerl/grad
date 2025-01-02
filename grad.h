@@ -137,24 +137,90 @@ Tensor* tensor_add(Tensor* a, Tensor* b) { return tensor_op(a, b, ADD); }
 Tensor* tensor_hadamard(Tensor* a, Tensor* b) { return tensor_op(a, b, HADAMARD); }
 
 Tensor* tensor_matmul(Tensor* a, Tensor* b) {
-    if (!a || !b || a->dims[a->ndims-1] != b->dims[b->ndims-2]) return NULL;
-    int max_d = fmax(a->ndims, b->ndims), dims[32];
-    memcpy(dims, (a->ndims > b->ndims ? a : b)->dims, (max_d - 2) * sizeof(int));
-    dims[max_d-2] = a->dims[a->ndims-2];
-    dims[max_d-1] = b->dims[b->ndims-1];
+    if (!a || !b) return NULL;
     
-    Tensor* r = tensor_new(max_d, dims, NULL, a->requires_grad || b->requires_grad);
-    int M = a->dims[a->ndims-2], N = b->dims[b->ndims-1], K = a->dims[a->ndims-1];
-    int batch = r->size / (M * N);
+    // Check if last two dimensions are compatible for matrix multiplication
+    if (a->dims[a->ndims-1] != b->dims[b->ndims-2]) return NULL;
     
-    for (int n = 0; n < batch; n++)
-        for (int i = 0; i < M; i++)
+    // Get matrix dimensions
+    int M = a->dims[a->ndims-2];
+    int K = a->dims[a->ndims-1];
+    int N = b->dims[b->ndims-1];
+    
+    // Calculate batch dimensions
+    int a_batch_dims = a->ndims - 2;
+    int b_batch_dims = b->ndims - 2;
+    int max_batch_dims = fmax(a_batch_dims, b_batch_dims);
+    
+    // Create output dimensions array
+    int out_dims[32];  // Assuming max dimensions is 32
+    int out_ndims = max_batch_dims + 2;
+    
+    // Handle batch dimensions
+    int total_batch = 1;
+    for (int i = 0; i < max_batch_dims; i++) {
+        int a_dim = (i < a_batch_dims) ? a->dims[i] : 1;
+        int b_dim = (i < b_batch_dims) ? b->dims[i] : 1;
+        
+        // Check if dimensions are compatible for broadcasting
+        if (a_dim != b_dim && a_dim != 1 && b_dim != 1) return NULL;
+        
+        out_dims[i] = fmax(a_dim, b_dim);
+        total_batch *= out_dims[i];
+    }
+    
+    // Add matrix dimensions
+    out_dims[max_batch_dims] = M;
+    out_dims[max_batch_dims + 1] = N;
+    
+    // Create output tensor
+    Tensor* r = tensor_new(out_ndims, out_dims, NULL, a->requires_grad || b->requires_grad);
+    if (!r) return NULL;
+    
+    // Calculate strides for batch dimensions
+    int a_strides[32], b_strides[32];
+    int a_stride = M * K, b_stride = K * N;
+    
+    for (int i = a_batch_dims - 1; i >= 0; i--) {
+        a_strides[i] = a_stride;
+        a_stride *= a->dims[i];
+    }
+    
+    b_stride = K * N;
+    for (int i = b_batch_dims - 1; i >= 0; i--) {
+        b_strides[i] = b_stride;
+        b_stride *= b->dims[i];
+    }
+    
+    // Perform batched matrix multiplication
+    for (int batch = 0; batch < total_batch; batch++) {
+        // Calculate indices for this batch
+        int a_offset = 0, b_offset = 0;
+        int tmp = batch;
+        
+        for (int i = 0; i < max_batch_dims; i++) {
+            int dim_idx = tmp / (total_batch / out_dims[i]);
+            tmp %= (total_batch / out_dims[i]);
+            
+            if (i < a_batch_dims) {
+                a_offset += (a->dims[i] == 1 ? 0 : dim_idx) * a_strides[i];
+            }
+            if (i < b_batch_dims) {
+                b_offset += (b->dims[i] == 1 ? 0 : dim_idx) * b_strides[i];
+            }
+        }
+        
+        // Perform matrix multiplication for this batch
+        for (int i = 0; i < M; i++) {
             for (int j = 0; j < N; j++) {
                 float sum = 0;
-                for (int k = 0; k < K; k++)
-                    sum += a->data[n*M*K + i*K + k] * b->data[n*K*N + k*N + j];
-                r->data[n*M*N + i*N + j] = sum;
+                for (int k = 0; k < K; k++) {
+                    sum += a->data[a_offset + i*K + k] * b->data[b_offset + k*N + j];
+                }
+                r->data[batch*M*N + i*N + j] = sum;
             }
+        }
+    }
     
     if (r->requires_grad) tape[tape_len++] = (TapeEntry){MATMUL, r, a, b, NULL};
     return r;
@@ -304,28 +370,71 @@ void backward() {
                 
             case MATMUL: {
                 int M = a->dims[a->ndims-2], K = a->dims[a->ndims-1], N = b->dims[b->ndims-1];
-                int batch = r->size/(M*N);
+                int a_batch_dims = a->ndims - 2;
+                int b_batch_dims = b->ndims - 2;
+                int r_batch_dims = r->ndims - 2;
                 
-                for (int n = 0; n < batch; n++) {
+                // Calculate total batch size
+                int total_batch = 1;
+                for (int i = 0; i < r_batch_dims; i++) {
+                    total_batch *= r->dims[i];
+                }
+                
+                // Calculate strides for batch dimensions
+                int a_strides[32] = {0}, b_strides[32] = {0};
+                int a_stride = M * K, b_stride = K * N;
+                
+                for (int i = a_batch_dims - 1; i >= 0; i--) {
+                    a_strides[i] = a_stride;
+                    a_stride *= a->dims[i];
+                }
+                
+                for (int i = b_batch_dims - 1; i >= 0; i--) {
+                    b_strides[i] = b_stride;
+                    b_stride *= b->dims[i];
+                }
+                
+                // For each batch
+                for (int batch = 0; batch < total_batch; batch++) {
+                    // Calculate batch offsets
+                    int a_offset = 0, b_offset = 0;
+                    int tmp = batch;
+                    
+                    for (int i = 0; i < r_batch_dims; i++) {
+                        int dim_idx = tmp / (total_batch / r->dims[i]);
+                        tmp %= (total_batch / r->dims[i]);
+                        
+                        if (i < a_batch_dims) {
+                            a_offset += (a->dims[i] == 1 ? 0 : dim_idx) * a_strides[i];
+                        }
+                        if (i < b_batch_dims) {
+                            b_offset += (b->dims[i] == 1 ? 0 : dim_idx) * b_strides[i];
+                        }
+                    }
+                    
+                    // Compute gradients for this batch
                     if (a->requires_grad) {
                         for (int i = 0; i < M; i++) {
                             for (int k = 0; k < K; k++) {
                                 float sum = 0.0f;
                                 for (int j = 0; j < N; j++) {
-                                    sum += r->grad[n*M*N + i*N + j] * b->data[n*K*N + k*N + j];
+                                    sum += r->grad[batch*M*N + i*N + j] * 
+                                        b->data[b_offset + k*N + j];
                                 }
-                                a->grad[n*M*K + i*K + k] += sum;
+                                a->grad[a_offset + i*K + k] += sum;
                             }
                         }
                     }
+                    
                     if (b->requires_grad) {
                         for (int k = 0; k < K; k++) {
                             for (int j = 0; j < N; j++) {
                                 float sum = 0.0f;
                                 for (int i = 0; i < M; i++) {
-                                    sum += r->grad[n*M*N + i*N + j] * a->data[n*M*K + i*K + k];
+                                    sum += r->grad[batch*M*N + i*N + j] * 
+                                        a->data[a_offset + i*K + k];
                                 }
-                                b->grad[n*K*N + k*N + j] += sum;
+                                b->grad[b_offset + k*N + j] += sum;
                             }
                         }
                     }

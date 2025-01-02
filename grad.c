@@ -2294,6 +2294,372 @@ void test_multilayer_decoder() {
     }
 }
 
+void test_matmul_broadcasting() {
+    printf("Testing matrix multiplication broadcasting...\n");
+    
+    // Test 1: Basic batch broadcasting
+    {
+        int dims1[] = {1, 2, 3};  // [1, 2, 3]
+        int dims2[] = {2, 3, 4};  // [2, 3, 4]
+        float data1[] = {1,2,3, 4,5,6};
+        float data2[] = {1,2,3,4, 5,6,7,8, 9,10,11,12,
+                        13,14,15,16, 17,18,19,20, 21,22,23,24};
+        
+        Tensor* a = tensor_new(3, dims1, data1, 1);
+        Tensor* b = tensor_new(3, dims2, data2, 1);
+        Tensor* c = tensor_matmul(a, b);
+        
+        printf("Input shape 1: [1,2,3], Input shape 2: [2,3,4]\n");
+        printf("Output shape: [2,2,4]\n");
+        
+        // First batch, first row
+        assert_float_eq(c->data[0], 38, 1e-5, "Batch broadcasting failed");
+    }
+    
+    // Test 2: Multiple batch dimensions
+    {
+        int dims1[] = {2, 1, 2, 3};  // [2, 1, 2, 3]
+        int dims2[] = {1, 3, 3, 4};  // [1, 3, 3, 4]
+        
+        Tensor* a = tensor_randn(4, dims1, 1);
+        Tensor* b = tensor_randn(4, dims2, 1);
+        Tensor* c = tensor_matmul(a, b);
+        
+        printf("Input shape 1: [2,1,2,3], Input shape 2: [1,3,3,4]\n");
+        printf("Output shape: [2,3,2,4]\n");
+        
+        assert_float_eq(c->ndims, 4, 1e-5, "Wrong number of dimensions");
+        assert_float_eq(c->dims[0], 2, 1e-5, "Wrong batch dimension 0");
+        assert_float_eq(c->dims[1], 3, 1e-5, "Wrong batch dimension 1");
+        assert_float_eq(c->dims[2], 2, 1e-5, "Wrong output dimension M");
+        assert_float_eq(c->dims[3], 4, 1e-5, "Wrong output dimension N");
+    }
+    
+    printf("Matrix multiplication broadcasting tests passed!\n");
+}
+
+void test_matmul_broadcasting_gradients() {
+    printf("\nTesting matrix multiplication broadcasting gradients...\n");
+    
+    // Test 1: Basic batch broadcasting gradient
+    {
+        printf("\nTest 1: Basic batch broadcasting [1,2,3] @ [2,3,4]...\n");
+        int dims1[] = {1, 2, 3};  // [1, 2, 3]
+        int dims2[] = {2, 3, 4};  // [2,3,4]
+        
+        float* data1 = malloc(6 * sizeof(float));
+        float* data2 = malloc(24 * sizeof(float));
+        
+        // Initialize with controlled values
+        for (int i = 0; i < 6; i++) data1[i] = (float)(i + 1) * 0.1f;
+        for (int i = 0; i < 24; i++) data2[i] = (float)(i + 1) * 0.1f;
+        
+        Tensor* a = tensor_new(3, dims1, data1, 1);
+        Tensor* b = tensor_new(3, dims2, data2, 1);
+        Tensor* c = tensor_matmul(a, b);
+        
+        // Store original output for gradient checking
+        float original_output = c->data[0];
+        
+        // Compute analytical gradient
+        c->grad[0] = 1.0f;
+        backward();
+        float analytical_grad = a->grad[0];
+        
+        // Compute numerical gradient
+        float epsilon = 1e-5f;
+        float saved = a->data[0];
+        a->data[0] += epsilon;
+        Tensor* c_new = tensor_matmul(a, b);
+        float numerical_grad = (c_new->data[0] - original_output) / epsilon;
+        a->data[0] = saved;
+        
+        printf("Basic broadcasting gradient check:\n");
+        printf("Analytical gradient: %.6e\n", analytical_grad);
+        printf("Numerical gradient:  %.6e\n", numerical_grad);
+        float rel_error = fabsf(analytical_grad - numerical_grad) / 
+                         (fabsf(analytical_grad) + fabsf(numerical_grad) + 1e-10f);
+        printf("Relative error: %.6f\n", rel_error);
+        assert_float_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
+                       "Basic broadcasting gradient check failed");
+        
+        free(data1);
+        free(data2);
+    }
+    
+    // Test 2: Multiple batch dimensions gradient
+    {
+        printf("\nTest 2: Multiple batch dimensions [2,1,2,3] @ [1,3,3,4]...\n");
+        int dims1[] = {2, 1, 2, 3};  // [2,1,2,3]
+        int dims2[] = {1, 3, 3, 4};  // [1,3,3,4]
+        
+        // Initialize tensors with controlled values
+        Tensor* a = tensor_new(4, dims1, NULL, 1);
+        Tensor* b = tensor_new(4, dims2, NULL, 1);
+        
+        // Initialize with small, controlled values
+        for (int i = 0; i < a->size; i++) a->data[i] = (float)(i + 1) * 0.01f;
+        for (int i = 0; i < b->size; i++) b->data[i] = (float)(i + 1) * 0.01f;
+        
+        Tensor* c = tensor_matmul(a, b);
+        
+        // Store original output
+        float original_output = c->data[0];
+        
+        // Compute analytical gradient
+        c->grad[0] = 1.0f;
+        backward();
+        float analytical_grad = a->grad[0];
+        
+        // Compute numerical gradient
+        float epsilon = 1e-5f;
+        float saved = a->data[0];
+        a->data[0] += epsilon;
+        Tensor* c_new = tensor_matmul(a, b);
+        float numerical_grad = (c_new->data[0] - original_output) / epsilon;
+        a->data[0] = saved;
+        
+        printf("Multiple batch dimensions gradient check:\n");
+        printf("Analytical gradient: %.6e\n", analytical_grad);
+        printf("Numerical gradient:  %.6e\n", numerical_grad);
+        float rel_error = fabsf(analytical_grad - numerical_grad) / 
+                         (fabsf(analytical_grad) + fabsf(numerical_grad) + 1e-10f);
+        printf("Relative error: %.6f\n", rel_error);
+        assert_float_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
+                       "Multiple batch dimensions gradient check failed");
+    }
+    
+    // Test 3: Gradient accumulation with broadcasting
+    {
+        printf("\nTest 3: Gradient accumulation with broadcasting...\n");
+        int dims1[] = {1, 2, 2};  // [1,2,2]
+        int dims2[] = {3, 2, 2};  // [3,2,2]
+        
+        Tensor* a = tensor_new(3, dims1, NULL, 1);
+        Tensor* b = tensor_new(3, dims2, NULL, 1);
+        
+        // Initialize with controlled values
+        for (int i = 0; i < a->size; i++) a->data[i] = (float)(i + 1) * 0.1f;
+        for (int i = 0; i < b->size; i++) b->data[i] = (float)(i + 1) * 0.1f;
+        
+        // Multiple operations using the same broadcasted tensor
+        Tensor* c1 = tensor_matmul(a, b);
+        Tensor* c2 = tensor_matmul(a, b);
+        Tensor* c3 = tensor_add(c1, c2);
+        
+        // Check gradient accumulation
+        c3->grad[0] = 1.0f;
+        backward();
+        
+        // The gradient should accumulate from both paths
+        printf("Gradient accumulation check:\n");
+        printf("First gradient component: %.6f\n", a->grad[0]);
+        
+        // Verify that gradients are accumulated correctly
+        float epsilon = 1e-5f;
+        float saved = a->data[0];
+        a->data[0] += epsilon;
+        Tensor* c1_new = tensor_matmul(a, b);
+        Tensor* c2_new = tensor_matmul(a, b);
+        Tensor* c3_new = tensor_add(c1_new, c2_new);
+        float numerical_grad = (c3_new->data[0] - c3->data[0]) / epsilon;
+        a->data[0] = saved;
+        
+        printf("Numerical accumulated gradient: %.6f\n", numerical_grad);
+        float rel_error = fabsf(a->grad[0] - numerical_grad) / 
+                         (fabsf(a->grad[0]) + fabsf(numerical_grad) + 1e-10f);
+        printf("Relative error: %.6f\n", rel_error);
+        assert_float_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
+                       "Gradient accumulation check failed");
+    }
+
+        // Test 4: Complex multi-dimensional broadcasting with mixed batch sizes
+    {
+        printf("\nTest 4: Complex broadcasting [2,1,3,1,4,5] @ [1,4,1,3,5,6]...\n");
+        int dims1[] = {2, 1, 3, 1, 4, 5};  // [2,1,3,1,4,5]
+        int dims2[] = {1, 4, 1, 3, 5, 6};  // [1,4,1,3,5,6]
+        
+        Tensor* a = tensor_new(6, dims1, NULL, 1);
+        Tensor* b = tensor_new(6, dims2, NULL, 1);
+        
+        // Initialize with controlled values
+        float scale = 0.01f;  // Small scale to prevent overflow
+        for (int i = 0; i < a->size; i++) a->data[i] = ((float)i) * scale;
+        for (int i = 0; i < b->size; i++) b->data[i] = ((float)(i + 1)) * scale;
+        
+        Tensor* c = tensor_matmul(a, b);
+        printf("Output shape should be: [2,4,3,3,4,6]\n");
+        
+        // Verify output shape
+        assert_float_eq(c->ndims, 6, 1e-5, "Wrong number of dimensions");
+        assert_float_eq(c->dims[0], 2, 1e-5, "Wrong dimension 0");
+        assert_float_eq(c->dims[1], 4, 1e-5, "Wrong dimension 1");
+        assert_float_eq(c->dims[2], 3, 1e-5, "Wrong dimension 2");
+        assert_float_eq(c->dims[3], 3, 1e-5, "Wrong dimension 3");
+        assert_float_eq(c->dims[4], 4, 1e-5, "Wrong dimension 4");
+        assert_float_eq(c->dims[5], 6, 1e-5, "Wrong dimension 5");
+        
+        // Gradient check
+        float original = c->data[0];
+        c->grad[0] = 1.0f;
+        backward();
+        float analytical = a->grad[0];
+        
+        float epsilon = 1e-5f;
+        float saved = a->data[0];
+        a->data[0] += epsilon;
+        Tensor* c_new = tensor_matmul(a, b);
+        float numerical = (c_new->data[0] - original) / epsilon;
+        a->data[0] = saved;
+        
+        printf("Complex broadcasting gradient check:\n");
+        printf("Analytical gradient: %.6e\n", analytical);
+        printf("Numerical gradient:  %.6e\n", numerical);
+        float rel_error = fabsf(analytical - numerical) / 
+                         (fabsf(analytical) + fabsf(numerical) + 1e-10f);
+        printf("Relative error: %.6f\n", rel_error);
+        assert_float_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
+                       "Complex broadcasting gradient check failed");
+    }
+    
+    // Test 5: Extreme broadcasting with singleton dimensions
+    {
+        printf("\nTest 5: Extreme broadcasting [1,1,1,2,3] @ [4,5,6,3,4]...\n");
+        int dims1[] = {1, 1, 1, 2, 3};    // [1,1,1,2,3]
+        int dims2[] = {4, 5, 6, 3, 4};    // [4,5,6,3,4]
+        
+        Tensor* a = tensor_new(5, dims1, NULL, 1);
+        Tensor* b = tensor_new(5, dims2, NULL, 1);
+        
+        // Initialize with very specific values
+        for (int i = 0; i < a->size; i++) a->data[i] = 0.01f;
+        for (int i = 0; i < b->size; i++) b->data[i] = 0.01f;
+        
+        Tensor* c = tensor_matmul(a, b);
+        printf("Output shape should be: [4,5,6,2,4]\n");
+        
+        // Multiple gradient paths
+        Tensor* d = tensor_matmul(a, b);  // Second path
+        Tensor* e = tensor_add(c, d);     // Sum paths
+        
+        float original = e->data[0];
+        e->grad[0] = 1.0f;
+        backward();
+        float analytical = a->grad[0];
+        
+        // Numerical gradient check
+        float epsilon = 1e-5f;
+        float saved = a->data[0];
+        a->data[0] += epsilon;
+        Tensor* c_new = tensor_matmul(a, b);
+        Tensor* d_new = tensor_matmul(a, b);
+        Tensor* e_new = tensor_add(c_new, d_new);
+        float numerical = (e_new->data[0] - original) / epsilon;
+        a->data[0] = saved;
+        
+        printf("Extreme broadcasting gradient check:\n");
+        printf("Analytical gradient: %.6e\n", analytical);
+        printf("Numerical gradient:  %.6e\n", numerical);
+        float rel_error = fabsf(analytical - numerical) / 
+                         (fabsf(analytical) + fabsf(numerical) + 1e-10f);
+        printf("Relative error: %.6f\n", rel_error);
+        assert_float_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
+                       "Extreme broadcasting gradient check failed");
+    }
+    
+    // Test 6: Chain of broadcasted operations
+    {
+        printf("\nTest 6: Chain of broadcasted operations...\n");
+        int dims1[] = {1, 2, 3};    // [1,2,3]
+        int dims2[] = {4, 3, 4};    // [4,3,4]
+        int dims3[] = {1, 4, 5};    // [1,4,5]
+        
+        Tensor* a = tensor_new(3, dims1, NULL, 1);
+        Tensor* b = tensor_new(3, dims2, NULL, 1);
+        Tensor* c = tensor_new(3, dims3, NULL, 1);
+        
+        // Initialize with controlled values
+        float scale = 0.01f;
+        for (int i = 0; i < a->size; i++) a->data[i] = ((float)i + 1) * scale;
+        for (int i = 0; i < b->size; i++) b->data[i] = ((float)i + 1) * scale;
+        for (int i = 0; i < c->size; i++) c->data[i] = ((float)i + 1) * scale;
+        
+        // Create chain: (A @ B) @ C
+        Tensor* ab = tensor_matmul(a, b);
+        Tensor* abc = tensor_matmul(ab, c);
+        
+        float original = abc->data[0];
+        abc->grad[0] = 1.0f;
+        backward();
+        float analytical = a->grad[0];
+        
+        // Numerical gradient
+        float epsilon = 1e-5f;
+        float saved = a->data[0];
+        a->data[0] += epsilon;
+        Tensor* ab_new = tensor_matmul(a, b);
+        Tensor* abc_new = tensor_matmul(ab_new, c);
+        float numerical = (abc_new->data[0] - original) / epsilon;
+        a->data[0] = saved;
+        
+        printf("Chain broadcasting gradient check:\n");
+        printf("Analytical gradient: %.6e\n", analytical);
+        printf("Numerical gradient:  %.6e\n", numerical);
+        float rel_error = fabsf(analytical - numerical) / 
+                         (fabsf(analytical) + fabsf(numerical) + 1e-10f);
+        printf("Relative error: %.6f\n", rel_error);
+        assert_float_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
+                       "Chain broadcasting gradient check failed");
+    }
+
+    // Test 7: Mixed operations with broadcasting
+    {
+        printf("\nTest 7: Mixed operations with broadcasting...\n");
+        int dims1[] = {1, 2, 3};    // [1,2,3]
+        int dims2[] = {4, 3, 4};    // [4,3,4]
+        int dims3[] = {4, 1, 4};    // [4,1,4]
+        
+        Tensor* a = tensor_new(3, dims1, NULL, 1);
+        Tensor* b = tensor_new(3, dims2, NULL, 1);
+        Tensor* c = tensor_new(3, dims3, NULL, 1);
+        
+        // Initialize with controlled values
+        float scale = 0.01f;
+        for (int i = 0; i < a->size; i++) a->data[i] = ((float)i + 1) * scale;
+        for (int i = 0; i < b->size; i++) b->data[i] = ((float)i + 1) * scale;
+        for (int i = 0; i < c->size; i++) c->data[i] = ((float)i + 1) * scale;
+        
+        // Create mixed operation: (A @ B) * C
+        Tensor* ab = tensor_matmul(a, b);
+        Tensor* result = tensor_hadamard(ab, c);
+        
+        float original = result->data[0];
+        result->grad[0] = 1.0f;
+        backward();
+        float analytical = a->grad[0];
+        
+        // Numerical gradient
+        float epsilon = 1e-5f;
+        float saved = a->data[0];
+        a->data[0] += epsilon;
+        Tensor* ab_new = tensor_matmul(a, b);
+        Tensor* result_new = tensor_hadamard(ab_new, c);
+        float numerical = (result_new->data[0] - original) / epsilon;
+        a->data[0] = saved;
+        
+        printf("Mixed operations gradient check:\n");
+        printf("Analytical gradient: %.6e\n", analytical);
+        printf("Numerical gradient:  %.6e\n", numerical);
+        float rel_error = fabsf(analytical - numerical) / 
+                        (fabsf(analytical) + fabsf(numerical) + 1e-10f);
+        printf("Relative error: %.6f\n", rel_error);
+        assert_float_eq(rel_error < 0.01f ? 1.0f : 0.0f, 1.0f, 1e-5,
+                    "Mixed operations gradient check failed");
+    }
+    
+    printf("Matrix multiplication broadcasting gradient tests passed!\n");
+}
+
 // Update main to use safer benchmarking
 int main() {
     print_memory_usage("start");
@@ -2350,6 +2716,10 @@ int main() {
     printf("\nTesting decoder...\n");
     test_transformer_decoder();
     test_multilayer_decoder();
+
+    printf("\nTesting matrix multiplication broadcasting...\n");
+    test_matmul_broadcasting();
+    test_matmul_broadcasting_gradients();
     
     printf("\nAll tests passed!\n");
     print_memory_usage("before cleanup");
