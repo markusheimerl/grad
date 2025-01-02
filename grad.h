@@ -12,7 +12,7 @@
 #define MIN_LOG 1e-7f
 #define MAX_EXP 88.0f
 
-typedef enum { MATMUL, ADD, SUB, RESHAPE, SOFTMAX, PERMUTE, RMSNORM, HADAMARD, GELU } OpType;
+typedef enum { MATMUL, ADD, RESHAPE, SOFTMAX, PERMUTE, RMSNORM, HADAMARD, GELU } OpType;
 typedef struct Tensor { float *data, *grad; int *dims, ndims, size, requires_grad; } Tensor;
 typedef struct { OpType op; Tensor *result, *input1, *input2; int *aux_data; } TapeEntry;
 
@@ -40,32 +40,18 @@ Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_g
     return t;
 }
 
-
-// Box-Muller transform to generate normal distribution
 static float randn() {
     float u1 = (float)rand() / RAND_MAX;
     float u2 = (float)rand() / RAND_MAX;
     float r = sqrtf(-2.0f * logf(u1));
-    float theta = 2.0f * M_PI * u2;
-    return r * cosf(theta);
+    return r * cosf(2.0f * M_PI * u2);
 }
 
 Tensor* tensor_randn(int ndims, const int* dims, int requires_grad) {
-    // Initialize random seed if not already done
     static int seed_initialized = 0;
-    if (!seed_initialized) {
-        srand(time(NULL));
-        seed_initialized = 1;
-    }
-    
-    // Create tensor
+    if (!seed_initialized) { srand(time(NULL)); seed_initialized = 1; }
     Tensor* t = tensor_new(ndims, dims, NULL, requires_grad);
-    
-    // Fill with random normal values
-    for (int i = 0; i < t->size; i++) {
-        t->data[i] = randn();
-    }
-    
+    for (int i = 0; i < t->size; i++) t->data[i] = randn();
     return t;
 }
 
@@ -93,14 +79,13 @@ static Tensor* tensor_op(Tensor* a, Tensor* b, OpType op) {
     for (int i = 0; i < r->size; i++) {
         float av = a->data[get_index(i, a->dims, a->ndims, rd, max_d)];
         float bv = b->data[get_index(i, b->dims, b->ndims, rd, max_d)];
-        r->data[i] = op == HADAMARD ? av * bv : (op == ADD ? av + bv : av - bv);
+        r->data[i] = op == HADAMARD ? av * bv : av + bv;
     }
     if (r->requires_grad) tape[tape_len++] = (TapeEntry){op, r, a, b, NULL};
     return r;
 }
 
 Tensor* tensor_add(Tensor* a, Tensor* b) { return tensor_op(a, b, ADD); }
-Tensor* tensor_sub(Tensor* a, Tensor* b) { return tensor_op(a, b, SUB); }
 Tensor* tensor_hadamard(Tensor* a, Tensor* b) { return tensor_op(a, b, HADAMARD); }
 
 Tensor* tensor_matmul(Tensor* a, Tensor* b) {
@@ -195,22 +180,14 @@ Tensor* tensor_permute(Tensor* a, const int* perm, int perm_size) {
 Tensor* tensor_gelu(Tensor* x) {
     if (!x) return NULL;
     Tensor* out = tensor_new(x->ndims, x->dims, NULL, x->requires_grad);
-    
-    // GELU approximation: 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x^3)))
-    const float sqrt_2_pi = 0.7978845608028654f;  // sqrt(2/π)
-    
+    const float sqrt_2_pi = 0.7978845608028654f;
     for (int i = 0; i < x->size; i++) {
         float val = x->data[i];
         float cube = val * val * val;
         float inner = sqrt_2_pi * (val + 0.044715f * cube);
-        float tanh_inner = tanhf(inner);
-        out->data[i] = 0.5f * val * (1.0f + tanh_inner);
+        out->data[i] = 0.5f * val * (1.0f + tanhf(inner));
     }
-    
-    if (out->requires_grad) {
-        tape[tape_len++] = (TapeEntry){GELU, out, x, NULL, NULL};
-    }
-    
+    if (out->requires_grad) tape[tape_len++] = (TapeEntry){GELU, out, x, NULL, NULL};
     return out;
 }
 
@@ -218,7 +195,7 @@ void backward() {
     for (int t = tape_len-1; t >= 0; t--) {
         TapeEntry* e = &tape[t]; Tensor *r = e->result, *a = e->input1, *b = e->input2;
         switch(e->op) {
-            case ADD: case SUB: case HADAMARD:
+            case ADD: case HADAMARD:
                 for (int i = 0; i < r->size; i++) {
                     float grad = r->grad[i];
                     if (a->requires_grad) {
@@ -227,7 +204,7 @@ void backward() {
                     }
                     if (b->requires_grad) {
                         int b_idx = get_index(i, b->dims, b->ndims, r->dims, r->ndims);
-                        b->grad[b_idx] += e->op == HADAMARD ? grad * a->data[get_index(i, a->dims, a->ndims, r->dims, r->ndims)] : (e->op == ADD ? 1 : -1) * grad;
+                        b->grad[b_idx] += e->op == HADAMARD ? grad * a->data[get_index(i, a->dims, a->ndims, r->dims, r->ndims)] : grad;
                     }
                 }
                 break;
@@ -296,14 +273,11 @@ void backward() {
                 if (a->requires_grad) {
                     const float sqrt_2_pi = 0.7978845608028654f;
                     for (int i = 0; i < a->size; i++) {
-                        float x = a->data[i];
-                        float cube = x * x * x;
+                        float x = a->data[i], cube = x * x * x;
                         float inner = sqrt_2_pi * (x + 0.044715f * cube);
                         float tanh_inner = tanhf(inner);
                         float sech_squared = 1.0f - tanh_inner * tanh_inner;
-                        float derivative = 0.5f * (1.0f + tanh_inner + 
-                                                x * sech_squared * sqrt_2_pi * 
-                                                (1.0f + 0.134145f * cube));
+                        float derivative = 0.5f * (1.0f + tanh_inner + x * sech_squared * sqrt_2_pi * (1.0f + 0.134145f * cube));
                         a->grad[i] += r->grad[i] * derivative;
                     }
                 }
