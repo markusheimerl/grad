@@ -29,21 +29,60 @@ static int tape_len = 0;
 static Tensor* registry[MAX_TENSORS];
 static int registry_len = 0;
 
+#define REGISTRY_SAFETY_CHECK() \
+    if (registry_len >= MAX_TENSORS) { \
+        printf("Error: Tensor registry full!\n"); \
+        return NULL; \
+    }
+
 static int get_index(int idx, const int* dims, int ndims, const int* ref_dims, int ref_ndims) {
-    int result = 0, stride = 1;
+    // Calculate coordinates in the reference shape
+    int coords[32];  // Assuming max dimensions is 32
+    int temp = idx;
+    int stride = 1;
+    
+    for (int d = ref_ndims - 1; d >= 0; d--) {
+        coords[d] = (temp / stride) % ref_dims[d];
+        temp -= coords[d] * stride;
+        stride *= ref_dims[d];
+    }
+    
+    // Map these coordinates to the input tensor
+    int result = 0;
+    stride = 1;
+    int offset = ref_ndims - ndims;
+    
     for (int d = ndims - 1; d >= 0; d--) {
-        result += ((idx / stride) % ref_dims[d + ref_ndims - ndims]) * (dims[d] == 1 ? 0 : stride);
+        int ref_d = d + offset;
+        result += (dims[d] == 1 ? 0 : coords[ref_d]) * stride;
         stride *= dims[d];
     }
+    
     return result;
 }
 
 Tensor* tensor_new(int ndims, const int* dims, const float* data, int requires_grad) {
+    // Input validation
+    if (!dims || ndims <= 0) return NULL;
+    
+    // Check registry capacity
+    REGISTRY_SAFETY_CHECK();
+    
+    // Check for zero-size dimensions
+    int size = 1;
+    for (int i = 0; i < ndims; i++) {
+        if (dims[i] <= 0) return NULL;
+        size *= dims[i];
+    }
+    
+    // Check for overflow
+    if (size > MAX_TAPE * MAX_TAPE) return NULL;
+    
+    // Proceed with tensor creation
     Tensor* t = calloc(1, sizeof(Tensor));
     t->ndims = ndims;
     t->dims = malloc(ndims * sizeof(int));
-    t->size = 1;
-    for (int i = 0; i < ndims; i++) t->size *= dims[i];
+    t->size = size;
     memcpy(t->dims, dims, ndims * sizeof(int));
     t->data = malloc(t->size * sizeof(float));
     if (data) memcpy(t->data, data, t->size * sizeof(float));
@@ -201,12 +240,19 @@ Tensor* tensor_rms_norm(Tensor* x, float eps) {
     int last_dim = x->dims[x->ndims - 1], batch_size = x->size / last_dim;
     
     for (int b = 0; b < batch_size; b++) {
+        // Calculate mean square
         float ms = 0.0f;
-        for (int i = 0; i < last_dim; i++)
-            ms += x->data[b * last_dim + i] * x->data[b * last_dim + i];
-        float scale = 1.0f / sqrt(ms/last_dim + eps);
-        for (int i = 0; i < last_dim; i++)
+        for (int i = 0; i < last_dim; i++) {
+            float val = x->data[b * last_dim + i];
+            ms += val * val;
+        }
+        ms /= last_dim;
+        
+        // Normalize
+        float scale = 1.0f / sqrtf(ms + eps);
+        for (int i = 0; i < last_dim; i++) {
             out->data[b * last_dim + i] = x->data[b * last_dim + i] * scale;
+        }
     }
     
     if (out->requires_grad) {
@@ -259,17 +305,31 @@ void backward() {
             case MATMUL: {
                 int M = a->dims[a->ndims-2], K = a->dims[a->ndims-1], N = b->dims[b->ndims-1];
                 int batch = r->size/(M*N);
-                for (int n = 0; n < batch; n++)
-                    for (int i = 0; i < M; i++)
-                        for (int j = 0; j < N; j++) {
-                            float g = r->grad[n*M*N + i*N + j];
+                
+                for (int n = 0; n < batch; n++) {
+                    if (a->requires_grad) {
+                        for (int i = 0; i < M; i++) {
                             for (int k = 0; k < K; k++) {
-                                if (a->requires_grad)
-                                    a->grad[n*M*K + i*K + k] += g * b->data[n*K*N + k*N + j];
-                                if (b->requires_grad)
-                                    b->grad[n*K*N + k*N + j] += g * a->data[n*M*K + i*K + k];
+                                float sum = 0.0f;
+                                for (int j = 0; j < N; j++) {
+                                    sum += r->grad[n*M*N + i*N + j] * b->data[n*K*N + k*N + j];
+                                }
+                                a->grad[n*M*K + i*K + k] += sum;
                             }
                         }
+                    }
+                    if (b->requires_grad) {
+                        for (int k = 0; k < K; k++) {
+                            for (int j = 0; j < N; j++) {
+                                float sum = 0.0f;
+                                for (int i = 0; i < M; i++) {
+                                    sum += r->grad[n*M*N + i*N + j] * a->data[n*M*K + i*K + k];
+                                }
+                                b->grad[n*K*N + k*N + j] += sum;
+                            }
+                        }
+                    }
+                }
                 break;
             }
             
@@ -321,40 +381,53 @@ void backward() {
                 }
                 break;
                 
-            case RMSNORM:
-                if (a->requires_grad) {
-                    float eps = *(float*)e->aux_data;
-                    int last_dim = a->dims[a->ndims-1], batch_size = a->size/last_dim;
-                    for (int b = 0; b < batch_size; b++) {
-                        float ms = 0.0f;
-                        for (int i = 0; i < last_dim; i++)
-                            ms += a->data[b*last_dim+i] * a->data[b*last_dim+i];
-                        ms /= last_dim;
-                        float scale = 1.0f/sqrt(ms+eps);
-                        float sum_grad_times_val = 0.0f;
-                        for (int i = 0; i < last_dim; i++)
-                            sum_grad_times_val += r->grad[b*last_dim+i] * a->data[b*last_dim+i];
-                        for (int i = 0; i < last_dim; i++)
-                            a->grad[b*last_dim+i] += scale * r->grad[b*last_dim+i] -
-                                (scale*scale*scale) * a->data[b*last_dim+i] * sum_grad_times_val/last_dim;
-                    }
-                }
-                break;
-                
-            case GELU:
+            case GELU: {
                 if (a->requires_grad) {
                     const float sqrt_2_pi = 0.7978845608028654f;
                     for (int i = 0; i < a->size; i++) {
-                        float x = a->data[i], cube = x * x * x;
-                        float inner = sqrt_2_pi * (x + 0.044715f * cube);
-                        float tanh_inner = tanhf(inner);
-                        float sech_squared = 1.0f - tanh_inner * tanh_inner;
-                        float derivative = 0.5f * (1.0f + tanh_inner +
-                            x * sech_squared * sqrt_2_pi * (1.0f + 0.134145f * cube));
-                        a->grad[i] += r->grad[i] * derivative;
+                        float x = a->data[i];
+                        float cdf = 0.5f * (1.0f + tanhf(sqrt_2_pi * (x + 0.044715f * x * x * x)));
+                        float pdf = sqrt_2_pi * (1.0f + 0.134145f * x * x) * 
+                                  (1.0f - tanhf(sqrt_2_pi * (x + 0.044715f * x * x * x)) * 
+                                   tanhf(sqrt_2_pi * (x + 0.044715f * x * x * x))) * 0.5f;
+                        a->grad[i] += r->grad[i] * (cdf + x * pdf);
                     }
                 }
                 break;
+            }
+            
+            case RMSNORM: {
+                if (a->requires_grad) {
+                    float eps = *(float*)e->aux_data;
+                    int last_dim = a->dims[a->ndims-1];
+                    int batch_size = a->size/last_dim;
+                    
+                    for (int b = 0; b < batch_size; b++) {
+                        float ms = 0.0f;
+                        for (int i = 0; i < last_dim; i++) {
+                            float val = a->data[b*last_dim + i];
+                            ms += val * val;
+                        }
+                        ms /= last_dim;
+                        
+                        float inv_rms = 1.0f / sqrtf(ms + eps);
+                        float inv_rms_cubed = inv_rms * inv_rms * inv_rms;
+                        
+                        float sum_xdout = 0.0f;
+                        for (int i = 0; i < last_dim; i++) {
+                            sum_xdout += a->data[b*last_dim + i] * r->grad[b*last_dim + i];
+                        }
+                        
+                        for (int i = 0; i < last_dim; i++) {
+                            float x_i = a->data[b*last_dim + i];
+                            float dout_i = r->grad[b*last_dim + i];
+                            a->grad[b*last_dim + i] += inv_rms * dout_i - 
+                                (x_i * sum_xdout * inv_rms_cubed) / last_dim;
+                        }
+                    }
+                }
+                break;
+            }
         }
         free(e->aux_data);
     }
