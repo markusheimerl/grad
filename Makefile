@@ -1,11 +1,13 @@
-CC = gcc
-CFLAGS = -O3 -march=native -ffast-math -funroll-loops -Wall -Wextra
+CC = clang
+CFLAGS = -O3 -march=native -ffast-math
 LDFLAGS = -flto -lm
+
 TARGET = grad.out
+SRC = grad.c
 
 .PHONY: clean run
 
-$(TARGET): grad.c
+$(TARGET): $(SRC)
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
 run: $(TARGET)
