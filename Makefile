@@ -14,4 +14,4 @@ run: $(TARGET)
 	./$(TARGET)
 
 clean:
-	rm -f $(TARGET) *.csv
+	rm -f $(TARGET) *.csv *.bin
