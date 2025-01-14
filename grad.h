@@ -79,7 +79,7 @@ void fwd(Net* net, double* in, double** act) {
     }
 }
 
-void bwd(Net* net, double** act, double* tgt, double** grad) {
+void bwd(Net* net, double** act, double** grad) {
     int last = net->n;
     
     for(int i = last-1; i >= 0; i--) {

@@ -48,7 +48,7 @@ int main() {
             fwd(net, data->X[i], act);
             memcpy(pred[i], act[4], data->fy * sizeof(double));
             loss_gradient(act[4], data->y[i], grad[4], data->fy);
-            bwd(net, act, data->y[i], grad);
+            bwd(net, act, grad);
         }
         
         double loss = compute_loss(pred, data->y, data->n, data->fy);
