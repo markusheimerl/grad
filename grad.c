@@ -18,11 +18,12 @@ int main() {
     printf("Creating synthetic dataset...\n");
     int n = 1000, fx = 4, fy = 3;
     Data* data = synth(n, fx, fy, 0.1);
-    save_csv("data.csv", data);
+    char* filename = save_csv("data.csv", data);
     free_data(data);
     
     printf("Loading dataset...\n");
-    data = load_csv("data.csv");
+    data = load_csv(filename);
+    free(filename);
     if(!data) { printf("Failed to load dataset!\n"); return 1; }
     
     printf("Initializing network...\n");

@@ -5,8 +5,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>
 
 typedef struct { double **X, **y; int n, fx, fy; } Data;
+
+char* get_timestamp_filename(const char* prefix) {
+    time_t now = time(NULL);
+    struct tm *t = localtime(&now);
+    char *filename = malloc(100);
+    strftime(filename, 100, "%Y%m%d_%H%M%S_", t);
+    strcat(filename, prefix);
+    return filename;
+}
 
 Data* synth(int n, int fx, int fy, double noise) {
     Data* d = malloc(sizeof(Data));
@@ -15,14 +25,38 @@ Data* synth(int n, int fx, int fy, double noise) {
     d->y = malloc(n * sizeof(double*));
     double* w = malloc(fx * fy * sizeof(double));
     
+    // Initialize random weights
     for(int i = 0; i < fx*fy; i++) w[i] = (double)rand()/RAND_MAX - 0.5;
+    
     for(int i = 0; i < n; i++) {
         d->X[i] = malloc(fx * sizeof(double));
         d->y[i] = malloc(fy * sizeof(double));
-        for(int j = 0; j < fx; j++) d->X[i][j] = (double)rand()/RAND_MAX - 0.5;
+        
+        // Generate more complex input features
+        for(int j = 0; j < fx; j++) {
+            d->X[i][j] = (double)rand()/RAND_MAX * 2 - 1;
+        }
+        
+        // Generate non-linear outputs
         for(int j = 0; j < fy; j++) {
             d->y[i][j] = 0;
-            for(int k = 0; k < fx; k++) d->y[i][j] += d->X[i][k] * w[k*fy + j];
+            // Basic linear combination
+            for(int k = 0; k < fx; k++) {
+                d->y[i][j] += d->X[i][k] * w[k*fy + j];
+            }
+            // Add non-linear terms
+            if (j == 0) {
+                d->y[i][j] += sin(d->X[i][0] * 3.14159) * 0.5;
+            } else if (j == 1) {
+                d->y[i][j] += exp(-pow(d->X[i][1], 2)) * 0.5;
+            } else {
+                d->y[i][j] += tanh(d->X[i][2]) * 0.5;
+            }
+            
+            // Add cross-terms
+            d->y[i][j] += d->X[i][0] * d->X[i][1] * 0.3;
+            
+            // Add noise
             d->y[i][j] += ((double)rand()/RAND_MAX - 0.5) * noise;
         }
     }
@@ -30,8 +64,9 @@ Data* synth(int n, int fx, int fy, double noise) {
     return d;
 }
 
-void save_csv(const char* f, Data* d) {
-    FILE* fp = fopen(f, "w");
+char* save_csv(const char* f, Data* d) {
+    char* filename = get_timestamp_filename(f);
+    FILE* fp = fopen(filename, "w");
     for(int i = 0; i < d->fx; i++) fprintf(fp, "x%d,", i+1);
     for(int i = 0; i < d->fy; i++) fprintf(fp, "y%d%c", i+1, i==d->fy-1?'\n':',');
     for(int i = 0; i < d->n; i++) {
@@ -39,6 +74,7 @@ void save_csv(const char* f, Data* d) {
         for(int j = 0; j < d->fy; j++) fprintf(fp, "%.6f%c", d->y[i][j], j==d->fy-1?'\n':',');
     }
     fclose(fp);
+    return filename;
 }
 
 Data* load_csv(const char* f) {
