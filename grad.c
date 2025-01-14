@@ -41,11 +41,27 @@ int main() {
     double best_loss = INFINITY, prev_loss = INFINITY;
     for(int e = 0; e < 10; e++) {
         double** pred = malloc(data->n * sizeof(double*));
+        double curr_loss = 0;
+        
         for(int i = 0; i < data->n; i++) {
             pred[i] = malloc(data->fy * sizeof(double));
             fwd(net, data->X[i], act);
             memcpy(pred[i], act[4], data->fy * sizeof(double));
-            bwd(net, act, data->y[i], grad, prev_loss);
+            
+            // Compute output gradients and loss
+            for(int j = 0; j < data->fy; j++) {
+                double diff = act[4][j] - data->y[i][j];
+                grad[4][j] = 2 * diff;
+                curr_loss += diff * diff;
+            }
+            
+            // Adjust learning rate
+            if(curr_loss > prev_loss) net->lr *= 0.95;
+            else net->lr *= 1.05;
+            net->lr = fmax(1e-9, fmin(0.01, net->lr));
+            
+            // Backward pass with pre-computed gradients
+            bwd(net, act, grad);
         }
         
         double loss = compute_loss(pred, data->y, data->n, data->fy);
