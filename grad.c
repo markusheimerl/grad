@@ -11,6 +11,12 @@ double compute_loss(double** pred, double** tgt, int n, int m) {
     return l / (n * m);
 }
 
+void loss_gradient(double* pred, double* tgt, double* grad, int n) {
+    for(int i = 0; i < n; i++) {
+        grad[i] = 2 * (pred[i] - tgt[i]);
+    }
+}
+
 int main() {
     srand(time(NULL));
     
@@ -41,10 +47,18 @@ int main() {
             pred[i] = malloc(data->fy * sizeof(double));
             fwd(net, data->X[i], act);
             memcpy(pred[i], act[4], data->fy * sizeof(double));
-            bwd(net, act, data->y[i], grad, prev_loss);
+            loss_gradient(act[4], data->y[i], grad[4], data->fy);
+            bwd(net, act, data->y[i], grad);
         }
         
         double loss = compute_loss(pred, data->y, data->n, data->fy);
+        
+        // Learning rate scheduling
+        if(loss > prev_loss) net->lr *= 0.95;
+        else net->lr *= 1.05;
+        if(net->lr > 0.01) net->lr = 0.01;
+        if(net->lr < 1e-9) net->lr = 1e-9;
+        
         if(loss < best_loss) best_loss = loss;
         prev_loss = loss;
         
