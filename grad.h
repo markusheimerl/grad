@@ -122,7 +122,7 @@ void bwd(Net* net, double** act, double* tgt, double** grad, double prev_loss) {
 }
 
 void save_weights(Net* net, const char* prefix) {
-    char* filename = get_timestamp_filename(prefix);
+    char* filename;
     FILE* fp = fopen(filename, "wb");
     if(!fp) { free(filename); return; }
     fwrite(&net->n, sizeof(int), 1, fp);

@@ -54,11 +54,12 @@ int main() {
         for(int i = 0; i < data->n; i++) free(pred[i]);
         free(pred);
     }
+
+    char* last_weights = get_timestamp_filename("weights.bin");
     
-    save_weights(net, "weights.bin");
+    save_weights(net, last_weights);
     free_net(net);
     
-    char* last_weights = get_timestamp_filename("weights.bin");
     net = load_weights(last_weights);
     free(last_weights);
     
