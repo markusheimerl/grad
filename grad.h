@@ -14,6 +14,7 @@
 typedef struct {
     int n, *sz;
     double **w, **b, **mw, **mb, **vw, **vb;
+    double lr;
     int step;
 } Net;
 
@@ -56,6 +57,7 @@ Net* init_net(int n, int *sz) {
         net->vw[i] = calloc(ws, sizeof(double));
         net->vb[i] = calloc(sz[i+1], sizeof(double));
     }
+    net->lr = 0.001;
     net->step = 1;
     return net;
 }
@@ -76,10 +78,20 @@ void fwd(Net* net, double* in, double** act) {
     }
 }
 
-void bwd(Net* net, double** act, double* tgt, double** grad, double lr) {
+void bwd(Net* net, double** act, double* tgt, double** grad, double prev_loss) {
     int last = net->n;
-    for(int i = 0; i < net->sz[last]; i++)
-        grad[last][i] = 2 * (act[last][i] - tgt[i]);
+    double curr_loss = 0;
+    
+    for(int i = 0; i < net->sz[last]; i++) {
+        double diff = act[last][i] - tgt[i];
+        grad[last][i] = 2 * diff;
+        curr_loss += diff * diff;
+    }
+    
+    if(curr_loss > prev_loss) net->lr *= 0.95;
+    else net->lr *= 1.05;
+    if(net->lr > 0.01) net->lr = 0.01;
+    if(net->lr < 0.0001) net->lr = 0.0001;
     
     for(int i = last-1; i >= 0; i--) {
         int ni = net->sz[i], no = net->sz[i+1];
@@ -93,8 +105,8 @@ void bwd(Net* net, double** act, double* tgt, double** grad, double lr) {
             for(int k = 0; k < ni; k++)
                 wg[j*ni + k] = grad[i+1][j] * act[i][k];
         
-        adam(net->w[i], wg, net->mw[i], net->vw[i], ni*no, net->step, lr);
-        adam(net->b[i], grad[i+1], net->mb[i], net->vb[i], no, net->step, lr);
+        adam(net->w[i], wg, net->mw[i], net->vw[i], ni*no, net->step, net->lr);
+        adam(net->b[i], grad[i+1], net->mb[i], net->vb[i], no, net->step, net->lr);
         
         if(i > 0) {
             for(int j = 0; j < ni; j++) {
