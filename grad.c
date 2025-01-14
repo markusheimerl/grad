@@ -4,21 +4,18 @@
 double compute_loss(double** pred, double** tgt, int n, int m) {
     double l = 0;
     for(int i = 0; i < n; i++)
-        for(int j = 0; j < m; j++)
-            l += pow(pred[i][j] - tgt[i][j], 2);
+        for(int j = 0; j < m; j++) {
+            double d = pred[i][j] - tgt[i][j];
+            l += d * d;
+        }
     return l / (n * m);
-}
-
-void loss_gradient(double* pred, double* tgt, double* grad, int n) {
-    for(int i = 0; i < n; i++)
-        grad[i] = 2 * (pred[i] - tgt[i]);
 }
 
 int main() {
     srand(time(NULL));
     
     Data* data = synth(1000, 4, 3, 0.1);
-    char* fname = save_csv("data.csv", data, NULL);
+    char* fname = save_csv("data.csv", data);
     free_data(data);
     
     if(!(data = load_csv(fname))) { printf("Load failed!\n"); return 1; }
@@ -27,6 +24,9 @@ int main() {
     int sz[] = {4, 128, 64, 32, 3};
     Net* net = init_net(5, sz);
     
+    printf("\nTraining:\n%-6s %-12s %-8s\n", "Epoch", "Loss", "LR");
+    printf("-------------------------\n");
+    
     double** act = malloc(5 * sizeof(double*));
     double** grad = malloc(5 * sizeof(double*));
     for(int i = 0; i < 5; i++) {
@@ -34,25 +34,18 @@ int main() {
         grad[i] = malloc(sz[i] * sizeof(double));
     }
     
-    printf("\nTraining:\n%-6s %-12s %-8s\n", "Epoch", "Loss", "LR");
-    printf("-------------------------\n");
-    
     double best_loss = INFINITY, prev_loss = INFINITY;
-    for(int e = 0; e < 20; e++) {
+    for(int e = 0; e < 10; e++) {
         double** pred = malloc(data->n * sizeof(double*));
         for(int i = 0; i < data->n; i++) {
             pred[i] = malloc(data->fy * sizeof(double));
             fwd(net, data->X[i], act);
             memcpy(pred[i], act[4], data->fy * sizeof(double));
-            loss_gradient(act[4], data->y[i], grad[4], data->fy);
-            bwd(net, act, grad);
+            bwd(net, act, data->y[i], grad, prev_loss);
         }
         
         double loss = compute_loss(pred, data->y, data->n, data->fy);
-        net->lr *= (loss > prev_loss) ? 0.95 : 1.05;
-        net->lr = fmax(fmin(net->lr, 0.01), 1e-9);
-        
-        best_loss = fmin(loss, best_loss);
+        if(loss < best_loss) best_loss = loss;
         prev_loss = loss;
         
         if(e % 2 == 0 || e == 9)
@@ -61,11 +54,11 @@ int main() {
         for(int i = 0; i < data->n; i++) free(pred[i]);
         free(pred);
     }
-
-    char* last_weights = get_timestamp_filename("weights.bin");
-    save_weights(net, last_weights);
+    
+    save_weights(net, "weights.bin");
     free_net(net);
     
+    char* last_weights = get_timestamp_filename("weights.bin");
     net = load_weights(last_weights);
     free(last_weights);
     

@@ -40,8 +40,7 @@ void init_layer(double **w, double **b, int in, int out) {
 
 Net* init_net(int n, int *sz) {
     Net* net = malloc(sizeof(Net));
-    net->n = n-1; 
-    net->sz = malloc(n * sizeof(int));
+    net->n = n-1; net->sz = malloc(n * sizeof(int));
     memcpy(net->sz, sz, n * sizeof(int));
     
     net->w = malloc((n-1) * sizeof(double*));
@@ -70,21 +69,36 @@ double dlrelu(double x) { return x > 0 ? 1.0 : 0.1; }
 void fwd(Net* net, double* in, double** act) {
     memcpy(act[0], in, net->sz[0] * sizeof(double));
     for(int i = 0; i < net->n; i++) {
-        for(int j = 0; j < net->sz[i+1]; j++) {
+        int ni = net->sz[i], no = net->sz[i+1];
+        for(int j = 0; j < no; j++) {
             act[i+1][j] = net->b[i][j];
-            for(int k = 0; k < net->sz[i]; k++) 
-                act[i+1][j] += net->w[i][j*net->sz[i] + k] * act[i][k];
+            for(int k = 0; k < ni; k++) 
+                act[i+1][j] += net->w[i][j*ni + k] * act[i][k];
             if(i < net->n-1) act[i+1][j] = lrelu(act[i+1][j]);
         }
     }
 }
 
-void bwd(Net* net, double** act, double** grad) {
-    for(int i = net->n-1; i >= 0; i--) {
+void bwd(Net* net, double** act, double* tgt, double** grad, double prev_loss) {
+    int last = net->n;
+    double curr_loss = 0;
+    
+    for(int i = 0; i < net->sz[last]; i++) {
+        double diff = act[last][i] - tgt[i];
+        grad[last][i] = 2 * diff;
+        curr_loss += diff * diff;
+    }
+    
+    if(curr_loss > prev_loss) net->lr *= 0.95;
+    else net->lr *= 1.05;
+    if(net->lr > 0.01) net->lr = 0.01;
+    if(net->lr < 1e-9) net->lr = 1e-9;
+    
+    for(int i = last-1; i >= 0; i--) {
         int ni = net->sz[i], no = net->sz[i+1];
         double* wg = malloc(ni * no * sizeof(double));
         
-        if(i < net->n-1)
+        if(i < last-1)
             for(int j = 0; j < no; j++)
                 grad[i+1][j] *= dlrelu(act[i+1][j]);
         
@@ -107,29 +121,32 @@ void bwd(Net* net, double** act, double** grad) {
     net->step++;
 }
 
-void save_weights(Net* net, const char* filename) {
+void save_weights(Net* net, const char* prefix) {
+    char* filename = get_timestamp_filename(prefix);
     FILE* fp = fopen(filename, "wb");
-    if(!fp) return;
+    if(!fp) { free(filename); return; }
     fwrite(&net->n, sizeof(int), 1, fp);
     fwrite(net->sz, sizeof(int), net->n + 1, fp);
     for(int i = 0; i < net->n; i++) {
-        fwrite(net->w[i], sizeof(double), net->sz[i] * net->sz[i+1], fp);
+        int ws = net->sz[i] * net->sz[i+1];
+        fwrite(net->w[i], sizeof(double), ws, fp);
         fwrite(net->b[i], sizeof(double), net->sz[i+1], fp);
     }
     fclose(fp);
+    free(filename);
 }
 
 Net* load_weights(const char* filename) {
     FILE* fp = fopen(filename, "rb");
     if(!fp) return NULL;
-    int n;
-    fread(&n, sizeof(int), 1, fp);
+    int n; fread(&n, sizeof(int), 1, fp);
     int* sz = malloc((n + 1) * sizeof(int));
     fread(sz, sizeof(int), n + 1, fp);
     Net* net = init_net(n + 1, sz);
     free(sz);
     for(int i = 0; i < net->n; i++) {
-        fread(net->w[i], sizeof(double), net->sz[i] * net->sz[i+1], fp);
+        int ws = net->sz[i] * net->sz[i+1];
+        fread(net->w[i], sizeof(double), ws, fp);
         fread(net->b[i], sizeof(double), net->sz[i+1], fp);
     }
     fclose(fp);
