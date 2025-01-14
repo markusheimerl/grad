@@ -28,14 +28,17 @@ void adam(double *p, double *g, double *m, double *v, int n, int t, double lr) {
     }
 }
 
-void init_layer(double **w, double **b, int in, int out) {
-    *w = malloc(in * out * sizeof(double));
-    *b = calloc(out, sizeof(double));
-    double s = sqrt(2.0/in);
-    for(int i = 0; i < in*out; i++) {
-        double u1 = (double)rand()/RAND_MAX, u2 = (double)rand()/RAND_MAX;
-        (*w)[i] = sqrt(-2*log(u1)) * cos(2*M_PI*u2) * s;
+void save_weights(const char* filename, Net* net) {
+    FILE* fp = fopen(filename, "wb");
+    if(!fp) return;
+    fwrite(&net->n, sizeof(int), 1, fp);
+    fwrite(net->sz, sizeof(int), net->n + 1, fp);
+    for(int i = 0; i < net->n; i++) {
+        int ws = net->sz[i] * net->sz[i+1];
+        fwrite(net->w[i], sizeof(double), ws, fp);
+        fwrite(net->b[i], sizeof(double), net->sz[i+1], fp);
     }
+    fclose(fp);
 }
 
 Net* init_net(int n, int *sz) {
@@ -51,12 +54,18 @@ Net* init_net(int n, int *sz) {
     net->vb = malloc((n-1) * sizeof(double*));
     
     for(int i = 0; i < n-1; i++) {
-        init_layer(&net->w[i], &net->b[i], sz[i], sz[i+1]);
-        int ws = sz[i] * sz[i+1];
-        net->mw[i] = calloc(ws, sizeof(double));
-        net->mb[i] = calloc(sz[i+1], sizeof(double));
-        net->vw[i] = calloc(ws, sizeof(double));
-        net->vb[i] = calloc(sz[i+1], sizeof(double));
+        int in = sz[i], out = sz[i+1];
+        net->w[i] = malloc(in * out * sizeof(double));
+        net->b[i] = calloc(out, sizeof(double));
+        double s = sqrt(2.0/in);
+        for(int j = 0; j < in*out; j++) {
+            double u1 = (double)rand()/RAND_MAX, u2 = (double)rand()/RAND_MAX;
+            net->w[i][j] = sqrt(-2*log(u1)) * cos(2*M_PI*u2) * s;
+        }
+        net->mw[i] = calloc(in*out, sizeof(double));
+        net->mb[i] = calloc(out, sizeof(double));
+        net->vw[i] = calloc(in*out, sizeof(double));
+        net->vb[i] = calloc(out, sizeof(double));
     }
     net->lr = 0.001;
     net->step = 1;
@@ -91,8 +100,7 @@ void bwd(Net* net, double** act, double* tgt, double** grad, double prev_loss) {
     
     if(curr_loss > prev_loss) net->lr *= 0.95;
     else net->lr *= 1.05;
-    if(net->lr > 0.01) net->lr = 0.01;
-    if(net->lr < 1e-9) net->lr = 1e-9;
+    net->lr = fmax(1e-9, fmin(0.01, net->lr));
     
     for(int i = last-1; i >= 0; i--) {
         int ni = net->sz[i], no = net->sz[i+1];
@@ -121,35 +129,23 @@ void bwd(Net* net, double** act, double* tgt, double** grad, double prev_loss) {
     net->step++;
 }
 
-void save_weights(Net* net, const char* prefix) {
-    char* filename = get_timestamp_filename(prefix);
-    FILE* fp = fopen(filename, "wb");
-    if(!fp) { free(filename); return; }
-    fwrite(&net->n, sizeof(int), 1, fp);
-    fwrite(net->sz, sizeof(int), net->n + 1, fp);
-    for(int i = 0; i < net->n; i++) {
-        int ws = net->sz[i] * net->sz[i+1];
-        fwrite(net->w[i], sizeof(double), ws, fp);
-        fwrite(net->b[i], sizeof(double), net->sz[i+1], fp);
-    }
-    fclose(fp);
-    free(filename);
-}
-
 Net* load_weights(const char* filename) {
     FILE* fp = fopen(filename, "rb");
     if(!fp) return NULL;
-    int n; fread(&n, sizeof(int), 1, fp);
+    
+    int n;
+    fread(&n, sizeof(int), 1, fp);
     int* sz = malloc((n + 1) * sizeof(int));
     fread(sz, sizeof(int), n + 1, fp);
+    
     Net* net = init_net(n + 1, sz);
-    free(sz);
     for(int i = 0; i < net->n; i++) {
         int ws = net->sz[i] * net->sz[i+1];
         fread(net->w[i], sizeof(double), ws, fp);
         fread(net->b[i], sizeof(double), net->sz[i+1], fp);
     }
     fclose(fp);
+    free(sz);
     return net;
 }
 
