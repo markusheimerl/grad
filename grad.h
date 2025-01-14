@@ -1,85 +1,123 @@
 #ifndef GRAD_H
 #define GRAD_H
 
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <math.h>
-#include <time.h>
 
-#define BETA1 0.9
-#define BETA2 0.999
-#define EPSILON 1e-8
+#define B1 0.9
+#define B2 0.999
+#define EPS 1e-8
 #define DECAY 0.01
 
-void save_weights(const char* filename, double** params, int* sizes, int num) {
-    FILE *f = fopen(filename, "wb");
-    for(int i = 0; i < num; i++) {
-        fwrite(params[i], sizeof(double), sizes[i], f);
-    }
-    fclose(f);
-}
+typedef struct {
+    int n, *sz;
+    double **w, **b, **mw, **mb, **vw, **vb;
+    int step;
+} Net;
 
-void load_weights(const char* filename, double** params, int* sizes, int num) {
-    FILE *f = fopen(filename, "rb");
-    for(int i = 0; i < num; i++) {
-        fread(params[i], sizeof(double), sizes[i], f);
-    }
-    fclose(f);
-}
-
-void adam_update(double *param, double *grad, double *m, double *v, int size, int step, double learning_rate) {
-    double lr_t = learning_rate * sqrt(1.0 - pow(BETA2, step)) / (1.0 - pow(BETA1, step));
-    for(int i = 0; i < size; i++) {
-        m[i] = BETA1 * m[i] + (1-BETA1) * grad[i];
-        v[i] = BETA2 * v[i] + (1-BETA2) * grad[i] * grad[i];
-        param[i] -= lr_t * (m[i] / (sqrt(v[i]) + EPSILON) + DECAY * param[i]);
+void adam(double *p, double *g, double *m, double *v, int n, int t, double lr) {
+    double lrt = lr * sqrt(1.0 - pow(B2, t)) / (1.0 - pow(B1, t));
+    for(int i = 0; i < n; i++) {
+        m[i] = B1 * m[i] + (1-B1) * g[i];
+        v[i] = B2 * v[i] + (1-B2) * g[i] * g[i];
+        p[i] -= lrt * (m[i] / (sqrt(v[i]) + EPS) + DECAY * p[i]);
     }
 }
 
-double dot(double *v1, double *v2, int n) {
-    double r = 0.0;
-    for (int i = 0; i < n; i++) r += v1[i] * v2[i];
-    return r;
+void init_layer(double **w, double **b, int in, int out) {
+    *w = malloc(in * out * sizeof(double));
+    *b = calloc(out, sizeof(double));
+    double s = sqrt(2.0/in);
+    for(int i = 0; i < in*out; i++) {
+        double u1 = (double)rand()/RAND_MAX, u2 = (double)rand()/RAND_MAX;
+        (*w)[i] = sqrt(-2*log(u1)) * cos(2*M_PI*u2) * s;
+    }
 }
 
-void d_dot_right(double *result, double *grad, double *weights, int n_in, int n_out) {
-    for(int i = 0; i < n_in; i++) {
-        result[i] = 0;
-        for(int j = 0; j < n_out; j++) {
-            result[i] += grad[j] * weights[j*n_in + i];
+Net* init_net(int n, int *sz) {
+    Net* net = malloc(sizeof(Net));
+    net->n = n-1; net->sz = malloc(n * sizeof(int));
+    memcpy(net->sz, sz, n * sizeof(int));
+    
+    net->w = malloc((n-1) * sizeof(double*));
+    net->b = malloc((n-1) * sizeof(double*));
+    net->mw = malloc((n-1) * sizeof(double*));
+    net->mb = malloc((n-1) * sizeof(double*));
+    net->vw = malloc((n-1) * sizeof(double*));
+    net->vb = malloc((n-1) * sizeof(double*));
+    
+    for(int i = 0; i < n-1; i++) {
+        init_layer(&net->w[i], &net->b[i], sz[i], sz[i+1]);
+        int ws = sz[i] * sz[i+1];
+        net->mw[i] = calloc(ws, sizeof(double));
+        net->mb[i] = calloc(sz[i+1], sizeof(double));
+        net->vw[i] = calloc(ws, sizeof(double));
+        net->vb[i] = calloc(sz[i+1], sizeof(double));
+    }
+    net->step = 1;
+    return net;
+}
+
+double lrelu(double x) { return x > 0 ? x : 0.1 * x; }
+double dlrelu(double x) { return x > 0 ? 1.0 : 0.1; }
+
+void fwd(Net* net, double* in, double** act) {
+    memcpy(act[0], in, net->sz[0] * sizeof(double));
+    for(int i = 0; i < net->n; i++) {
+        int ni = net->sz[i], no = net->sz[i+1];
+        for(int j = 0; j < no; j++) {
+            act[i+1][j] = net->b[i][j];
+            for(int k = 0; k < ni; k++) 
+                act[i+1][j] += net->w[i][j*ni + k] * act[i][k];
+            if(i < net->n-1) act[i+1][j] = lrelu(act[i+1][j]);
         }
     }
 }
 
-void d_dot_left(double *weights, double *grad, double *input, int n_in, int n_out) {
-    for(int i = 0; i < n_out; i++) {
-        for(int j = 0; j < n_in; j++) {
-            weights[i*n_in + j] = grad[i] * input[j];
+void bwd(Net* net, double** act, double* tgt, double** grad, double lr) {
+    int last = net->n;
+    for(int i = 0; i < net->sz[last]; i++)
+        grad[last][i] = 2 * (act[last][i] - tgt[i]);
+    
+    for(int i = last-1; i >= 0; i--) {
+        int ni = net->sz[i], no = net->sz[i+1];
+        double* wg = malloc(ni * no * sizeof(double));
+        
+        if(i < last-1)
+            for(int j = 0; j < no; j++)
+                grad[i+1][j] *= dlrelu(act[i+1][j]);
+        
+        for(int j = 0; j < no; j++)
+            for(int k = 0; k < ni; k++)
+                wg[j*ni + k] = grad[i+1][j] * act[i][k];
+        
+        adam(net->w[i], wg, net->mw[i], net->vw[i], ni*no, net->step, lr);
+        adam(net->b[i], grad[i+1], net->mb[i], net->vb[i], no, net->step, lr);
+        
+        if(i > 0) {
+            for(int j = 0; j < ni; j++) {
+                grad[i][j] = 0;
+                for(int k = 0; k < no; k++)
+                    grad[i][j] += grad[i+1][k] * net->w[i][k*ni + j];
+            }
         }
+        free(wg);
     }
+    net->step++;
 }
 
-double l_relu(double x) {
-    return x > 0 ? x : 0.1 * x;
-}
-
-double d_l_relu(double x) {
-    return x > 0 ? 1.0 : 0.1;
-}
-
-void he_init(double *W, int n_in, int n_out) {
-    double stddev = sqrt(2.0 / n_in);
-    for (int i = 0; i < n_in * n_out; i++) {
-        double u1 = (double)rand() / RAND_MAX;
-        double u2 = (double)rand() / RAND_MAX;
-        double z = sqrt(-2.0 * log(u1)) * cos(2.0 * M_PI * u2);
-        W[i] = z * stddev;
+void free_net(Net* net) {
+    for(int i = 0; i < net->n; i++) {
+        free(net->w[i]); free(net->b[i]);
+        free(net->mw[i]); free(net->mb[i]);
+        free(net->vw[i]); free(net->vb[i]);
     }
+    free(net->w); free(net->b);
+    free(net->mw); free(net->mb);
+    free(net->vw); free(net->vb);
+    free(net->sz); free(net);
 }
 
-void init_linear(double **W, double **b, int n_in, int n_out) {
-    *W = malloc(n_in * n_out * sizeof(double));
-    *b = calloc(n_out, sizeof(double));
-    he_init(*W, n_in, n_out);
-}
-
-#endif // GRAD_H
+#endif
