@@ -1,2 +1,2 @@
 # grad
-A minimal automatic differentiation library
+A differentiation library
