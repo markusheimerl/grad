@@ -27,14 +27,14 @@ int main() {
     if(!data) { printf("Failed to load dataset!\n"); return 1; }
     
     printf("Initializing network...\n");
-    int nl = 4, sz[] = {fx, 64, 32, fy};
+    int nl = 5, sz[] = {fx, 128, 64, 32, fy};
     Net* net = init_net(nl, sz);
     
     printf("\nTraining:\n");
     printf("%-6s %-12s %-8s\n", "Epoch", "Loss", "LR");
     printf("-------------------------\n");
     
-    int epochs = 100;
+    int epochs = 10;
     double best_loss = INFINITY;
     double prev_loss = INFINITY;
     double** act = malloc(nl * sizeof(double*));
@@ -57,9 +57,8 @@ int main() {
         if(total_loss < best_loss) best_loss = total_loss;
         prev_loss = total_loss;
         
-        if(e % 10 == 0 || e == epochs-1) {
-            printf("%-6d %.6f%s %.6f\n", e+1, total_loss, 
-                   total_loss == best_loss ? " *" : "  ", net->lr);
+        if(e % 2 == 0 || e == epochs-1) {
+            printf("%-6d %.6f%s %.6e\n", e+1, total_loss, total_loss == best_loss ? " *" : "  ", net->lr);
         }
         
         for(int i = 0; i < n; i++) free(pred[i]);

@@ -91,7 +91,7 @@ void bwd(Net* net, double** act, double* tgt, double** grad, double prev_loss) {
     if(curr_loss > prev_loss) net->lr *= 0.95;
     else net->lr *= 1.05;
     if(net->lr > 0.01) net->lr = 0.01;
-    if(net->lr < 0.0001) net->lr = 0.0001;
+    if(net->lr < 1e-9) net->lr = 1e-9;
     
     for(int i = last-1; i >= 0; i--) {
         int ni = net->sz[i], no = net->sz[i+1];
