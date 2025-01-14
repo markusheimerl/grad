@@ -121,10 +121,9 @@ void bwd(Net* net, double** act, double* tgt, double** grad, double prev_loss) {
     net->step++;
 }
 
-void save_weights(Net* net, const char* prefix) {
-    char* filename;
+void save_weights(Net* net, const char* filename) {
     FILE* fp = fopen(filename, "wb");
-    if(!fp) { free(filename); return; }
+    if(!fp) { return; }
     fwrite(&net->n, sizeof(int), 1, fp);
     fwrite(net->sz, sizeof(int), net->n + 1, fp);
     for(int i = 0; i < net->n; i++) {
@@ -133,7 +132,6 @@ void save_weights(Net* net, const char* prefix) {
         fwrite(net->b[i], sizeof(double), net->sz[i+1], fp);
     }
     fclose(fp);
-    free(filename);
 }
 
 Net* load_weights(const char* filename) {
