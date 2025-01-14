@@ -15,7 +15,7 @@ int main() {
     srand(time(NULL));
     
     Data* data = synth(1000, 4, 3, 0.1);
-    char* fname = save_csv("data.csv", data);
+    char* fname = save_csv("data.csv", data, NULL);
     free_data(data);
     
     if(!(data = load_csv(fname))) { printf("Load failed!\n"); return 1; }

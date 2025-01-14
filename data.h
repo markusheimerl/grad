@@ -68,11 +68,17 @@ Data* synth(int n, int fx, int fy, double noise) {
     return d;
 }
 
-char* save_csv(const char* f, Data* d) {
+char* save_csv(const char* f, Data* d, const char* header) {
     char* filename = get_timestamp_filename(f);
     FILE* fp = fopen(filename, "w");
-    for(int i = 0; i < d->fx; i++) fprintf(fp, "x%d,", i+1);
-    for(int i = 0; i < d->fy; i++) fprintf(fp, "y%d%c", i+1, i==d->fy-1?'\n':',');
+    
+    if(header) {
+        fprintf(fp, "%s\n", header);
+    } else {
+        for(int i = 0; i < d->fx; i++) fprintf(fp, "x%d,", i+1);
+        for(int i = 0; i < d->fy; i++) fprintf(fp, "y%d%c", i+1, i==d->fy-1?'\n':',');
+    }
+    
     for(int i = 0; i < d->n; i++) {
         for(int j = 0; j < d->fx; j++) fprintf(fp, "%.6f,", d->X[i][j]);
         for(int j = 0; j < d->fy; j++) fprintf(fp, "%.6f%c", d->y[i][j], j==d->fy-1?'\n':',');
