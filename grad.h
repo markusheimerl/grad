@@ -120,6 +120,38 @@ void bwd(Net* net, double** act, double* tgt, double** grad, double prev_loss) {
     net->step++;
 }
 
+void save_weights(Net* net, const char* prefix) {
+    char* filename = get_timestamp_filename(prefix);
+    FILE* fp = fopen(filename, "wb");
+    if(!fp) { free(filename); return; }
+    fwrite(&net->n, sizeof(int), 1, fp);
+    fwrite(net->sz, sizeof(int), net->n + 1, fp);
+    for(int i = 0; i < net->n; i++) {
+        int ws = net->sz[i] * net->sz[i+1];
+        fwrite(net->w[i], sizeof(double), ws, fp);
+        fwrite(net->b[i], sizeof(double), net->sz[i+1], fp);
+    }
+    fclose(fp);
+    free(filename);
+}
+
+Net* load_weights(const char* filename) {
+    FILE* fp = fopen(filename, "rb");
+    if(!fp) return NULL;
+    int n; fread(&n, sizeof(int), 1, fp);
+    int* sz = malloc((n + 1) * sizeof(int));
+    fread(sz, sizeof(int), n + 1, fp);
+    Net* net = init_net(n + 1, sz);
+    free(sz);
+    for(int i = 0; i < net->n; i++) {
+        int ws = net->sz[i] * net->sz[i+1];
+        fread(net->w[i], sizeof(double), ws, fp);
+        fread(net->b[i], sizeof(double), net->sz[i+1], fp);
+    }
+    fclose(fp);
+    return net;
+}
+
 void free_net(Net* net) {
     for(int i = 0; i < net->n; i++) {
         free(net->w[i]); free(net->b[i]);

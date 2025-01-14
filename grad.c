@@ -1,6 +1,6 @@
 #include <time.h>
-#include "grad.h"
 #include "data.h"
+#include "grad.h"
 
 double compute_loss(double** pred, double** tgt, int n, int m) {
     double l = 0;
@@ -15,59 +15,66 @@ double compute_loss(double** pred, double** tgt, int n, int m) {
 int main() {
     srand(time(NULL));
     
-    printf("Creating synthetic dataset...\n");
-    int n = 1000, fx = 4, fy = 3;
-    Data* data = synth(n, fx, fy, 0.1);
-    char* filename = save_csv("data.csv", data);
+    Data* data = synth(1000, 4, 3, 0.1);
+    char* fname = save_csv("data.csv", data);
     free_data(data);
     
-    printf("Loading dataset...\n");
-    data = load_csv(filename);
-    free(filename);
-    if(!data) { printf("Failed to load dataset!\n"); return 1; }
+    if(!(data = load_csv(fname))) { printf("Load failed!\n"); return 1; }
+    free(fname);
     
-    printf("Initializing network...\n");
-    int nl = 5, sz[] = {fx, 128, 64, 32, fy};
-    Net* net = init_net(nl, sz);
+    int sz[] = {4, 128, 64, 32, 3};
+    Net* net = init_net(5, sz);
     
-    printf("\nTraining:\n");
-    printf("%-6s %-12s %-8s\n", "Epoch", "Loss", "LR");
+    printf("\nTraining:\n%-6s %-12s %-8s\n", "Epoch", "Loss", "LR");
     printf("-------------------------\n");
     
-    int epochs = 10;
-    double best_loss = INFINITY;
-    double prev_loss = INFINITY;
-    double** act = malloc(nl * sizeof(double*));
-    double** grad = malloc(nl * sizeof(double*));
-    for(int i = 0; i < nl; i++) {
+    double** act = malloc(5 * sizeof(double*));
+    double** grad = malloc(5 * sizeof(double*));
+    for(int i = 0; i < 5; i++) {
         act[i] = malloc(sz[i] * sizeof(double));
         grad[i] = malloc(sz[i] * sizeof(double));
     }
     
-    for(int e = 0; e < epochs; e++) {
-        double** pred = malloc(n * sizeof(double*));
-        for(int i = 0; i < n; i++) {
-            pred[i] = malloc(fy * sizeof(double));
+    double best_loss = INFINITY, prev_loss = INFINITY;
+    for(int e = 0; e < 10; e++) {
+        double** pred = malloc(data->n * sizeof(double*));
+        for(int i = 0; i < data->n; i++) {
+            pred[i] = malloc(data->fy * sizeof(double));
             fwd(net, data->X[i], act);
-            memcpy(pred[i], act[nl-1], fy * sizeof(double));
+            memcpy(pred[i], act[4], data->fy * sizeof(double));
             bwd(net, act, data->y[i], grad, prev_loss);
         }
         
-        double total_loss = compute_loss(pred, data->y, n, fy);
-        if(total_loss < best_loss) best_loss = total_loss;
-        prev_loss = total_loss;
+        double loss = compute_loss(pred, data->y, data->n, data->fy);
+        if(loss < best_loss) best_loss = loss;
+        prev_loss = loss;
         
-        if(e % 2 == 0 || e == epochs-1) {
-            printf("%-6d %.6f%s %.6e\n", e+1, total_loss, total_loss == best_loss ? " *" : "  ", net->lr);
-        }
+        if(e % 2 == 0 || e == 9)
+            printf("%-6d %.6f%s %.6e\n", e+1, loss, loss == best_loss ? " *" : "  ", net->lr);
         
-        for(int i = 0; i < n; i++) free(pred[i]);
+        for(int i = 0; i < data->n; i++) free(pred[i]);
         free(pred);
     }
     
-    printf("\nTraining complete! Best loss: %.6f\n", best_loss);
+    save_weights(net, "weights.bin");
+    free_net(net);
     
-    for(int i = 0; i < nl; i++) { free(act[i]); free(grad[i]); }
+    char* last_weights = get_timestamp_filename("weights.bin");
+    net = load_weights(last_weights);
+    free(last_weights);
+    
+    double** pred = malloc(data->n * sizeof(double*));
+    for(int i = 0; i < data->n; i++) {
+        pred[i] = malloc(data->fy * sizeof(double));
+        fwd(net, data->X[i], act);
+        memcpy(pred[i], act[4], data->fy * sizeof(double));
+    }
+    
+    printf("\nLoaded weights loss: %.6f\n", compute_loss(pred, data->y, data->n, data->fy));
+    
+    for(int i = 0; i < data->n; i++) free(pred[i]);
+    free(pred);
+    for(int i = 0; i < 5; i++) { free(act[i]); free(grad[i]); }
     free(act); free(grad);
     free_net(net);
     free_data(data);
