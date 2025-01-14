@@ -1,5 +1,4 @@
 #include <time.h>
-#include "data.h"
 #include "grad.h"
 
 double compute_loss(double** pred, double** tgt, int n, int m) {

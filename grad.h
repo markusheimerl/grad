@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include "data.h"
 
 #define B1 0.9
 #define B2 0.999
