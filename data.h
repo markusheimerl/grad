@@ -47,8 +47,8 @@ void save_csv(const char* f, Data* d, const char** headers) {
     }
     
     for(int i = 0; i < d->n; i++) {
-        for(int j = 0; j < d->fx; j++) fprintf(fp, "%.6f,", d->X[i][j]);
-        for(int j = 0; j < d->fy; j++) fprintf(fp, "%.6f%c", d->y[i][j], j == d->fy-1 ? '\n' : ',');
+        for(int j = 0; j < d->fx; j++) fprintf(fp, "%.17f,", d->X[i][j]);
+        for(int j = 0; j < d->fy; j++) fprintf(fp, "%.17f%c", d->y[i][j], j == d->fy-1 ? '\n' : ',');
     }
     fclose(fp);
 }
