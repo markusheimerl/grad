@@ -15,6 +15,7 @@
 typedef struct {
     int n, *sz;
     double **w, **b, **mw, **mb, **vw, **vb;
+    double **wg;
     double lr;
     int step;
 } Net;
@@ -39,6 +40,11 @@ Net* init_net(int n, int *sz) {
     net->mb = malloc((n-1) * sizeof(double*));
     net->vw = malloc((n-1) * sizeof(double*));
     net->vb = malloc((n-1) * sizeof(double*));
+    net->wg = malloc((n-1) * sizeof(double*));
+    for(int i = 0; i < n-1; i++) {
+        int in = sz[i], out = sz[i+1];
+        net->wg[i] = malloc(in * out * sizeof(double));
+    }
     
     for(int i = 0; i < n-1; i++) {
         int in = sz[i], out = sz[i+1];
@@ -77,7 +83,6 @@ void fwd(Net* net, double* in, double** act) {
 void bwd(Net* net, double** act, double** grad) {
     for(int i = net->n-1; i >= 0; i--) {
         int ni = net->sz[i], no = net->sz[i+1];
-        double* wg = malloc(ni * no * sizeof(double));
         
         if(i < net->n-1)
             for(int j = 0; j < no; j++)
@@ -85,9 +90,9 @@ void bwd(Net* net, double** act, double** grad) {
         
         for(int j = 0; j < no; j++)
             for(int k = 0; k < ni; k++)
-                wg[j*ni + k] = grad[i+1][j] * act[i][k];
+                net->wg[i][j*ni + k] = grad[i+1][j] * act[i][k];
         
-        adam(net->w[i], wg, net->mw[i], net->vw[i], ni*no, net->step, net->lr);
+        adam(net->w[i], net->wg[i], net->mw[i], net->vw[i], ni*no, net->step, net->lr);
         adam(net->b[i], grad[i+1], net->mb[i], net->vb[i], no, net->step, net->lr);
         
         if(i > 0) {
@@ -97,7 +102,6 @@ void bwd(Net* net, double** act, double** grad) {
                     grad[i][j] += grad[i+1][k] * net->w[i][k*ni + j];
             }
         }
-        free(wg);
     }
     net->step++;
 }
@@ -138,10 +142,12 @@ void free_net(Net* net) {
         free(net->w[i]); free(net->b[i]);
         free(net->mw[i]); free(net->mb[i]);
         free(net->vw[i]); free(net->vb[i]);
+        free(net->wg[i]);
     }
     free(net->w); free(net->b);
     free(net->mw); free(net->mb);
     free(net->vw); free(net->vb);
+    free(net->wg);
     free(net->sz); free(net);
 }
 
