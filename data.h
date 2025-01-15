@@ -6,7 +6,11 @@
 #include <string.h>
 #include <math.h>
 
-typedef struct { double **X, **y; int n, fx, fy; } Data;
+typedef struct { 
+    double **X, **y;
+    int n, fx, fy;
+    char **headers;
+} Data;
 
 static double synth_fn(const double* x, int dim) {
     switch(dim) {
@@ -20,9 +24,15 @@ static double synth_fn(const double* x, int dim) {
 Data* synth(int n, int fx, int fy, double noise) {
     Data* d = malloc(sizeof(Data));
     d->n = n; d->fx = fx; d->fy = fy;
+    
+    d->headers = malloc((fx + fy) * sizeof(char*));
+    for(int i = 0; i < fx + fy; i++) {
+        d->headers[i] = malloc(8);
+        sprintf(d->headers[i], "%c%d", i < fx ? 'x' : 'y', i < fx ? i+1 : i-fx+1);
+    }
+    
     d->X = malloc(n * sizeof(double*));
     d->y = malloc(n * sizeof(double*));
-    
     for(int i = 0; i < n; i++) {
         d->X[i] = malloc(fx * sizeof(double));
         d->y[i] = malloc(fy * sizeof(double));
@@ -35,16 +45,12 @@ Data* synth(int n, int fx, int fy, double noise) {
     return d;
 }
 
-void save_csv(const char* f, Data* d, const char** headers) {
+void save_csv(const char* f, Data* d) {
     FILE* fp = fopen(f, "w");
     if(!fp) return;
     
-    if(headers) for(int i = 0; i < d->fx + d->fy; i++) 
-        fprintf(fp, "%s%c", headers[i], i < d->fx + d->fy - 1 ? ',' : '\n');
-    else {
-        for(int i = 0; i < d->fx; i++) fprintf(fp, "x%d,", i+1);
-        for(int i = 0; i < d->fy; i++) fprintf(fp, "y%d%c", i+1, i == d->fy-1 ? '\n' : ',');
-    }
+    for(int i = 0; i < d->fx + d->fy; i++)
+        fprintf(fp, "%s%c", d->headers[i], i < d->fx + d->fy - 1 ? ',' : '\n');
     
     for(int i = 0; i < d->n; i++) {
         for(int j = 0; j < d->fx; j++) fprintf(fp, "%.17f,", d->X[i][j]);
@@ -53,19 +59,20 @@ void save_csv(const char* f, Data* d, const char** headers) {
     fclose(fp);
 }
 
-Data* load_csv(const char* f) {
+Data* load_csv(const char* f, int fx, int fy) {
     FILE* fp = fopen(f, "r");
     if(!fp) return NULL;
     
     Data* d = malloc(sizeof(Data));
-    char line[4096], *token;
+    d->fx = fx; d->fy = fy;
     
+    char line[4096];
     fgets(line, sizeof(line), fp);
-    d->fx = 0; d->fy = 0;
-    token = strtok(line, ",\n");
-    while(token) {
-        if(token[0] == 'x') d->fx++;
-        if(token[0] == 'y') d->fy++;
+    
+    d->headers = malloc((fx + fy) * sizeof(char*));
+    char* token = strtok(line, ",\n");
+    for(int i = 0; i < fx + fy; i++) {
+        d->headers[i] = strdup(token);
         token = strtok(NULL, ",\n");
     }
     
@@ -77,12 +84,12 @@ Data* load_csv(const char* f) {
     d->X = malloc(d->n * sizeof(double*));
     d->y = malloc(d->n * sizeof(double*));
     for(int i = 0; i < d->n; i++) {
-        d->X[i] = malloc(d->fx * sizeof(double));
-        d->y[i] = malloc(d->fy * sizeof(double));
+        d->X[i] = malloc(fx * sizeof(double));
+        d->y[i] = malloc(fy * sizeof(double));
         fgets(line, sizeof(line), fp);
         token = strtok(line, ",");
-        for(int j = 0; j < d->fx; j++) { d->X[i][j] = atof(token); token = strtok(NULL, ","); }
-        for(int j = 0; j < d->fy; j++) { d->y[i][j] = atof(token); token = strtok(NULL, ","); }
+        for(int j = 0; j < fx; j++) { d->X[i][j] = atof(token); token = strtok(NULL, ","); }
+        for(int j = 0; j < fy; j++) { d->y[i][j] = atof(token); token = strtok(NULL, ","); }
     }
     fclose(fp);
     return d;
@@ -90,7 +97,10 @@ Data* load_csv(const char* f) {
 
 void free_data(Data* d) {
     for(int i = 0; i < d->n; i++) { free(d->X[i]); free(d->y[i]); }
-    free(d->X); free(d->y); free(d);
+    for(int i = 0; i < d->fx + d->fy; i++) free(d->headers[i]);
+    free(d->headers);
+    free(d->X); free(d->y);
+    free(d);
 }
 
 #endif

@@ -31,7 +31,6 @@ void free_predictions(double** pred, int n) {
 int main() {
     srand(time(NULL));
     
-    const char* headers[] = {"x1", "x2", "x3", "x4", "y1", "y2", "y3"};
     Data* data = synth(1000, 4, 3, 0.1);
     
     char data_file[100], weights_file[100];
@@ -40,7 +39,7 @@ int main() {
     strftime(data_file, sizeof(data_file), "%Y%m%d_%H%M%S_data.csv", t);
     strftime(weights_file, sizeof(weights_file), "%Y%m%d_%H%M%S_weights.bin", t);
     
-    save_csv(data_file, data, headers);
+    save_csv(data_file, data);
 
     int sz[] = {4, 128, 64, 32, 3};
     Net* net = init_net(5, sz);
@@ -57,7 +56,6 @@ int main() {
     
     double best_loss = INFINITY, prev_loss = INFINITY;
     for(int e = 0; e < N_EPOCHS; e++) {
-        // Training pass
         for(int i = 0; i < data->n; i++) {
             fwd(net, data->X[i], act);
             
@@ -69,7 +67,6 @@ int main() {
             bwd(net, act, grad);
         }
         
-        // Evaluate loss after training pass
         double** pred = get_predictions(net, data, act);
         double loss = compute_loss(pred, data->y, data->n, data->fy);
         free_predictions(pred, data->n);
@@ -91,7 +88,7 @@ int main() {
 
     printf("\nVerification:\n");
     net = load_weights(weights_file);
-    data = load_csv(data_file);
+    data = load_csv(data_file, 4, 3);
     
     double** pred = get_predictions(net, data, act);
     printf("Loaded weights loss: %.6f\n", compute_loss(pred, data->y, data->n, data->fy));
