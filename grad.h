@@ -28,19 +28,6 @@ void adam(double *p, double *g, double *m, double *v, int n, int t, double lr) {
     }
 }
 
-void save_weights(const char* filename, Net* net) {
-    FILE* fp = fopen(filename, "wb");
-    if(!fp) return;
-    fwrite(&net->n, sizeof(int), 1, fp);
-    fwrite(net->sz, sizeof(int), net->n + 1, fp);
-    for(int i = 0; i < net->n; i++) {
-        int ws = net->sz[i] * net->sz[i+1];
-        fwrite(net->w[i], sizeof(double), ws, fp);
-        fwrite(net->b[i], sizeof(double), net->sz[i+1], fp);
-    }
-    fclose(fp);
-}
-
 Net* init_net(int n, int *sz) {
     Net* net = malloc(sizeof(Net));
     net->n = n-1; net->sz = malloc(n * sizeof(int));
@@ -81,21 +68,18 @@ void fwd(Net* net, double* in, double** act) {
         int ni = net->sz[i], no = net->sz[i+1];
         for(int j = 0; j < no; j++) {
             act[i+1][j] = net->b[i][j];
-            for(int k = 0; k < ni; k++) 
-                act[i+1][j] += net->w[i][j*ni + k] * act[i][k];
+            for(int k = 0; k < ni; k++) act[i+1][j] += net->w[i][j*ni + k] * act[i][k];
             if(i < net->n-1) act[i+1][j] = lrelu(act[i+1][j]);
         }
     }
 }
 
 void bwd(Net* net, double** act, double** grad) {
-    int last = net->n;
-    
-    for(int i = last-1; i >= 0; i--) {
+    for(int i = net->n-1; i >= 0; i--) {
         int ni = net->sz[i], no = net->sz[i+1];
         double* wg = malloc(ni * no * sizeof(double));
         
-        if(i < last-1)
+        if(i < net->n-1)
             for(int j = 0; j < no; j++)
                 grad[i+1][j] *= dlrelu(act[i+1][j]);
         
@@ -118,8 +102,20 @@ void bwd(Net* net, double** act, double** grad) {
     net->step++;
 }
 
-Net* load_weights(const char* filename) {
-    FILE* fp = fopen(filename, "rb");
+void save_weights(const char* f, Net* net) {
+    FILE* fp = fopen(f, "wb");
+    if(!fp) return;
+    fwrite(&net->n, sizeof(int), 1, fp);
+    fwrite(net->sz, sizeof(int), net->n + 1, fp);
+    for(int i = 0; i < net->n; i++) {
+        fwrite(net->w[i], sizeof(double), net->sz[i] * net->sz[i+1], fp);
+        fwrite(net->b[i], sizeof(double), net->sz[i+1], fp);
+    }
+    fclose(fp);
+}
+
+Net* load_weights(const char* f) {
+    FILE* fp = fopen(f, "rb");
     if(!fp) return NULL;
     
     int n;
@@ -129,8 +125,7 @@ Net* load_weights(const char* filename) {
     
     Net* net = init_net(n + 1, sz);
     for(int i = 0; i < net->n; i++) {
-        int ws = net->sz[i] * net->sz[i+1];
-        fread(net->w[i], sizeof(double), ws, fp);
+        fread(net->w[i], sizeof(double), net->sz[i] * net->sz[i+1], fp);
         fread(net->b[i], sizeof(double), net->sz[i+1], fp);
     }
     fclose(fp);
