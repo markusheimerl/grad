@@ -8,6 +8,8 @@
 #include "data.h"
 #include "optim.h"
 
+#define SWISH_BETA 1.0
+
 typedef struct {
     int n, *sz;
     double **w, **b;
@@ -60,6 +62,10 @@ void free_net(Net* net) {
 
 double lrelu(double x) { return x > 0 ? x : 0.1 * x; }
 double dlrelu(double x) { return x > 0 ? 1.0 : 0.1; }
+double sigmoid(double x) { return 1.0 / (1.0 + exp(-x)); }
+double dsigmoid(double x) { return sigmoid(x) * (1.0 - sigmoid(x)); }
+double swish(double x) { return x * sigmoid(SWISH_BETA * x); }
+double dswish(double x) { return SWISH_BETA * swish(x) + sigmoid(SWISH_BETA * x) * (1.0 - SWISH_BETA * swish(x)); }
 
 void fwd(Net* net, double* in, double** act) {
     memcpy(act[0], in, net->sz[0] * sizeof(double));
@@ -70,7 +76,7 @@ void fwd(Net* net, double* in, double** act) {
             for(int k = 0; k < ni; k++) 
                 act[i+1][j] += net->w[i][j*ni + k] * act[i][k];
             if(i < net->n-1) 
-                act[i+1][j] = lrelu(act[i+1][j]);
+                act[i+1][j] = swish(act[i+1][j]);
         }
     }
 }
@@ -81,7 +87,7 @@ void bwd(Net* net, double** act, double** grad) {
         
         if(i < net->n-1)
             for(int j = 0; j < no; j++)
-                grad[i+1][j] *= dlrelu(act[i+1][j]);
+                grad[i+1][j] *= dswish(act[i+1][j]);
         
         for(int j = 0; j < no; j++)
             for(int k = 0; k < ni; k++)
