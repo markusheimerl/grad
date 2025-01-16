@@ -25,10 +25,21 @@ void adam_update(double *p, double *g, double *aux, int n, int t, double lr) {
 
 void sgd_update(double *p, double *g, double *aux, int n, int t, double lr) {
     double *acc = aux;
+    
     for(int i = 0; i < n; i++) {
         acc[i] += g[i];
-        if(t % BATCH_SIZE == 0) {
-            p[i] -= lr * (acc[i]/BATCH_SIZE + DECAY * p[i]);
+    }
+    
+    if(t % BATCH_SIZE == 0) {
+        double grad_norm = 0.0;
+        for(int i = 0; i < n; i++) {
+            grad_norm += (acc[i]/BATCH_SIZE) * (acc[i]/BATCH_SIZE);
+        }
+        grad_norm = sqrt(grad_norm);
+        
+        double scale = (grad_norm > 0) ? 1.0 / grad_norm : 1.0;
+        for(int i = 0; i < n; i++) {
+            p[i] -= lr * scale * (acc[i]/BATCH_SIZE);
             acc[i] = 0;
         }
     }
