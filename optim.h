@@ -105,6 +105,8 @@ void adamw_update(double *p, double *g, double *aux, int n, int t, double lr) {
     }
 }
 
+void null_update(double *p, double *g, double *aux, int n, int t, double lr){}
+
 optimizer_t adam = {.update = adam_update, .aux_doubles_per_param = 2};
 optimizer_t sgd = {.update = sgd_update, .aux_doubles_per_param = 0};
 optimizer_t sga = {.update = sga_update, .aux_doubles_per_param = 0};
@@ -114,5 +116,6 @@ optimizer_t rmsprop = {.update = rmsprop_update, .aux_doubles_per_param = 1};
 optimizer_t adagrad = {.update = adagrad_update, .aux_doubles_per_param = 1};
 optimizer_t lion = {.update = lion_update, .aux_doubles_per_param = 1};
 optimizer_t adamw = {.update = adamw_update, .aux_doubles_per_param = 2};
+optimizer_t null_opt = {.update = null_update, .aux_doubles_per_param = 0};
 
 #endif // OPTIM_H
