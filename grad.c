@@ -42,7 +42,7 @@ int main() {
     save_csv(data_file, data);
 
     int sz[] = {4, 128, 64, 32, 3};
-    Net* net = init_net(5, sz);
+    Net* net = init_net(5, sz, adamw);
     
     printf("\nTraining:\n%-6s %-12s %-8s\n", "Epoch", "Loss", "LR");
     printf("-------------------------\n");
@@ -87,7 +87,7 @@ int main() {
     free_data(data);
 
     printf("\nVerification:\n");
-    net = load_weights(weights_file);
+    net = load_weights(weights_file, adam);
     data = load_csv(data_file, 4, 3);
     
     double** pred = get_predictions(net, data, act);
