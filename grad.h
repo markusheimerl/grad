@@ -66,6 +66,8 @@ double sigmoid(double x) { return 1.0 / (1.0 + exp(-x)); }
 double dsigmoid(double x) { return sigmoid(x) * (1.0 - sigmoid(x)); }
 double swish(double x) { return x * sigmoid(SWISH_BETA * x); }
 double dswish(double x) { return SWISH_BETA * swish(x) + sigmoid(SWISH_BETA * x) * (1.0 - SWISH_BETA * swish(x)); }
+double squash(double x, double min, double max) { return ((max + min) / 2.0) + ((max - min) / 2.0) * tanh(x); }
+double dsquash(double x, double min, double max) { return ((max - min) / 2.0) * (1.0 - tanh(x) * tanh(x)); }
 
 void fwd(Net* net, double* in, double** act) {
     memcpy(act[0], in, net->sz[0] * sizeof(double));
