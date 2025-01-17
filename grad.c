@@ -18,7 +18,7 @@ double** get_predictions(Net* net, Data* data, double** act) {
     for(int i = 0; i < data->n; i++) {
         pred[i] = malloc(data->fy * sizeof(double));
         fwd(net, data->X[i], act);
-        memcpy(pred[i], act[4], data->fy * sizeof(double));
+        memcpy(pred[i], act[net->n], data->fy * sizeof(double));
     }
     return pred;
 }
@@ -41,15 +41,16 @@ int main() {
     
     save_csv(data_file, data);
 
-    int sz[] = {4, 128, 64, 32, 3};
-    Net* net = init_net(5, sz, adamw);
+    int sz[] = {4, 128, 64, 32, 16, 3};
+    int n_layers = sizeof(sz)/sizeof(sz[0]);
+    Net* net = init_net(n_layers, sz, adamw);
     
     printf("\nTraining:\n%-6s %-12s %-8s\n", "Epoch", "Loss", "LR");
     printf("-------------------------\n");
     
-    double** act = malloc(5 * sizeof(double*));
-    double** grad = malloc(5 * sizeof(double*));
-    for(int i = 0; i < 5; i++) {
+    double** act = malloc(n_layers * sizeof(double*));
+    double** grad = malloc(n_layers * sizeof(double*));
+    for(int i = 0; i < n_layers; i++) {
         act[i] = malloc(sz[i] * sizeof(double));
         grad[i] = malloc(sz[i] * sizeof(double));
     }
@@ -60,8 +61,8 @@ int main() {
             fwd(net, data->X[i], act);
             
             for(int j = 0; j < data->fy; j++) {
-                double diff = act[4][j] - data->y[i][j];
-                grad[4][j] = 2 * diff;
+                double diff = act[net->n][j] - data->y[i][j];
+                grad[net->n][j] = 2 * diff;
             }
             
             bwd(net, act, grad);
@@ -94,7 +95,7 @@ int main() {
     printf("Loaded weights loss: %.6f\n", compute_loss(pred, data->y, data->n, data->fy));
     
     free_predictions(pred, data->n);
-    for(int i = 0; i < 5; i++) { free(act[i]); free(grad[i]); }
+    for(int i = 0; i < n_layers; i++) { free(act[i]); free(grad[i]); }
     free(act); free(grad);
     free_net(net);
     free_data(data);
