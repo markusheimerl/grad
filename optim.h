@@ -5,7 +5,7 @@
 #define B2 0.999
 #define EPS 1e-8
 #define DECAY 0.01
-#define BATCH_SIZE 32
+#define BATCH_SIZE 128
 
 typedef struct {
     void (*update)(double *p, double *g, double *aux, int n, int t, double lr);
@@ -97,11 +97,29 @@ void lion_update(double *p, double *g, double *aux, int n, int t, double lr) {
 void adamw_update(double *p, double *g, double *aux, int n, int t, double lr) {
     double *m = aux;
     double *v = aux + n;
-    double lrt = lr * sqrt(1.0 - pow(B2, t)) / (1.0 - pow(B1, t));
+    double *acc = aux + 2*n;  // New accumulator for mini-batches
+    int batch_idx = (t - 1) % BATCH_SIZE;
+    
+    // Accumulate gradients
     for(int i = 0; i < n; i++) {
-        m[i] = B1 * m[i] + (1-B1) * g[i];
-        v[i] = B2 * v[i] + (1-B2) * g[i] * g[i];
-        p[i] -= lrt * (m[i] / (sqrt(v[i]) + EPS)) + lr * DECAY * p[i];
+        acc[i] += g[i];
+    }
+
+    // Only update when batch is complete
+    if(batch_idx == BATCH_SIZE - 1) {
+        double lrt = lr * sqrt(1.0 - pow(B2, t)) / (1.0 - pow(B1, t));
+        
+        for(int i = 0; i < n; i++) {
+            // Use accumulated gradients divided by batch size
+            double batch_grad = acc[i] / BATCH_SIZE;
+            
+            m[i] = B1 * m[i] + (1-B1) * batch_grad;
+            v[i] = B2 * v[i] + (1-B2) * batch_grad * batch_grad;
+            p[i] -= lrt * (m[i] / (sqrt(v[i]) + EPS)) + lr * DECAY * p[i];
+            
+            // Reset accumulator
+            acc[i] = 0.0;
+        }
     }
 }
 
@@ -115,7 +133,7 @@ optimizer_t mbsga = {.update = mbsga_update, .aux_doubles_per_param = 1};
 optimizer_t rmsprop = {.update = rmsprop_update, .aux_doubles_per_param = 1};
 optimizer_t adagrad = {.update = adagrad_update, .aux_doubles_per_param = 1};
 optimizer_t lion = {.update = lion_update, .aux_doubles_per_param = 1};
-optimizer_t adamw = {.update = adamw_update, .aux_doubles_per_param = 2};
+optimizer_t adamw = {.update = adamw_update, .aux_doubles_per_param = 3};
 optimizer_t null_opt = {.update = null_update, .aux_doubles_per_param = 0};
 
 #endif // OPTIM_H
