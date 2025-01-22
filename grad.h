@@ -21,13 +21,15 @@ typedef struct {
     double **v_b;   // velocity for biases (AdamW)
     int n_layers;   // number of layers
     int t;          // timestep for AdamW
+    double lr;      // initial learning rate
 } Net;
 
 // Initialize network with given architecture
-Net* init_net(int n_layers, int* sizes) {
+Net* init_net(int n_layers, int* sizes, double lr) {
     Net* net = malloc(sizeof(Net));
     net->n_layers = n_layers;
     net->t = 1;  // Initialize timestep
+    net->lr = lr;  // Set initial learning rate
     net->layers = malloc(n_layers * sizeof(Layer));
     
     // Initialize layers
@@ -122,14 +124,14 @@ double get_warmup_lr(int epoch, int warmup_epochs, double initial_lr) {
 }
 
 // AdamW update function with learning rate scheduling
-void adamw_update(Net* net, double learning_rate, int epoch, int total_epochs) {
+void adamw_update(Net* net, int epoch, int total_epochs) {
     const double beta1 = 0.9;    // Momentum factor
     const double beta2 = 0.999;  // Velocity factor
     const double eps = 1e-8;     // Small constant for numerical stability
     
     // Adaptive learning rate and weight decay scheduling
     const int warmup_epochs = 5;
-    double current_lr = get_warmup_lr(epoch, warmup_epochs, learning_rate);
+    double current_lr = get_warmup_lr(epoch, warmup_epochs, net->lr);
     current_lr = get_learning_rate(epoch, total_epochs, current_lr);
     double weight_decay = get_weight_decay(epoch, total_epochs);
     
@@ -169,7 +171,7 @@ void adamw_update(Net* net, double learning_rate, int epoch, int total_epochs) {
 }
 
 // Backward pass
-void backward(Net* net, double* target, double learning_rate, int epoch, int total_epochs) {
+void backward(Net* net, double* target, int epoch, int total_epochs) {
     int last = net->n_layers-1;
     
     // Compute output layer error
@@ -203,7 +205,7 @@ void backward(Net* net, double* target, double learning_rate, int epoch, int tot
     }
     
     // Update weights and biases using AdamW
-    adamw_update(net, learning_rate, epoch, total_epochs);
+    adamw_update(net, epoch, total_epochs);
 }
 
 // Compute mean squared error
@@ -223,8 +225,9 @@ void save_net(const char* f, Net* net) {
     FILE* fp = fopen(f, "wb");
     if(!fp) return;
     
-    // Save network architecture
+    // Save network architecture and learning rate
     fwrite(&net->n_layers, sizeof(int), 1, fp);
+    fwrite(&net->lr, sizeof(double), 1, fp);
     
     // Save layer sizes
     for(int i = 0; i < net->n_layers; i++) {
@@ -250,9 +253,11 @@ Net* load_net(const char* f) {
     FILE* fp = fopen(f, "rb");
     if(!fp) return NULL;
     
-    // Load network architecture
+    // Load network architecture and learning rate
     int n_layers;
+    double learning_rate;
     fread(&n_layers, sizeof(int), 1, fp);
+    fread(&learning_rate, sizeof(double), 1, fp);
     
     // Load layer sizes
     int* sizes = malloc(n_layers * sizeof(int));
@@ -261,7 +266,7 @@ Net* load_net(const char* f) {
     }
     
     // Initialize network
-    Net* net = init_net(n_layers, sizes);
+    Net* net = init_net(n_layers, sizes, learning_rate);
     free(sizes);
     
     // Load weights and biases

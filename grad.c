@@ -10,17 +10,15 @@ int main() {
     // Initialize network
     int sz[] = {15, 256, 128, 64, 32, 4};
     int n_layers = sizeof(sz)/sizeof(sz[0]);
-    Net* net = init_net(n_layers, sz);
-    
-    // Training parameters
-    double learning_rate = 0.001;
-    int epochs = 200;
+    Net* net = init_net(n_layers, sz, 1e-3);
     
     // Training loop
+    int epochs = 200;
+
     for(int epoch = 0; epoch < epochs; epoch++) {
         for(int i = 0; i < data->n; i++) {
             forward(net, data->X[i]);
-            backward(net, data->y[i], learning_rate, epoch, epochs);
+            backward(net, data->y[i], epoch, epochs);
         }
         
         if(epoch % 5 == 0 || epoch == epochs - 1) {
