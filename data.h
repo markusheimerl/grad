@@ -6,18 +6,59 @@
 #include <string.h>
 #include <math.h>
 
+#define INPUT_RANGE_MIN -2.2
+#define INPUT_RANGE_MAX 2.2
+#define MAX_SYNTHETIC_OUTPUTS 4
+
 typedef struct { 
     double **X, **y;
     int n, fx, fy;
     char **headers;
 } Data;
 
-static double synth_fn(const double* x, int dim) {
-    switch(dim) {
-        case 0: return sin(x[0]*2)*cos(x[1]*1.5) + pow(x[2],2)*x[3] + exp(-pow(x[0]-x[1],2)) + 0.5*sin(x[0]*x[1]*M_PI);
-        case 1: return tanh(x[0]+x[1])*sin(x[2]*2) + log(fabs(x[3])+1)*cos(x[0]) + 0.3*pow(x[1]-x[3],3);
-        case 2: return exp(-pow(x[0]-0.5,2))*sin(x[1]*3) + pow(cos(x[2]),2)*x[3] + 0.2*sinh(x[0]*x[1]);
-        default: return 0.0;
+static double synth_fn(const double* x, int fx, int dim) {
+    switch(dim % MAX_SYNTHETIC_OUTPUTS) {
+        case 0: 
+            return sin(x[0 % fx]*2)*cos(x[1 % fx]*1.5) + 
+                   pow(x[2 % fx],2)*x[3 % fx] + 
+                   exp(-pow(x[4 % fx]-x[5 % fx],2)) + 
+                   0.5*sin(x[6 % fx]*x[7 % fx]*M_PI) +
+                   tanh(x[8 % fx] + x[9 % fx]) +
+                   0.3*cos(x[10 % fx]*x[11 % fx]) +
+                   0.2*pow(x[12 % fx], 2) +
+                   x[13 % fx]*sin(x[14 % fx]);
+            
+        case 1: 
+            return tanh(x[0 % fx]+x[1 % fx])*sin(x[2 % fx]*2) + 
+                   log(fabs(x[3 % fx])+1)*cos(x[4 % fx]) + 
+                   0.3*pow(x[5 % fx]-x[6 % fx],3) +
+                   exp(-pow(x[7 % fx],2)) +
+                   sin(x[8 % fx]*x[9 % fx]*0.5) +
+                   0.4*cos(x[10 % fx] + x[11 % fx]) +
+                   pow(x[12 % fx]*x[13 % fx], 2) +
+                   0.1*x[14 % fx];
+            
+        case 2: 
+            return exp(-pow(x[0 % fx]-0.5,2))*sin(x[1 % fx]*3) + 
+                   pow(cos(x[2 % fx]),2)*x[3 % fx] + 
+                   0.2*sinh(x[4 % fx]*x[5 % fx]) +
+                   0.5*tanh(x[6 % fx] + x[7 % fx]) +
+                   pow(x[8 % fx], 3)*0.1 +
+                   cos(x[9 % fx]*x[10 % fx]*M_PI) +
+                   0.3*exp(-pow(x[11 % fx]-x[12 % fx],2)) +
+                   0.2*(x[13 % fx] + x[14 % fx]);
+            
+        case 3:
+            return pow(sin(x[0 % fx]*x[1 % fx]), 2) +
+                   0.4*tanh(x[2 % fx] + x[3 % fx]*x[4 % fx]) +
+                   exp(-fabs(x[5 % fx]-x[6 % fx])) +
+                   0.3*cos(x[7 % fx]*x[8 % fx]*2) +
+                   pow(x[9 % fx], 2)*sin(x[10 % fx]) +
+                   0.2*log(fabs(x[11 % fx]*x[12 % fx])+1) +
+                   0.1*(x[13 % fx] - x[14 % fx]);
+            
+        default: 
+            return 0.0;
     }
 }
 
@@ -28,7 +69,7 @@ Data* synth(int n, int fx, int fy, double noise) {
     d->headers = malloc((fx + fy) * sizeof(char*));
     for(int i = 0; i < fx + fy; i++) {
         d->headers[i] = malloc(8);
-        sprintf(d->headers[i], "%c%d", i < fx ? 'x' : 'y', i < fx ? i+1 : i-fx+1);
+        sprintf(d->headers[i], "%c%d", i < fx ? 'x' : 'y', i < fx ? i : i-fx);
     }
     
     d->X = malloc(n * sizeof(double*));
@@ -36,9 +77,14 @@ Data* synth(int n, int fx, int fy, double noise) {
     for(int i = 0; i < n; i++) {
         d->X[i] = malloc(fx * sizeof(double));
         d->y[i] = malloc(fy * sizeof(double));
-        for(int j = 0; j < fx; j++) d->X[i][j] = (double)rand()/RAND_MAX * 4 - 2;
+        
+        for(int j = 0; j < fx; j++) {
+            d->X[i][j] = (double)rand()/RAND_MAX * 
+                        (INPUT_RANGE_MAX - INPUT_RANGE_MIN) + INPUT_RANGE_MIN;
+        }
+        
         for(int j = 0; j < fy; j++) {
-            d->y[i][j] = synth_fn(d->X[i], j);
+            d->y[i][j] = synth_fn(d->X[i], fx, j);
             d->y[i][j] += ((double)rand()/RAND_MAX - 0.5) * noise;
         }
     }
