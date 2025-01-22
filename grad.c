@@ -13,13 +13,19 @@ typedef struct {
     double **dW;    // weight gradients
     double **b;     // biases for each layer
     double **db;    // bias gradients
+    double **m_W;   // momentum for weights (AdamW)
+    double **v_W;   // velocity for weights (AdamW)
+    double **m_b;   // momentum for biases (AdamW)
+    double **v_b;   // velocity for biases (AdamW)
     int n_layers;   // number of layers
+    int t;          // timestep for AdamW
 } Net;
 
 // Initialize network with given architecture
 Net* init_net(int n_layers, int* sizes) {
     Net* net = malloc(sizeof(Net));
     net->n_layers = n_layers;
+    net->t = 1;  // Initialize timestep
     net->layers = malloc(n_layers * sizeof(Layer));
     
     // Initialize layers
@@ -34,6 +40,10 @@ Net* init_net(int n_layers, int* sizes) {
     net->dW = malloc((n_layers-1) * sizeof(double*));
     net->b = malloc((n_layers-1) * sizeof(double*));
     net->db = malloc((n_layers-1) * sizeof(double*));
+    net->m_W = malloc((n_layers-1) * sizeof(double*));
+    net->v_W = malloc((n_layers-1) * sizeof(double*));
+    net->m_b = malloc((n_layers-1) * sizeof(double*));
+    net->v_b = malloc((n_layers-1) * sizeof(double*));
     
     for(int i = 0; i < n_layers-1; i++) {
         int rows = sizes[i+1];
@@ -42,6 +52,10 @@ Net* init_net(int n_layers, int* sizes) {
         net->dW[i] = calloc(rows * cols, sizeof(double));
         net->b[i] = malloc(rows * sizeof(double));
         net->db[i] = calloc(rows, sizeof(double));
+        net->m_W[i] = calloc(rows * cols, sizeof(double));
+        net->v_W[i] = calloc(rows * cols, sizeof(double));
+        net->m_b[i] = calloc(rows, sizeof(double));
+        net->v_b[i] = calloc(rows, sizeof(double));
         
         // Xavier initialization
         double scale = sqrt(2.0 / (sizes[i] + sizes[i+1]));
@@ -89,6 +103,48 @@ void forward(Net* net, double* input) {
     }
 }
 
+// AdamW update function
+void adamw_update(Net* net, double learning_rate) {
+    const double beta1 = 0.9;    // Momentum factor
+    const double beta2 = 0.999;  // Velocity factor
+    const double eps = 1e-8;     // Small constant for numerical stability
+    const double weight_decay = 0.01; // L2 regularization factor
+    
+    for(int i = 0; i < net->n_layers-1; i++) {
+        Layer *curr = &net->layers[i];
+        Layer *next = &net->layers[i+1];
+        int w_size = next->size * curr->size;
+        
+        // Update weights
+        for(int j = 0; j < w_size; j++) {
+            // Momentum update
+            net->m_W[i][j] = beta1 * net->m_W[i][j] + (1 - beta1) * net->dW[i][j];
+            // Velocity update
+            net->v_W[i][j] = beta2 * net->v_W[i][j] + (1 - beta2) * net->dW[i][j] * net->dW[i][j];
+            
+            // Bias correction
+            double m_hat = net->m_W[i][j] / (1 - pow(beta1, net->t));
+            double v_hat = net->v_W[i][j] / (1 - pow(beta2, net->t));
+            
+            // AdamW update (including weight decay)
+            net->W[i][j] -= learning_rate * (m_hat / (sqrt(v_hat) + eps) + 
+                                           weight_decay * net->W[i][j]);
+        }
+        
+        // Update biases
+        for(int j = 0; j < next->size; j++) {
+            net->m_b[i][j] = beta1 * net->m_b[i][j] + (1 - beta1) * net->db[i][j];
+            net->v_b[i][j] = beta2 * net->v_b[i][j] + (1 - beta2) * net->db[i][j] * net->db[i][j];
+            
+            double m_hat = net->m_b[i][j] / (1 - pow(beta1, net->t));
+            double v_hat = net->v_b[i][j] / (1 - pow(beta2, net->t));
+            
+            net->b[i][j] -= learning_rate * m_hat / (sqrt(v_hat) + eps);
+        }
+    }
+    net->t++;  // Increment time step
+}
+
 // Backward pass
 void backward(Net* net, double* target, double learning_rate) {
     int last = net->n_layers-1;
@@ -123,17 +179,8 @@ void backward(Net* net, double* target, double learning_rate) {
         }
     }
     
-    // Update weights and biases
-    for(int i = 0; i < net->n_layers-1; i++) {
-        Layer *curr = &net->layers[i];
-        Layer *next = &net->layers[i+1];
-        for(int j = 0; j < next->size * curr->size; j++) {
-            net->W[i][j] -= learning_rate * net->dW[i][j];
-        }
-        for(int j = 0; j < next->size; j++) {
-            net->b[i][j] -= learning_rate * net->db[i][j];
-        }
-    }
+    // Update weights and biases using AdamW
+    adamw_update(net, learning_rate);
 }
 
 // Compute mean squared error
@@ -242,7 +289,7 @@ int main() {
     
     // Training parameters
     double learning_rate = 0.001;
-    int epochs = 50;
+    int epochs = 5000;
     
     // Training loop
     for(int epoch = 0; epoch < epochs; epoch++) {
