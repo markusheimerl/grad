@@ -6,8 +6,8 @@
 #include <string.h>
 #include <math.h>
 
-#define INPUT_RANGE_MIN -2.0
-#define INPUT_RANGE_MAX 2.0
+#define INPUT_RANGE_MIN -3.0
+#define INPUT_RANGE_MAX 3.0
 #define MAX_SYNTHETIC_OUTPUTS 4
 
 typedef struct { 

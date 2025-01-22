@@ -67,13 +67,14 @@ Net* init_net(int n_layers, int* sizes) {
     return net;
 }
 
-// ReLU activation function
-double relu(double x) {
-    return x > 0 ? x : 0;
+double gelu(double x) {
+    return 0.5 * x * (1 + tanh(sqrt(2/M_PI) * (x + 0.044715 * pow(x, 3))));
 }
 
-double relu_derivative(double x) {
-    return x > 0 ? 1 : 0;
+double gelu_derivative(double x) {
+    double cdf = 0.5 * (1 + tanh(sqrt(2/M_PI) * (x + 0.044715 * pow(x, 3))));
+    double pdf = exp(-0.5 * x * x) / sqrt(2 * M_PI);
+    return cdf + x * pdf;
 }
 
 // Forward pass
@@ -95,20 +96,40 @@ void forward(Net* net, double* input) {
                 next->x[j] += curr->x[k] * net->W[i][j * curr->size + k];
             }
             next->x[j] += net->b[i][j];
-            // Apply ReLU activation (except for output layer)
+            // Apply gelu activation (except for output layer)
             if(i < net->n_layers-2) {
-                next->x[j] = relu(next->x[j]);
+                next->x[j] = gelu(next->x[j]);
             }
         }
     }
 }
 
-// AdamW update function
-void adamw_update(Net* net, double learning_rate) {
+double get_learning_rate(int epoch, int total_epochs, double initial_lr) {
+    return initial_lr * (1 + cos(M_PI * epoch / total_epochs)) / 2;
+}
+
+double get_weight_decay(int epoch, int total_epochs) {
+    return 0.01 * (1 - epoch / (double)total_epochs);
+}
+
+double get_warmup_lr(int epoch, int warmup_epochs, double initial_lr) {
+    if (epoch < warmup_epochs) {
+        return initial_lr * epoch / warmup_epochs;
+    }
+    return initial_lr;
+}
+
+// AdamW update function with learning rate scheduling
+void adamw_update(Net* net, double learning_rate, int epoch, int total_epochs) {
     const double beta1 = 0.9;    // Momentum factor
     const double beta2 = 0.999;  // Velocity factor
     const double eps = 1e-8;     // Small constant for numerical stability
-    const double weight_decay = 0.01; // L2 regularization factor
+    
+    // Adaptive learning rate and weight decay scheduling
+    const int warmup_epochs = 5;
+    double current_lr = get_warmup_lr(epoch, warmup_epochs, learning_rate);
+    current_lr = get_learning_rate(epoch, total_epochs, current_lr);
+    double weight_decay = get_weight_decay(epoch, total_epochs);
     
     for(int i = 0; i < net->n_layers-1; i++) {
         Layer *curr = &net->layers[i];
@@ -127,8 +148,8 @@ void adamw_update(Net* net, double learning_rate) {
             double v_hat = net->v_W[i][j] / (1 - pow(beta2, net->t));
             
             // AdamW update (including weight decay)
-            net->W[i][j] -= learning_rate * (m_hat / (sqrt(v_hat) + eps) + 
-                                           weight_decay * net->W[i][j]);
+            net->W[i][j] -= current_lr * (m_hat / (sqrt(v_hat) + eps) + 
+                                        weight_decay * net->W[i][j]);
         }
         
         // Update biases
@@ -139,14 +160,14 @@ void adamw_update(Net* net, double learning_rate) {
             double m_hat = net->m_b[i][j] / (1 - pow(beta1, net->t));
             double v_hat = net->v_b[i][j] / (1 - pow(beta2, net->t));
             
-            net->b[i][j] -= learning_rate * m_hat / (sqrt(v_hat) + eps);
+            net->b[i][j] -= current_lr * m_hat / (sqrt(v_hat) + eps);
         }
     }
     net->t++;  // Increment time step
 }
 
 // Backward pass
-void backward(Net* net, double* target, double learning_rate) {
+void backward(Net* net, double* target, double learning_rate, int epoch, int total_epochs) {
     int last = net->n_layers-1;
     
     // Compute output layer error
@@ -174,13 +195,13 @@ void backward(Net* net, double* target, double learning_rate) {
                 for(int k = 0; k < next->size; k++) {
                     curr->dx[j] += next->dx[k] * net->W[i][k * curr->size + j];
                 }
-                curr->dx[j] *= relu_derivative(curr->x[j]);
+                curr->dx[j] *= gelu_derivative(curr->x[j]);
             }
         }
     }
     
     // Update weights and biases using AdamW
-    adamw_update(net, learning_rate);
+    adamw_update(net, learning_rate, epoch, total_epochs);
 }
 
 // Compute mean squared error
@@ -289,13 +310,13 @@ int main() {
     
     // Training parameters
     double learning_rate = 0.001;
-    int epochs = 5000;
+    int epochs = 200;
     
     // Training loop
     for(int epoch = 0; epoch < epochs; epoch++) {
         for(int i = 0; i < data->n; i++) {
             forward(net, data->X[i]);
-            backward(net, data->y[i], learning_rate);
+            backward(net, data->y[i], learning_rate, epoch, epochs);
         }
         
         if(epoch % 5 == 0 || epoch == epochs - 1) {
