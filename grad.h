@@ -234,25 +234,31 @@ void save_net(const char* f, Net* net) {
     FILE* fp = fopen(f, "wb");
     if(!fp) return;
     
-    // Save network architecture and learning rate
+    // Save network architecture, learning rate, and timestep
     fwrite(&net->n_layers, sizeof(int), 1, fp);
     fwrite(&net->lr, sizeof(double), 1, fp);
+    fwrite(&net->t, sizeof(int), 1, fp);
     
     // Save layer sizes
     for(int i = 0; i < net->n_layers; i++) {
         fwrite(&net->layers[i].size, sizeof(int), 1, fp);
     }
     
-    // Save weights and biases
+    // Save weights, biases, and optimizer states
     for(int i = 0; i < net->n_layers-1; i++) {
         int rows = net->layers[i+1].size;
         int cols = net->layers[i].size;
+        int w_size = rows * cols;
         
-        // Save weights
-        fwrite(net->W[i], sizeof(double), rows * cols, fp);
+        // Save weights and related optimizer states
+        fwrite(net->W[i], sizeof(double), w_size, fp);
+        fwrite(net->m_W[i], sizeof(double), w_size, fp);
+        fwrite(net->v_W[i], sizeof(double), w_size, fp);
         
-        // Save biases
+        // Save biases and related optimizer states
         fwrite(net->b[i], sizeof(double), rows, fp);
+        fwrite(net->m_b[i], sizeof(double), rows, fp);
+        fwrite(net->v_b[i], sizeof(double), rows, fp);
     }
     
     fclose(fp);
@@ -265,8 +271,10 @@ Net* load_net(const char* f) {
     // Load network architecture and learning rate
     int n_layers;
     double learning_rate;
+    int timestep;
     fread(&n_layers, sizeof(int), 1, fp);
     fread(&learning_rate, sizeof(double), 1, fp);
+    fread(&timestep, sizeof(int), 1, fp);  // Load timestep
     
     // Load layer sizes
     int* sizes = malloc(n_layers * sizeof(int));
@@ -276,18 +284,24 @@ Net* load_net(const char* f) {
     
     // Initialize network
     Net* net = init_net(n_layers, sizes, learning_rate);
+    net->t = timestep;  // Restore timestep
     free(sizes);
     
-    // Load weights and biases
+    // Load weights, biases, and optimizer states
     for(int i = 0; i < n_layers-1; i++) {
         int rows = net->layers[i+1].size;
         int cols = net->layers[i].size;
+        int w_size = rows * cols;
         
-        // Load weights
-        fread(net->W[i], sizeof(double), rows * cols, fp);
+        // Load weights and related optimizer states
+        fread(net->W[i], sizeof(double), w_size, fp);
+        fread(net->m_W[i], sizeof(double), w_size, fp);
+        fread(net->v_W[i], sizeof(double), w_size, fp);
         
-        // Load biases
+        // Load biases and related optimizer states
         fread(net->b[i], sizeof(double), rows, fp);
+        fread(net->m_b[i], sizeof(double), rows, fp);
+        fread(net->v_b[i], sizeof(double), rows, fp);
     }
     
     fclose(fp);
@@ -304,14 +318,21 @@ void free_net(Net* net) {
         free(net->dW[i]);
         free(net->b[i]);
         free(net->db[i]);
+        free(net->m_W[i]);
+        free(net->v_W[i]);
+        free(net->m_b[i]);
+        free(net->v_b[i]);
     }
     free(net->W);
     free(net->dW);
     free(net->b);
     free(net->db);
+    free(net->m_W);
+    free(net->v_W);
+    free(net->m_b);
+    free(net->v_b);
     free(net->layers);
     free(net);
 }
-
 
 #endif
