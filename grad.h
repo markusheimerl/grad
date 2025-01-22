@@ -171,13 +171,11 @@ void adamw_update(Net* net, int epoch, int total_epochs) {
 }
 
 // Backward pass
-void backward(Net* net, double* target, int epoch, int total_epochs) {
+void bwd(Net* net, double* output_gradient, int epoch, int total_epochs) {
     int last = net->n_layers-1;
     
-    // Compute output layer error
-    for(int i = 0; i < net->layers[last].size; i++) {
-        net->layers[last].dx[i] = net->layers[last].x[i] - target[i];
-    }
+    // Set output layer gradient
+    memcpy(net->layers[last].dx, output_gradient, net->layers[last].size * sizeof(double));
     
     // Backward propagation
     for(int i = last-1; i >= 0; i--) {
@@ -206,6 +204,17 @@ void backward(Net* net, double* target, int epoch, int total_epochs) {
     
     // Update weights and biases using AdamW
     adamw_update(net, epoch, total_epochs);
+}
+
+void backward(Net* net, double* target, int epoch, int total_epochs) {
+    int last = net->n_layers-1;
+    double output_gradient[net->layers[last].size];
+    
+    for(int i = 0; i < net->layers[last].size; i++) {
+        output_gradient[i] = net->layers[last].x[i] - target[i];
+    }
+    
+    bwd(net, output_gradient, epoch, total_epochs);
 }
 
 // Compute mean squared error
