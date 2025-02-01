@@ -350,64 +350,6 @@ void cuda_save_net(const char* f, CudaNet* net) {
     fclose(fp);
 }
 
-CudaNet* cuda_load_net(const char* f) {
-    FILE* fp = fopen(f, "rb");
-    if(!fp) return NULL;
-    
-    int n_layers;
-    double learning_rate;
-    int timestep;
-    fread(&n_layers, sizeof(int), 1, fp);
-    fread(&learning_rate, sizeof(double), 1, fp);
-    fread(&timestep, sizeof(int), 1, fp);
-    
-    int* sizes = (int*)malloc(n_layers * sizeof(int));
-    for(int i = 0; i < n_layers; i++) {
-        fread(&sizes[i], sizeof(int), 1, fp);
-    }
-    
-    CudaNet* net = cuda_init_net(n_layers, sizes, learning_rate);
-    net->t = timestep;
-    
-    for(int i = 0; i < n_layers-1; i++) {
-        int rows = sizes[i+1];
-        int cols = sizes[i];
-        int w_size = rows * cols;
-        
-        double* h_W = (double*)malloc(w_size * sizeof(double));
-        double* h_m_W = (double*)malloc(w_size * sizeof(double));
-        double* h_v_W = (double*)malloc(w_size * sizeof(double));
-        double* h_b = (double*)malloc(rows * sizeof(double));
-        double* h_m_b = (double*)malloc(rows * sizeof(double));
-        double* h_v_b = (double*)malloc(rows * sizeof(double));
-        
-        fread(h_W, sizeof(double), w_size, fp);
-        fread(h_m_W, sizeof(double), w_size, fp);
-        fread(h_v_W, sizeof(double), w_size, fp);
-        fread(h_b, sizeof(double), rows, fp);
-        fread(h_m_b, sizeof(double), rows, fp);
-        fread(h_v_b, sizeof(double), rows, fp);
-        
-        CUDA_CHECK(cudaMemcpy(net->W[i], h_W, w_size * sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(net->m_W[i], h_m_W, w_size * sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(net->v_W[i], h_v_W, w_size * sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(net->b[i], h_b, rows * sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(net->m_b[i], h_m_b, rows * sizeof(double), cudaMemcpyHostToDevice));
-        CUDA_CHECK(cudaMemcpy(net->v_b[i], h_v_b, rows * sizeof(double), cudaMemcpyHostToDevice));
-        
-        free(h_W);
-        free(h_m_W);
-        free(h_v_W);
-        free(h_b);
-        free(h_m_b);
-        free(h_v_b);
-    }
-    
-    free(sizes);
-    fclose(fp);
-    return net;
-}
-
 void cuda_free_net(CudaNet* net) {
     for(int i = 0; i < net->n_layers; i++) {
         CUDA_CHECK(cudaFree(net->layers[i].x));
@@ -435,6 +377,121 @@ void cuda_free_net(CudaNet* net) {
     free(net->v_b);
     free(net->layers);
     free(net);
+}
+
+CudaNet* cuda_load_net(const char* f) {
+    FILE* fp = fopen(f, "rb");
+    if(!fp) return NULL;
+    
+    int n_layers;
+    double learning_rate;
+    int timestep;
+    size_t read;
+    
+    read = fread(&n_layers, sizeof(int), 1, fp);
+    if(read != 1) { fclose(fp); return NULL; }
+    
+    read = fread(&learning_rate, sizeof(double), 1, fp);
+    if(read != 1) { fclose(fp); return NULL; }
+    
+    read = fread(&timestep, sizeof(int), 1, fp);
+    if(read != 1) { fclose(fp); return NULL; }
+    
+    int* sizes = (int*)malloc(n_layers * sizeof(int));
+    if(!sizes) { fclose(fp); return NULL; }
+    
+    for(int i = 0; i < n_layers; i++) {
+        read = fread(&sizes[i], sizeof(int), 1, fp);
+        if(read != 1) { 
+            free(sizes); 
+            fclose(fp); 
+            return NULL; 
+        }
+    }
+    
+    CudaNet* net = cuda_init_net(n_layers, sizes, learning_rate);
+    if(!net) { 
+        free(sizes); 
+        fclose(fp); 
+        return NULL; 
+    }
+    
+    net->t = timestep;
+    
+    for(int i = 0; i < n_layers-1; i++) {
+        int rows = sizes[i+1];
+        int cols = sizes[i];
+        int w_size = rows * cols;
+        
+        double* h_W = (double*)malloc(w_size * sizeof(double));
+        double* h_m_W = (double*)malloc(w_size * sizeof(double));
+        double* h_v_W = (double*)malloc(w_size * sizeof(double));
+        double* h_b = (double*)malloc(rows * sizeof(double));
+        double* h_m_b = (double*)malloc(rows * sizeof(double));
+        double* h_v_b = (double*)malloc(rows * sizeof(double));
+        
+        if(!h_W || !h_m_W || !h_v_W || !h_b || !h_m_b || !h_v_b) {
+            if(h_W) free(h_W);
+            if(h_m_W) free(h_m_W);
+            if(h_v_W) free(h_v_W);
+            if(h_b) free(h_b);
+            if(h_m_b) free(h_m_b);
+            if(h_v_b) free(h_v_b);
+            cuda_free_net(net);
+            free(sizes);
+            fclose(fp);
+            return NULL;
+        }
+        
+        read = fread(h_W, sizeof(double), w_size, fp);
+        if(read != w_size) goto error_cleanup;
+        
+        read = fread(h_m_W, sizeof(double), w_size, fp);
+        if(read != w_size) goto error_cleanup;
+        
+        read = fread(h_v_W, sizeof(double), w_size, fp);
+        if(read != w_size) goto error_cleanup;
+        
+        read = fread(h_b, sizeof(double), rows, fp);
+        if(read != rows) goto error_cleanup;
+        
+        read = fread(h_m_b, sizeof(double), rows, fp);
+        if(read != rows) goto error_cleanup;
+        
+        read = fread(h_v_b, sizeof(double), rows, fp);
+        if(read != rows) goto error_cleanup;
+        
+        CUDA_CHECK(cudaMemcpy(net->W[i], h_W, w_size * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(net->m_W[i], h_m_W, w_size * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(net->v_W[i], h_v_W, w_size * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(net->b[i], h_b, rows * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(net->m_b[i], h_m_b, rows * sizeof(double), cudaMemcpyHostToDevice));
+        CUDA_CHECK(cudaMemcpy(net->v_b[i], h_v_b, rows * sizeof(double), cudaMemcpyHostToDevice));
+        
+        free(h_W);
+        free(h_m_W);
+        free(h_v_W);
+        free(h_b);
+        free(h_m_b);
+        free(h_v_b);
+        continue;
+        
+    error_cleanup:
+        free(h_W);
+        free(h_m_W);
+        free(h_v_W);
+        free(h_b);
+        free(h_m_b);
+        free(h_v_b);
+        cuda_free_net(net);
+        free(sizes);
+        fclose(fp);
+        return NULL;
+    }
+    
+    free(sizes);
+    fclose(fp);
+    return net;
 }
 
 #endif
