@@ -25,4 +25,4 @@ run_cuda: $(CUDA_TARGET)
 	./$(CUDA_TARGET)
 
 clean:
-	rm -f $(TARGET) $(CUDA_TARGET) *.csv *.bin
+	rm -f *.out *.csv *.bin
