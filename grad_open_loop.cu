@@ -168,11 +168,13 @@ __global__ void fc_forward_kernel(
         int b = idx / out_feat;
         int o = idx % out_feat;
         
-        // Just use the last timestep's output
         double sum = fc_b[o];
-        const double* last_hidden = &attn_output[b * seq_len * attn_dim + (seq_len-1) * attn_dim];
-        for(int d = 0; d < attn_dim; d++) {
-            sum += last_hidden[d] * fc_w[d * out_feat + o];
+        // Average pooling over sequence length
+        for(int s = 0; s < seq_len; s++) {
+            for(int d = 0; d < attn_dim; d++) {
+                sum += attn_output[b * seq_len * attn_dim + s * attn_dim + d] *
+                       fc_w[d * out_feat + o] / seq_len;
+            }
         }
         output[idx] = sum;
     }
@@ -240,13 +242,13 @@ void free_model(Model* m) {
 }
 
 __global__ void fc_backward_kernel(
-    const double* attn_output,  // [batch_size, seq_len, attn_dim]
-    const double* fc_w,         // [attn_dim, out_feat]
-    const double* y_pred,       // [batch_size, out_feat]
-    const double* y_true,       // [batch_size, out_feat]
-    double* grad_fc_w,         // [attn_dim, out_feat]
-    double* grad_fc_b,         // [out_feat]
-    double* grad_attn_output,  // [batch_size, seq_len, attn_dim]
+    const double* attn_output,
+    const double* fc_w,
+    const double* y_pred,
+    const double* y_true,
+    double* grad_fc_w,
+    double* grad_fc_b,
+    double* grad_attn_output,
     int seq_len, int attn_dim, int out_feat, int batch_size
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -261,14 +263,14 @@ __global__ void fc_backward_kernel(
         // Gradient for bias
         atomicAdd(&grad_fc_b[o], d_out);
         
-        // Get pointer to last timestep's output
-        const double* last_hidden = &attn_output[b * seq_len * attn_dim + (seq_len-1) * attn_dim];
-        double* last_grad = &grad_attn_output[b * seq_len * attn_dim + (seq_len-1) * attn_dim];
-        
         // Gradients for weights and attention output
-        for(int d = 0; d < attn_dim; d++) {
-            atomicAdd(&grad_fc_w[d * out_feat + o], d_out * last_hidden[d]);
-            atomicAdd(&last_grad[d], d_out * fc_w[d * out_feat + o]);
+        for(int s = 0; s < seq_len; s++) {
+            for(int d = 0; d < attn_dim; d++) {
+                atomicAdd(&grad_fc_w[d * out_feat + o],
+                         d_out * attn_output[b * seq_len * attn_dim + s * attn_dim + d] / seq_len);
+                atomicAdd(&grad_attn_output[b * seq_len * attn_dim + s * attn_dim + d],
+                         d_out * fc_w[d * out_feat + o] / seq_len);
+            }
         }
     }
 }
