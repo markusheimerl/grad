@@ -7,12 +7,10 @@ CUDA_LDFLAGS = -lcudart
 
 TARGET = grad.out
 CUDA_TARGET = grad_cuda.out
-CNN_TARGET = cnn.out
 SRC = grad.c
 CUDA_SRC = grad.cu
-CNN_SRC = cnn.cu
 
-.PHONY: clean run run_cuda run_cnn
+.PHONY: clean run run_cuda
 
 $(TARGET): $(SRC)
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) -o $@
@@ -20,17 +18,11 @@ $(TARGET): $(SRC)
 $(CUDA_TARGET): $(CUDA_SRC)
 	$(NVCC) $(NVCCFLAGS) $^ $(CUDA_LDFLAGS) -o $@
 
-$(CNN_TARGET): $(CNN_SRC)
-	$(NVCC) $(NVCCFLAGS) $^ $(CUDA_LDFLAGS) -o $@
-
 run: $(TARGET)
 	./$(TARGET)
 
 run_cuda: $(CUDA_TARGET)
 	./$(CUDA_TARGET)
-
-run_cnn: $(CNN_TARGET)
-	./$(CNN_TARGET)
 
 clean:
 	rm -f *.out *.csv *.bin
