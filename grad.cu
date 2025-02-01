@@ -819,11 +819,11 @@ static void free_model(Model *model) {
 int main() {
     srand(time(NULL));
     
-    Dataset* data = generate_data(1000, 32, 6, 4, 0.1);
+    Dataset* data = generate_data(1000, 32, 6, 8, 0.1);
     Model* model = create_model(data->sequence_length, data->n_inputs,
                               data->n_outputs);
     
-    int n_epochs = 50;
+    int n_epochs = 60;
     int batch_size = 32;
     float learning_rate = LEARNING_RATE;
     
