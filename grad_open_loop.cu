@@ -275,7 +275,7 @@ __global__ void fc_backward_kernel(
 
 int main() {
     srand(time(NULL));
-    OpenLoopData* data = generate_open_loop_data(1000, 32, 3, 2, 0.1);
+    OpenLoopData* data = generate_open_loop_data(1000, 32, 6, 4, 0.1);
     
     // Save data
     time_t now = time(NULL);
