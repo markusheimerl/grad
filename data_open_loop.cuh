@@ -125,6 +125,12 @@ static OpenLoopData* generate_open_loop_data(
                 i < input_features ? i : i-input_features);
     }
     
+    // Choose patterns for each output feature
+    OpenLoopPattern* patterns = (OpenLoopPattern*)malloc(output_features * sizeof(OpenLoopPattern));
+    for(int f = 0; f < output_features; f++) {
+        patterns[f] = (OpenLoopPattern)(rand() % NUM_PATTERNS);
+    }
+    
     // Generate sequences
     for(int i = 0; i < n_samples; i++) {
         // Allocate window
@@ -150,13 +156,13 @@ static OpenLoopData* generate_open_loop_data(
         // Generate outputs
         d->outputs[i] = (double*)malloc(output_features * sizeof(double));
         for(int f = 0; f < output_features; f++) {
-            OpenLoopPattern pattern = (OpenLoopPattern)(rand() % NUM_PATTERNS);
-            d->outputs[i][f] = generate_pattern(pattern, d->windows[i], 
+            d->outputs[i][f] = generate_pattern(patterns[f], d->windows[i], 
                                               window_size, input_features, f);
             d->outputs[i][f] += ((double)rand()/RAND_MAX - 0.5) * noise;
         }
     }
     
+    free(patterns);
     return d;
 }
 
