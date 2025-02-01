@@ -67,6 +67,13 @@ __global__ void zero_init_kernel(float* arr, int size) {
     }
 }
 
+__global__ void update_weights_kernel(float* weights, float* gradients, int size, float learning_rate) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        weights[idx] -= learning_rate * gradients[idx];
+    }
+}
+
 __global__ void conv1d_forward_kernel(
     const float* input,
     const float* weights,
@@ -232,6 +239,42 @@ __global__ void dense_backward_kernel(
     }
 }
 
+void update_weights(CNNModel* model) {
+    int threads = 256;
+    
+    // Update conv1 weights and biases
+    update_weights_kernel<<<(KERNEL_SIZE * model->input_features * CONV1_FILTERS + threads - 1) / threads, threads>>>(
+        model->conv1_weights, model->conv1_weight_grads, 
+        KERNEL_SIZE * model->input_features * CONV1_FILTERS, model->learning_rate);
+    update_weights_kernel<<<(CONV1_FILTERS + threads - 1) / threads, threads>>>(
+        model->conv1_bias, model->conv1_bias_grads, 
+        CONV1_FILTERS, model->learning_rate);
+    
+    // Update conv2 weights and biases
+    update_weights_kernel<<<(KERNEL_SIZE * CONV1_FILTERS * CONV2_FILTERS + threads - 1) / threads, threads>>>(
+        model->conv2_weights, model->conv2_weight_grads,
+        KERNEL_SIZE * CONV1_FILTERS * CONV2_FILTERS, model->learning_rate);
+    update_weights_kernel<<<(CONV2_FILTERS + threads - 1) / threads, threads>>>(
+        model->conv2_bias, model->conv2_bias_grads,
+        CONV2_FILTERS, model->learning_rate);
+    
+    // Update conv3 weights and biases
+    update_weights_kernel<<<(KERNEL_SIZE * CONV2_FILTERS * CONV3_FILTERS + threads - 1) / threads, threads>>>(
+        model->conv3_weights, model->conv3_weight_grads,
+        KERNEL_SIZE * CONV2_FILTERS * CONV3_FILTERS, model->learning_rate);
+    update_weights_kernel<<<(CONV3_FILTERS + threads - 1) / threads, threads>>>(
+        model->conv3_bias, model->conv3_bias_grads,
+        CONV3_FILTERS, model->learning_rate);
+    
+    // Update dense weights and biases
+    update_weights_kernel<<<(CONV3_FILTERS * model->output_features + threads - 1) / threads, threads>>>(
+        model->dense_weights, model->dense_weight_grads,
+        CONV3_FILTERS * model->output_features, model->learning_rate);
+    update_weights_kernel<<<(model->output_features + threads - 1) / threads, threads>>>(
+        model->dense_bias, model->dense_bias_grads,
+        model->output_features, model->learning_rate);
+}
+
 void zero_gradients(CNNModel* model) {
     int threads = 256;
     
@@ -346,7 +389,7 @@ float compute_mse(float* pred, float* target, int size) {
         float diff = pred[i] - target[i];
         mse += diff * diff;
     }
-    return mse / (float)size;
+    return mse / size;
 }
 
 CNNModel* init_model(int batch_size, int timesteps, int input_features, int output_features, float learning_rate) {
@@ -396,28 +439,37 @@ CNNModel* init_model(int batch_size, int timesteps, int input_features, int outp
     
     // Initialize weights using Xavier initialization
     int threads = 256;
+    unsigned long seed = time(NULL);
+    
     xavier_init_kernel<<<(KERNEL_SIZE * input_features * CONV1_FILTERS + threads - 1) / threads, threads>>>(
-        model->conv1_weights, KERNEL_SIZE * input_features, CONV1_FILTERS, time(NULL));
+        model->conv1_weights, KERNEL_SIZE * input_features, CONV1_FILTERS, seed);
     xavier_init_kernel<<<(KERNEL_SIZE * CONV1_FILTERS * CONV2_FILTERS + threads - 1) / threads, threads>>>(
-        model->conv2_weights, KERNEL_SIZE * CONV1_FILTERS, CONV2_FILTERS, time(NULL) + 1);
+        model->conv2_weights, KERNEL_SIZE * CONV1_FILTERS, CONV2_FILTERS, seed + 1);
     xavier_init_kernel<<<(KERNEL_SIZE * CONV2_FILTERS * CONV3_FILTERS + threads - 1) / threads, threads>>>(
-        model->conv3_weights, KERNEL_SIZE * CONV2_FILTERS, CONV3_FILTERS, time(NULL) + 2);
+        model->conv3_weights, KERNEL_SIZE * CONV2_FILTERS, CONV3_FILTERS, seed + 2);
     xavier_init_kernel<<<(CONV3_FILTERS * output_features + threads - 1) / threads, threads>>>(
-        model->dense_weights, CONV3_FILTERS, output_features, time(NULL) + 3);
+        model->dense_weights, CONV3_FILTERS, output_features, seed + 3);
     
     // Initialize biases to zero
-    zero_init_kernel<<<(CONV1_FILTERS + threads - 1) / threads, threads>>>(model->conv1_bias, CONV1_FILTERS);
-    zero_init_kernel<<<(CONV2_FILTERS + threads - 1) / threads, threads>>>(model->conv2_bias, CONV2_FILTERS);
-    zero_init_kernel<<<(CONV3_FILTERS + threads - 1) / threads, threads>>>(model->conv3_bias, CONV3_FILTERS);
-    zero_init_kernel<<<(output_features + threads - 1) / threads, threads>>>(model->dense_bias, output_features);
+    zero_init_kernel<<<(CONV1_FILTERS + threads - 1) / threads, threads>>>(
+        model->conv1_bias, CONV1_FILTERS);
+    zero_init_kernel<<<(CONV2_FILTERS + threads - 1) / threads, threads>>>(
+        model->conv2_bias, CONV2_FILTERS);
+    zero_init_kernel<<<(CONV3_FILTERS + threads - 1) / threads, threads>>>(
+        model->conv3_bias, CONV3_FILTERS);
+    zero_init_kernel<<<(output_features + threads - 1) / threads, threads>>>(
+        model->dense_bias, output_features);
     
     // Initialize gradients to zero
     zero_gradients(model);
     
+    CUDA_CHECK(cudaDeviceSynchronize());
     return model;
 }
 
 void free_model(CNNModel* model) {
+    if (model == NULL) return;
+    
     // Free Conv1 layer
     CUDA_CHECK(cudaFree(model->conv1_weights));
     CUDA_CHECK(cudaFree(model->conv1_bias));
@@ -450,6 +502,7 @@ void free_model(CNNModel* model) {
     CUDA_CHECK(cudaFree(model->pool_output));
     CUDA_CHECK(cudaFree(model->pool_delta));
     
+    // Free the model struct itself
     free(model);
 }
 
@@ -467,8 +520,8 @@ int main() {
     save_open_loop_csv(data_fname, data);
     printf("Data saved to: %s\n", data_fname);
     
-    // Initialize model with smaller learning rate
-    CNNModel* model = init_model(1, 50, 3, 2, 0.0001f);
+    // Initialize model with adjusted learning rate
+    CNNModel* model = init_model(1, 50, 3, 2, 0.001f);
     
     // Allocate GPU memory for input and output
     float *d_input, *d_output, *d_target;
@@ -510,29 +563,36 @@ int main() {
             // Copy output for loss computation
             CUDA_CHECK(cudaMemcpy(h_output, d_output, 2 * sizeof(float), cudaMemcpyDeviceToHost));
             
-            // Compute loss
+            // Compute and accumulate loss
             float current_loss = compute_mse(h_output, h_target, 2);
-            if (isnan(current_loss) || isinf(current_loss)) {
-                printf("Warning: Loss is invalid at epoch %d, sample %d\n", epoch, i);
-                continue;
-            }
             epoch_loss += current_loss;
             
-            // Backward pass
+            // Backward pass and update weights
             backward(model, d_input, d_target);
+            update_weights(model);
         }
         
         epoch_loss /= data->n;
         if(epoch % 10 == 0) {
             printf("Epoch %d, Loss: %.6f\n", epoch, epoch_loss);
+            printf("Sample prediction: %.4f, %.4f | Target: %.4f, %.4f\n",
+                   h_output[0], h_output[1], h_target[0], h_target[1]);
         }
     }
     
-    // Save model with timestamp
+    // Cleanup and save model
+    free(h_output);
+    free(h_target);
+    free(h_input);
+    CUDA_CHECK(cudaFree(d_input));
+    CUDA_CHECK(cudaFree(d_output));
+    CUDA_CHECK(cudaFree(d_target));
+    
     char model_fname[64];
     strftime(model_fname, sizeof(model_fname), "%Y%m%d_%H%M%S_cnn.bin", timeinfo);
     FILE* fp = fopen(model_fname, "wb");
     if(fp) {
+        // Save model parameters
         fwrite(&model->batch_size, sizeof(int), 1, fp);
         fwrite(&model->timesteps, sizeof(int), 1, fp);
         fwrite(&model->input_features, sizeof(int), 1, fp);
@@ -542,13 +602,6 @@ int main() {
     }
     printf("Model saved to: %s\n", model_fname);
     
-    // Cleanup
-    free(h_output);
-    free(h_target);
-    free(h_input);
-    CUDA_CHECK(cudaFree(d_input));
-    CUDA_CHECK(cudaFree(d_output));
-    CUDA_CHECK(cudaFree(d_target));
     free_model(model);
     free_open_loop_data(data);
     
