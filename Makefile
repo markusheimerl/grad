@@ -5,24 +5,25 @@ NVCCFLAGS = -O3 -arch=sm_60
 LDFLAGS = -flto -lm
 CUDA_LDFLAGS = -lcudart
 
-TARGET = grad.out
-CUDA_TARGET = grad_cuda.out
-SRC = grad.c
-CUDA_SRC = grad.cu
+.PHONY: clean run run_cuda run_open_loop
 
-.PHONY: clean run run_cuda
-
-$(TARGET): $(SRC)
+grad.out: grad.c
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
-$(CUDA_TARGET): $(CUDA_SRC)
+grad_cuda.out: grad.cu
 	$(NVCC) $(NVCCFLAGS) $^ $(CUDA_LDFLAGS) -o $@
 
-run: $(TARGET)
-	./$(TARGET)
+grad_open_loop.out: grad_open_loop.cu
+	$(NVCC) $(NVCCFLAGS) $^ $(CUDA_LDFLAGS) -o $@
 
-run_cuda: $(CUDA_TARGET)
-	./$(CUDA_TARGET)
+run: grad.out
+	./grad.out
+
+run_cuda: grad_cuda.out
+	./grad_cuda.out
+
+run_open_loop: grad_open_loop.out
+	./grad_open_loop.out
 
 clean:
 	rm -f *.out *.csv *.bin
