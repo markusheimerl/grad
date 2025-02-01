@@ -9,6 +9,8 @@
 
 #define INPUT_RANGE_MIN -3.0
 #define INPUT_RANGE_MAX 3.0
+#define OUTPUT_RANGE_MIN 30.0
+#define OUTPUT_RANGE_MAX 70.0
 
 typedef struct {
     double ***windows;      // [batch][window_size][input_features]
@@ -36,6 +38,8 @@ static __host__ __device__ double generate_pattern(
     int input_features,
     int output_idx
 ) {
+    double raw_output;
+    
     switch(pattern) {
         case PATTERN_WEIGHTED_SUM: {
             double sum = 0;
@@ -44,7 +48,8 @@ static __host__ __device__ double generate_pattern(
                     sum += window[t][f] * sin(t * M_PI / window_size);
                 }
             }
-            return tanh(sum / (window_size * input_features));
+            raw_output = tanh(sum / (window_size * input_features));
+            break;
         }
         
         case PATTERN_PEAK_DETECT: {
@@ -57,7 +62,8 @@ static __host__ __device__ double generate_pattern(
                     }
                 }
             }
-            return sin(peaks * M_PI / (window_size * input_features));
+            raw_output = sin(peaks * M_PI / (window_size * input_features));
+            break;
         }
         
         case PATTERN_FREQUENCY: {
@@ -67,7 +73,8 @@ static __host__ __device__ double generate_pattern(
                     freq += fabs(window[t][f] - window[t-1][f]);
                 }
             }
-            return tanh(freq / (window_size * input_features));
+            raw_output = tanh(freq / (window_size * input_features));
+            break;
         }
         
         case PATTERN_THRESHOLD: {
@@ -81,12 +88,16 @@ static __host__ __device__ double generate_pattern(
                     }
                 }
             }
-            return cos(crossings * M_PI / (window_size * input_features));
+            raw_output = cos(crossings * M_PI / (window_size * input_features));
+            break;
         }
         
         default:
-            return 0.0;
+            raw_output = 0.0;
     }
+    
+    // Scale the output from [-1,1] to [OUTPUT_RANGE_MIN, OUTPUT_RANGE_MAX]
+    return ((raw_output + 1.0) / 2.0) * (OUTPUT_RANGE_MAX - OUTPUT_RANGE_MIN) + OUTPUT_RANGE_MIN;
 }
 
 static OpenLoopData* generate_open_loop_data(
@@ -128,8 +139,8 @@ static OpenLoopData* generate_open_loop_data(
                                         (INPUT_RANGE_MAX - INPUT_RANGE_MIN) + 
                                         INPUT_RANGE_MIN;
                 } else {
-                    d->windows[i][t][f] = 0.8 * d->windows[i][t-1][f] + 
-                                        0.2 * ((double)rand()/RAND_MAX * 
+                    d->windows[i][t][f] = 0.1 * d->windows[i][t-1][f] + 
+                                        0.9 * ((double)rand()/RAND_MAX * 
                                         (INPUT_RANGE_MAX - INPUT_RANGE_MIN) + 
                                         INPUT_RANGE_MIN);
                 }
