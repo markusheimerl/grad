@@ -1,7 +1,7 @@
 #include "data_open_loop.cuh"
 #include <time.h>
 
-#define LR 0.001
+#define LR 1e-3
 #define EPOCHS 1000
 #define N_FILTERS 16
 #define K_SIZE 5
@@ -9,20 +9,20 @@
 #define BATCH_SIZE 32
 
 typedef struct {
-    double *d_conv_f, *d_conv_b;    // Conv filters and bias
-    double *d_fc_w, *d_fc_b;        // FC weights and bias
+    double *d_conv_f, *d_conv_b;
+    double *d_fc_w, *d_fc_b;
     int n_filters, k_size;
 } Model;
 
 __global__ void forward_kernel(
-    const double* x,         // input
-    const double* conv_f,    // conv filters
-    const double* conv_b,    // conv bias
-    const double* fc_w,      // fc weights
-    const double* fc_b,      // fc bias
-    double* conv_out,        // conv output
-    double* pooled,          // pooled output
-    double* y,              // final output
+    const double* x,
+    const double* conv_f,
+    const double* conv_b, 
+    const double* fc_w,
+    const double* fc_b,
+    double* conv_out,
+    double* pooled,
+    double* y,
     int win_size, int in_feat, int out_feat, int batch_size
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -88,16 +88,13 @@ __global__ void backward_kernel(
         int b = idx / out_feat;
         int o = idx % out_feat;
         
-        // Output gradient
         double d_out = 2.0 * (y_pred[idx] - y_true[idx]) / (out_feat * batch_size);
         
-        // FC gradients
         atomicAdd(&grad_fc_b[o], d_out);
         for(int f = 0; f < N_FILTERS; f++) {
             atomicAdd(&grad_fc_w[o * N_FILTERS + f], 
                      d_out * pooled[b * N_FILTERS + f]);
             
-            // Propagate to conv layer
             double d_pool = d_out * fc_w[o * N_FILTERS + f] / conv_size;
             
             for(int t = 0; t < conv_size; t++) {
@@ -130,7 +127,6 @@ Model* init_model(int in_feat, int out_feat) {
     int conv_size = N_FILTERS * K_SIZE * in_feat;
     int fc_size = out_feat * N_FILTERS;
     
-    // Initialize host memory with He initialization
     double *h_conv_f = (double*)malloc(conv_size * sizeof(double));
     double *h_fc_w = (double*)malloc(fc_size * sizeof(double));
     
@@ -142,7 +138,6 @@ Model* init_model(int in_feat, int out_feat) {
     for(int i = 0; i < fc_size; i++)
         h_fc_w[i] = ((double)rand()/RAND_MAX * 2 - 1) * fc_scale;
     
-    // Allocate and copy to device
     cudaMalloc(&m->d_conv_f, conv_size * sizeof(double));
     cudaMalloc(&m->d_conv_b, N_FILTERS * sizeof(double));
     cudaMalloc(&m->d_fc_w, fc_size * sizeof(double));
@@ -168,9 +163,8 @@ void free_model(Model* m) {
 
 int main() {
     srand(time(NULL));
-    OpenLoopData* data = generate_open_loop_data(1000, 50, 3, 2, 0.1);
+    OpenLoopData* data = generate_open_loop_data(1000, 32, 6, 4, 0.1);
     
-    // Save data
     time_t now = time(NULL);
     char fname[64];
     strftime(fname, sizeof(fname), "%Y%m%d_%H%M%S_data.csv", localtime(&now));
@@ -179,19 +173,18 @@ int main() {
 
     Model* model = init_model(data->input_features, data->output_features);
     
-    // Allocate device memory for training
     double *d_x, *d_y_pred, *d_y_true, *d_conv_out, *d_pooled;
     double *d_grad_conv_f, *d_grad_conv_b, *d_grad_fc_w, *d_grad_fc_b;
     
     int conv_size = N_FILTERS * K_SIZE * data->input_features;
     int fc_size = data->output_features * N_FILTERS;
     
+    // Allocate device memory
     cudaMalloc(&d_x, BATCH_SIZE * data->window_size * data->input_features * sizeof(double));
     cudaMalloc(&d_y_pred, BATCH_SIZE * data->output_features * sizeof(double));
     cudaMalloc(&d_y_true, BATCH_SIZE * data->output_features * sizeof(double));
     cudaMalloc(&d_conv_out, BATCH_SIZE * (data->window_size - K_SIZE + 1) * N_FILTERS * sizeof(double));
     cudaMalloc(&d_pooled, BATCH_SIZE * N_FILTERS * sizeof(double));
-    
     cudaMalloc(&d_grad_conv_f, conv_size * sizeof(double));
     cudaMalloc(&d_grad_conv_b, N_FILTERS * sizeof(double));
     cudaMalloc(&d_grad_fc_w, fc_size * sizeof(double));
@@ -204,12 +197,12 @@ int main() {
         for(int b = 0; b < data->n; b += BATCH_SIZE) {
             int batch_size = min(BATCH_SIZE, data->n - b);
             
-            // Prepare batch data
             double* batch_x = (double*)malloc(
                 batch_size * data->window_size * data->input_features * sizeof(double));
             double* batch_y = (double*)malloc(
                 batch_size * data->output_features * sizeof(double));
             
+            // Prepare batch data
             for(int i = 0; i < batch_size; i++) {
                 for(int t = 0; t < data->window_size; t++)
                     for(int f = 0; f < data->input_features; f++)
@@ -233,13 +226,12 @@ int main() {
             cudaMemset(d_grad_fc_w, 0, fc_size * sizeof(double));
             cudaMemset(d_grad_fc_b, 0, data->output_features * sizeof(double));
             
-            // Forward pass
+            // Forward and backward passes
             forward_kernel<<<(batch_size * data->window_size + B_SIZE - 1)/B_SIZE, B_SIZE>>>(
                 d_x, model->d_conv_f, model->d_conv_b, model->d_fc_w, model->d_fc_b,
                 d_conv_out, d_pooled, d_y_pred,
                 data->window_size, data->input_features, data->output_features, batch_size);
             
-            // Backward pass
             backward_kernel<<<(batch_size * data->output_features + B_SIZE - 1)/B_SIZE, B_SIZE>>>(
                 d_x, d_conv_out, d_pooled, d_y_pred, d_y_true,
                 model->d_conv_f, model->d_fc_w,
