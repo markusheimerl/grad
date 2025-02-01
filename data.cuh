@@ -1,5 +1,5 @@
-#ifndef DATA_OPEN_LOOP_CUH
-#define DATA_OPEN_LOOP_CUH
+#ifndef DATA_CUH
+#define DATA_CUH
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,193 +7,197 @@
 #include <math.h>
 #include <cuda_runtime.h>
 
-#define INPUT_RANGE_MIN -3.0
-#define INPUT_RANGE_MAX 3.0
-#define OUTPUT_RANGE_MIN 30.0
-#define OUTPUT_RANGE_MAX 70.0
+#define INPUT_MIN -3.0
+#define INPUT_MAX 3.0
+#define OUTPUT_MIN 30.0
+#define OUTPUT_MAX 70.0
 
 typedef struct {
-    double ***windows;      // [batch][window_size][input_features]
-    double **outputs;       // [batch][output_features]
-    int n;                  // number of samples
-    int window_size;        // size of sliding window
-    int input_features;     // number of input features
-    int output_features;    // number of output features
-    char **headers;         // Feature names
-} OpenLoopData;
+    double ***inputs;       // [sequence][timesteps][features]
+    double **targets;       // [sequence][features]
+    int n_sequences;        // number of sequences
+    int sequence_length;    // timesteps per sequence
+    int n_inputs;          // number of input features
+    int n_outputs;         // number of output features
+    char **feature_names;   // Names of all features
+} Dataset;
 
-// Different pattern types for synthetic data
+// Pattern types for generating synthetic data
 typedef enum {
-    PATTERN_WEIGHTED_SUM,      // Output is weighted sum of window values
-    PATTERN_PEAK_DETECT,       // Output depends on peaks in window
-    PATTERN_FREQUENCY,         // Output depends on frequency patterns
-    PATTERN_THRESHOLD,         // Output depends on threshold crossings
-    NUM_PATTERNS
-} OpenLoopPattern;
+    PATTERN_A,    // Weighted combination of inputs
+    PATTERN_B,    // Peak detection based
+    PATTERN_C,    // Change frequency based
+    PATTERN_D,    // Threshold crossing based
+    N_PATTERNS
+} PatternType;
 
-static __host__ __device__ double generate_pattern(
-    OpenLoopPattern pattern,
-    double** window,
-    int window_size,
-    int input_features,
+static __host__ __device__ double compute_pattern(
+    PatternType pattern,
+    double** sequence,
+    int sequence_length,
+    int n_inputs,
     int output_idx
 ) {
-    double raw_output;
+    double result;
     
     switch(pattern) {
-        case PATTERN_WEIGHTED_SUM: {
+        case PATTERN_A: {
+            // Weighted combination with sine modulation
             double sum = 0;
-            for(int t = 0; t < window_size; t++) {
-                for(int f = 0; f < input_features; f++) {
-                    sum += window[t][f] * sin(t * M_PI / window_size);
+            for(int t = 0; t < sequence_length; t++) {
+                for(int f = 0; f < n_inputs; f++) {
+                    sum += sequence[t][f] * sin(t * M_PI / sequence_length);
                 }
             }
-            raw_output = tanh(sum / (window_size * input_features));
+            result = tanh(sum / (sequence_length * n_inputs));
             break;
         }
         
-        case PATTERN_PEAK_DETECT: {
-            int peaks = 0;
-            for(int t = 1; t < window_size-1; t++) {
-                for(int f = 0; f < input_features; f++) {
-                    if(window[t][f] > window[t-1][f] && 
-                       window[t][f] > window[t+1][f]) {
-                        peaks++;
+        case PATTERN_B: {
+            // Count local maxima
+            int peak_count = 0;
+            for(int t = 1; t < sequence_length-1; t++) {
+                for(int f = 0; f < n_inputs; f++) {
+                    if(sequence[t][f] > sequence[t-1][f] && 
+                       sequence[t][f] > sequence[t+1][f]) {
+                        peak_count++;
                     }
                 }
             }
-            raw_output = sin(peaks * M_PI / (window_size * input_features));
+            result = sin(peak_count * M_PI / (sequence_length * n_inputs));
             break;
         }
         
-        case PATTERN_FREQUENCY: {
-            double freq = 0;
-            for(int t = 1; t < window_size; t++) {
-                for(int f = 0; f < input_features; f++) {
-                    freq += fabs(window[t][f] - window[t-1][f]);
+        case PATTERN_C: {
+            // Measure rate of change
+            double change_sum = 0;
+            for(int t = 1; t < sequence_length; t++) {
+                for(int f = 0; f < n_inputs; f++) {
+                    change_sum += fabs(sequence[t][f] - sequence[t-1][f]);
                 }
             }
-            raw_output = tanh(freq / (window_size * input_features));
+            result = tanh(change_sum / (sequence_length * n_inputs));
             break;
         }
         
-        case PATTERN_THRESHOLD: {
-            int crossings = 0;
+        case PATTERN_D: {
+            // Count threshold crossings
+            int cross_count = 0;
             double threshold = 0.5;
-            for(int t = 1; t < window_size; t++) {
-                for(int f = 0; f < input_features; f++) {
-                    if((window[t][f] > threshold && window[t-1][f] <= threshold) ||
-                       (window[t][f] < threshold && window[t-1][f] >= threshold)) {
-                        crossings++;
+            for(int t = 1; t < sequence_length; t++) {
+                for(int f = 0; f < n_inputs; f++) {
+                    if((sequence[t][f] > threshold && sequence[t-1][f] <= threshold) ||
+                       (sequence[t][f] < threshold && sequence[t-1][f] >= threshold)) {
+                        cross_count++;
                     }
                 }
             }
-            raw_output = cos(crossings * M_PI / (window_size * input_features));
+            result = cos(cross_count * M_PI / (sequence_length * n_inputs));
             break;
         }
         
         default:
-            raw_output = 0.0;
+            result = 0.0;
     }
     
-    // Scale the output from [-1,1] to [OUTPUT_RANGE_MIN, OUTPUT_RANGE_MAX]
-    return ((raw_output + 1.0) / 2.0) * (OUTPUT_RANGE_MAX - OUTPUT_RANGE_MIN) + OUTPUT_RANGE_MIN;
+    // Scale to output range
+    return ((result + 1.0) / 2.0) * (OUTPUT_MAX - OUTPUT_MIN) + OUTPUT_MIN;
 }
 
-static OpenLoopData* generate_open_loop_data(
-    int n_samples,
-    int window_size,
-    int input_features,
-    int output_features,
-    double noise
+static Dataset* generate_data(
+    int n_sequences,
+    int sequence_length,
+    int n_inputs,
+    int n_outputs,
+    double noise_level
 ) {
-    OpenLoopData* d = (OpenLoopData*)malloc(sizeof(OpenLoopData));
-    d->n = n_samples;
-    d->window_size = window_size;
-    d->input_features = input_features;
-    d->output_features = output_features;
+    Dataset* data = (Dataset*)malloc(sizeof(Dataset));
+    data->n_sequences = n_sequences;
+    data->sequence_length = sequence_length;
+    data->n_inputs = n_inputs;
+    data->n_outputs = n_outputs;
     
     // Allocate memory
-    d->windows = (double***)malloc(n_samples * sizeof(double**));
-    d->outputs = (double**)malloc(n_samples * sizeof(double*));
+    data->inputs = (double***)malloc(n_sequences * sizeof(double**));
+    data->targets = (double**)malloc(n_sequences * sizeof(double*));
     
-    // Generate headers
-    d->headers = (char**)malloc((input_features + output_features) * sizeof(char*));
-    for(int i = 0; i < input_features + output_features; i++) {
-        d->headers[i] = (char*)malloc(8);
-        sprintf(d->headers[i], "%c%d", i < input_features ? 'x' : 'y', 
-                i < input_features ? i : i-input_features);
+    // Generate feature names
+    data->feature_names = (char**)malloc((n_inputs + n_outputs) * sizeof(char*));
+    for(int i = 0; i < n_inputs + n_outputs; i++) {
+        data->feature_names[i] = (char*)malloc(8);
+        sprintf(data->feature_names[i], "%c%d", 
+                i < n_inputs ? 'x' : 'y', 
+                i < n_inputs ? i : i-n_inputs);
     }
     
-    // Choose patterns for each output feature
-    OpenLoopPattern* patterns = (OpenLoopPattern*)malloc(output_features * sizeof(OpenLoopPattern));
-    for(int f = 0; f < output_features; f++) {
-        patterns[f] = (OpenLoopPattern)(rand() % NUM_PATTERNS);
+    // Assign random patterns to outputs
+    PatternType* patterns = (PatternType*)malloc(n_outputs * sizeof(PatternType));
+    for(int i = 0; i < n_outputs; i++) {
+        patterns[i] = (PatternType)(rand() % N_PATTERNS);
     }
     
-    // Generate sequences
-    for(int i = 0; i < n_samples; i++) {
-        // Allocate window
-        d->windows[i] = (double**)malloc(window_size * sizeof(double*));
-        for(int t = 0; t < window_size; t++) {
-            d->windows[i][t] = (double*)malloc(input_features * sizeof(double));
+    // Generate data
+    for(int i = 0; i < n_sequences; i++) {
+        // Generate input sequence
+        data->inputs[i] = (double**)malloc(sequence_length * sizeof(double*));
+        for(int t = 0; t < sequence_length; t++) {
+            data->inputs[i][t] = (double*)malloc(n_inputs * sizeof(double));
             
-            // Generate random input features with some temporal correlation
-            for(int f = 0; f < input_features; f++) {
+            for(int f = 0; f < n_inputs; f++) {
                 if(t == 0) {
-                    d->windows[i][t][f] = (double)rand()/RAND_MAX * 
-                                        (INPUT_RANGE_MAX - INPUT_RANGE_MIN) + 
-                                        INPUT_RANGE_MIN;
+                    data->inputs[i][t][f] = (double)rand()/RAND_MAX * 
+                                          (INPUT_MAX - INPUT_MIN) + INPUT_MIN;
                 } else {
-                    d->windows[i][t][f] = 0.1 * d->windows[i][t-1][f] + 
-                                        0.9 * ((double)rand()/RAND_MAX * 
-                                        (INPUT_RANGE_MAX - INPUT_RANGE_MIN) + 
-                                        INPUT_RANGE_MIN);
+                    // Add some temporal correlation
+                    data->inputs[i][t][f] = 0.1 * data->inputs[i][t-1][f] + 
+                                          0.9 * ((double)rand()/RAND_MAX * 
+                                          (INPUT_MAX - INPUT_MIN) + INPUT_MIN);
                 }
             }
         }
         
-        // Generate outputs
-        d->outputs[i] = (double*)malloc(output_features * sizeof(double));
-        for(int f = 0; f < output_features; f++) {
-            d->outputs[i][f] = generate_pattern(patterns[f], d->windows[i], 
-                                              window_size, input_features, f);
-            d->outputs[i][f] += ((double)rand()/RAND_MAX - 0.5) * noise;
+        // Generate targets
+        data->targets[i] = (double*)malloc(n_outputs * sizeof(double));
+        for(int f = 0; f < n_outputs; f++) {
+            data->targets[i][f] = compute_pattern(patterns[f], data->inputs[i], 
+                                                sequence_length, n_inputs, f);
+            // Add noise
+            data->targets[i][f] += ((double)rand()/RAND_MAX - 0.5) * noise_level;
         }
     }
     
     free(patterns);
-    return d;
+    return data;
 }
 
-static void save_open_loop_csv(const char* f, OpenLoopData* d) {
-    FILE* fp = fopen(f, "w");
+static void save_csv(const char* filename, Dataset* data) {
+    FILE* fp = fopen(filename, "w");
     if(!fp) return;
     
-    // Write headers
+    // Write header
     fprintf(fp, "sequence,timestep");
-    for(int i = 0; i < d->input_features + d->output_features; i++) {
-        fprintf(fp, ",%s", d->headers[i]);
+    for(int i = 0; i < data->n_inputs + data->n_outputs; i++) {
+        fprintf(fp, ",%s", data->feature_names[i]);
     }
     fprintf(fp, "\n");
     
     // Write data
-    for(int i = 0; i < d->n; i++) {
-        for(int t = 0; t < d->window_size; t++) {
+    for(int i = 0; i < data->n_sequences; i++) {
+        for(int t = 0; t < data->sequence_length; t++) {
             fprintf(fp, "%d,%d", i, t);
             
-            // Write input features
-            for(int f = 0; f < d->input_features; f++) {
-                fprintf(fp, ",%.6f", d->windows[i][t][f]);
+            // Write inputs
+            for(int f = 0; f < data->n_inputs; f++) {
+                fprintf(fp, ",%.6f", data->inputs[i][t][f]);
             }
             
-            // Write outputs (only for last timestep)
-            if(t == d->window_size - 1) {
-                for(int f = 0; f < d->output_features; f++) {
-                    fprintf(fp, ",%.6f", d->outputs[i][f]);
+            // Write targets (only for last timestep)
+            if(t == data->sequence_length - 1) {
+                for(int f = 0; f < data->n_outputs; f++) {
+                    fprintf(fp, ",%.6f", data->targets[i][f]);
                 }
             } else {
-                for(int f = 0; f < d->output_features; f++) {
+                for(int f = 0; f < data->n_outputs; f++) {
                     fprintf(fp, ",");
                 }
             }
@@ -204,23 +208,23 @@ static void save_open_loop_csv(const char* f, OpenLoopData* d) {
     fclose(fp);
 }
 
-static void free_open_loop_data(OpenLoopData* d) {
-    for(int i = 0; i < d->n; i++) {
-        for(int t = 0; t < d->window_size; t++) {
-            free(d->windows[i][t]);
+static void free_dataset(Dataset* data) {
+    for(int i = 0; i < data->n_sequences; i++) {
+        for(int t = 0; t < data->sequence_length; t++) {
+            free(data->inputs[i][t]);
         }
-        free(d->windows[i]);
-        free(d->outputs[i]);
+        free(data->inputs[i]);
+        free(data->targets[i]);
     }
     
-    for(int i = 0; i < d->input_features + d->output_features; i++) {
-        free(d->headers[i]);
+    for(int i = 0; i < data->n_inputs + data->n_outputs; i++) {
+        free(data->feature_names[i]);
     }
     
-    free(d->headers);
-    free(d->windows);
-    free(d->outputs);
-    free(d);
+    free(data->feature_names);
+    free(data->inputs);
+    free(data->targets);
+    free(data);
 }
 
 #endif
