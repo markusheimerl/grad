@@ -1,171 +1,225 @@
-#ifndef DATA_CUH
-#define DATA_CUH
+#ifndef DATA_OPEN_LOOP_CUH
+#define DATA_OPEN_LOOP_CUH
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <cuda_runtime.h>
 
 #define INPUT_RANGE_MIN -3.0
 #define INPUT_RANGE_MAX 3.0
-#define MAX_SYNTHETIC_OUTPUTS 4
+#define OUTPUT_RANGE_MIN 30.0
+#define OUTPUT_RANGE_MAX 70.0
 
-typedef struct { 
-    double **X, **y;
-    int n, fx, fy;
-    char **headers;
-} Data;
+typedef struct {
+    double ***windows;      // [batch][window_size][input_features]
+    double **outputs;       // [batch][output_features]
+    int n;                  // number of samples
+    int window_size;        // size of sliding window
+    int input_features;     // number of input features
+    int output_features;    // number of output features
+    char **headers;         // Feature names
+} OpenLoopData;
 
-static __host__ __device__ double synth_fn(const double* x, int fx, int dim) {
-    switch(dim % MAX_SYNTHETIC_OUTPUTS) {
-        case 0: 
-            return sin(x[0 % fx]*2)*cos(x[1 % fx]*1.5) + 
-                   pow(x[2 % fx],2)*x[3 % fx] + 
-                   exp(-pow(x[4 % fx]-x[5 % fx],2)) + 
-                   0.5*sin(x[6 % fx]*x[7 % fx]*M_PI) +
-                   tanh(x[8 % fx] + x[9 % fx]) +
-                   0.3*cos(x[10 % fx]*x[11 % fx]) +
-                   0.2*pow(x[12 % fx], 2) +
-                   x[13 % fx]*sin(x[14 % fx]);
-            
-        case 1: 
-            return tanh(x[0 % fx]+x[1 % fx])*sin(x[2 % fx]*2) + 
-                   log(fabs(x[3 % fx])+1)*cos(x[4 % fx]) + 
-                   0.3*pow(x[5 % fx]-x[6 % fx],3) +
-                   exp(-pow(x[7 % fx],2)) +
-                   sin(x[8 % fx]*x[9 % fx]*0.5) +
-                   0.4*cos(x[10 % fx] + x[11 % fx]) +
-                   pow(x[12 % fx]*x[13 % fx], 2) +
-                   0.1*x[14 % fx];
-            
-        case 2: 
-            return exp(-pow(x[0 % fx]-0.5,2))*sin(x[1 % fx]*3) + 
-                   pow(cos(x[2 % fx]),2)*x[3 % fx] + 
-                   0.2*sinh(x[4 % fx]*x[5 % fx]) +
-                   0.5*tanh(x[6 % fx] + x[7 % fx]) +
-                   pow(x[8 % fx], 3)*0.1 +
-                   cos(x[9 % fx]*x[10 % fx]*M_PI) +
-                   0.3*exp(-pow(x[11 % fx]-x[12 % fx],2)) +
-                   0.2*(x[13 % fx] + x[14 % fx]);
-            
-        case 3:
-            return pow(sin(x[0 % fx]*x[1 % fx]), 2) +
-                   0.4*tanh(x[2 % fx] + x[3 % fx]*x[4 % fx]) +
-                   exp(-fabs(x[5 % fx]-x[6 % fx])) +
-                   0.3*cos(x[7 % fx]*x[8 % fx]*2) +
-                   pow(x[9 % fx], 2)*sin(x[10 % fx]) +
-                   0.2*log(fabs(x[11 % fx]*x[12 % fx])+1) +
-                   0.1*(x[13 % fx] - x[14 % fx]);
-            
-        default: 
-            return 0.0;
+// Different pattern types for synthetic data
+typedef enum {
+    PATTERN_WEIGHTED_SUM,      // Output is weighted sum of window values
+    PATTERN_PEAK_DETECT,       // Output depends on peaks in window
+    PATTERN_FREQUENCY,         // Output depends on frequency patterns
+    PATTERN_THRESHOLD,         // Output depends on threshold crossings
+    NUM_PATTERNS
+} OpenLoopPattern;
+
+static __host__ __device__ double generate_pattern(
+    OpenLoopPattern pattern,
+    double** window,
+    int window_size,
+    int input_features,
+    int output_idx
+) {
+    double raw_output;
+    
+    switch(pattern) {
+        case PATTERN_WEIGHTED_SUM: {
+            double sum = 0;
+            for(int t = 0; t < window_size; t++) {
+                for(int f = 0; f < input_features; f++) {
+                    sum += window[t][f] * sin(t * M_PI / window_size);
+                }
+            }
+            raw_output = tanh(sum / (window_size * input_features));
+            break;
+        }
+        
+        case PATTERN_PEAK_DETECT: {
+            int peaks = 0;
+            for(int t = 1; t < window_size-1; t++) {
+                for(int f = 0; f < input_features; f++) {
+                    if(window[t][f] > window[t-1][f] && 
+                       window[t][f] > window[t+1][f]) {
+                        peaks++;
+                    }
+                }
+            }
+            raw_output = sin(peaks * M_PI / (window_size * input_features));
+            break;
+        }
+        
+        case PATTERN_FREQUENCY: {
+            double freq = 0;
+            for(int t = 1; t < window_size; t++) {
+                for(int f = 0; f < input_features; f++) {
+                    freq += fabs(window[t][f] - window[t-1][f]);
+                }
+            }
+            raw_output = tanh(freq / (window_size * input_features));
+            break;
+        }
+        
+        case PATTERN_THRESHOLD: {
+            int crossings = 0;
+            double threshold = 0.5;
+            for(int t = 1; t < window_size; t++) {
+                for(int f = 0; f < input_features; f++) {
+                    if((window[t][f] > threshold && window[t-1][f] <= threshold) ||
+                       (window[t][f] < threshold && window[t-1][f] >= threshold)) {
+                        crossings++;
+                    }
+                }
+            }
+            raw_output = cos(crossings * M_PI / (window_size * input_features));
+            break;
+        }
+        
+        default:
+            raw_output = 0.0;
     }
+    
+    // Scale the output from [-1,1] to [OUTPUT_RANGE_MIN, OUTPUT_RANGE_MAX]
+    return ((raw_output + 1.0) / 2.0) * (OUTPUT_RANGE_MAX - OUTPUT_RANGE_MIN) + OUTPUT_RANGE_MIN;
 }
 
-static Data* synth(int n, int fx, int fy, double noise) {
-    Data* d = (Data*)malloc(sizeof(Data));
-    d->n = n; d->fx = fx; d->fy = fy;
+static OpenLoopData* generate_open_loop_data(
+    int n_samples,
+    int window_size,
+    int input_features,
+    int output_features,
+    double noise
+) {
+    OpenLoopData* d = (OpenLoopData*)malloc(sizeof(OpenLoopData));
+    d->n = n_samples;
+    d->window_size = window_size;
+    d->input_features = input_features;
+    d->output_features = output_features;
     
-    d->headers = (char**)malloc((fx + fy) * sizeof(char*));
-    for(int i = 0; i < fx + fy; i++) {
+    // Allocate memory
+    d->windows = (double***)malloc(n_samples * sizeof(double**));
+    d->outputs = (double**)malloc(n_samples * sizeof(double*));
+    
+    // Generate headers
+    d->headers = (char**)malloc((input_features + output_features) * sizeof(char*));
+    for(int i = 0; i < input_features + output_features; i++) {
         d->headers[i] = (char*)malloc(8);
-        sprintf(d->headers[i], "%c%d", i < fx ? 'x' : 'y', i < fx ? i : i-fx);
+        sprintf(d->headers[i], "%c%d", i < input_features ? 'x' : 'y', 
+                i < input_features ? i : i-input_features);
     }
     
-    d->X = (double**)malloc(n * sizeof(double*));
-    d->y = (double**)malloc(n * sizeof(double*));
-    for(int i = 0; i < n; i++) {
-        d->X[i] = (double*)malloc(fx * sizeof(double));
-        d->y[i] = (double*)malloc(fy * sizeof(double));
-        
-        for(int j = 0; j < fx; j++) {
-            d->X[i][j] = (double)rand()/RAND_MAX * 
-                        (INPUT_RANGE_MAX - INPUT_RANGE_MIN) + INPUT_RANGE_MIN;
+    // Choose patterns for each output feature
+    OpenLoopPattern* patterns = (OpenLoopPattern*)malloc(output_features * sizeof(OpenLoopPattern));
+    for(int f = 0; f < output_features; f++) {
+        patterns[f] = (OpenLoopPattern)(rand() % NUM_PATTERNS);
+    }
+    
+    // Generate sequences
+    for(int i = 0; i < n_samples; i++) {
+        // Allocate window
+        d->windows[i] = (double**)malloc(window_size * sizeof(double*));
+        for(int t = 0; t < window_size; t++) {
+            d->windows[i][t] = (double*)malloc(input_features * sizeof(double));
+            
+            // Generate random input features with some temporal correlation
+            for(int f = 0; f < input_features; f++) {
+                if(t == 0) {
+                    d->windows[i][t][f] = (double)rand()/RAND_MAX * 
+                                        (INPUT_RANGE_MAX - INPUT_RANGE_MIN) + 
+                                        INPUT_RANGE_MIN;
+                } else {
+                    d->windows[i][t][f] = 0.1 * d->windows[i][t-1][f] + 
+                                        0.9 * ((double)rand()/RAND_MAX * 
+                                        (INPUT_RANGE_MAX - INPUT_RANGE_MIN) + 
+                                        INPUT_RANGE_MIN);
+                }
+            }
         }
         
-        for(int j = 0; j < fy; j++) {
-            d->y[i][j] = synth_fn(d->X[i], fx, j);
-            d->y[i][j] += ((double)rand()/RAND_MAX - 0.5) * noise;
+        // Generate outputs
+        d->outputs[i] = (double*)malloc(output_features * sizeof(double));
+        for(int f = 0; f < output_features; f++) {
+            d->outputs[i][f] = generate_pattern(patterns[f], d->windows[i], 
+                                              window_size, input_features, f);
+            d->outputs[i][f] += ((double)rand()/RAND_MAX - 0.5) * noise;
         }
     }
+    
+    free(patterns);
     return d;
 }
 
-static void save_csv(const char* f, Data* d) {
+static void save_open_loop_csv(const char* f, OpenLoopData* d) {
     FILE* fp = fopen(f, "w");
     if(!fp) return;
     
-    for(int i = 0; i < d->fx + d->fy; i++)
-        fprintf(fp, "%s%c", d->headers[i], i < d->fx + d->fy - 1 ? ',' : '\n');
-    
-    for(int i = 0; i < d->n; i++) {
-        for(int j = 0; j < d->fx; j++) fprintf(fp, "%.17f,", d->X[i][j]);
-        for(int j = 0; j < d->fy; j++) fprintf(fp, "%.17f%c", d->y[i][j], j == d->fy-1 ? '\n' : ',');
+    // Write headers
+    fprintf(fp, "sequence,timestep");
+    for(int i = 0; i < d->input_features + d->output_features; i++) {
+        fprintf(fp, ",%s", d->headers[i]);
     }
+    fprintf(fp, "\n");
+    
+    // Write data
+    for(int i = 0; i < d->n; i++) {
+        for(int t = 0; t < d->window_size; t++) {
+            fprintf(fp, "%d,%d", i, t);
+            
+            // Write input features
+            for(int f = 0; f < d->input_features; f++) {
+                fprintf(fp, ",%.6f", d->windows[i][t][f]);
+            }
+            
+            // Write outputs (only for last timestep)
+            if(t == d->window_size - 1) {
+                for(int f = 0; f < d->output_features; f++) {
+                    fprintf(fp, ",%.6f", d->outputs[i][f]);
+                }
+            } else {
+                for(int f = 0; f < d->output_features; f++) {
+                    fprintf(fp, ",");
+                }
+            }
+            fprintf(fp, "\n");
+        }
+    }
+    
     fclose(fp);
 }
 
-static Data* load_csv(const char* f, int fx, int fy) {
-    FILE* fp = fopen(f, "r");
-    if(!fp) return NULL;
-    
-    Data* d = (Data*)malloc(sizeof(Data));
-    d->fx = fx; d->fy = fy;
-    
-    char line[4096];
-    if(fgets(line, sizeof(line), fp) == NULL) {
-        free(d);
-        fclose(fp);
-        return NULL;
-    }
-    
-    d->headers = (char**)malloc((fx + fy) * sizeof(char*));
-    char* token = strtok(line, ",\n");
-    for(int i = 0; i < fx + fy; i++) {
-        d->headers[i] = strdup(token);
-        token = strtok(NULL, ",\n");
-    }
-    
-    d->n = 0;
-    while(fgets(line, sizeof(line), fp)) d->n++;
-    rewind(fp);
-    if(fgets(line, sizeof(line), fp) == NULL) {
-        for(int i = 0; i < fx + fy; i++) free(d->headers[i]);
-        free(d->headers);
-        free(d);
-        fclose(fp);
-        return NULL;
-    }
-    
-    d->X = (double**)malloc(d->n * sizeof(double*));
-    d->y = (double**)malloc(d->n * sizeof(double*));
+static void free_open_loop_data(OpenLoopData* d) {
     for(int i = 0; i < d->n; i++) {
-        d->X[i] = (double*)malloc(fx * sizeof(double));
-        d->y[i] = (double*)malloc(fy * sizeof(double));
-        if(fgets(line, sizeof(line), fp) == NULL) break;
-        token = strtok(line, ",");
-        for(int j = 0; j < fx; j++) { 
-            d->X[i][j] = atof(token); 
-            token = strtok(NULL, ","); 
+        for(int t = 0; t < d->window_size; t++) {
+            free(d->windows[i][t]);
         }
-        for(int j = 0; j < fy; j++) { 
-            d->y[i][j] = atof(token); 
-            token = strtok(NULL, ","); 
-        }
+        free(d->windows[i]);
+        free(d->outputs[i]);
     }
-    fclose(fp);
-    return d;
-}
-
-static void free_data(Data* d) {
-    for(int i = 0; i < d->n; i++) { 
-        free(d->X[i]); 
-        free(d->y[i]); 
+    
+    for(int i = 0; i < d->input_features + d->output_features; i++) {
+        free(d->headers[i]);
     }
-    for(int i = 0; i < d->fx + d->fy; i++) free(d->headers[i]);
+    
     free(d->headers);
-    free(d->X); 
-    free(d->y);
+    free(d->windows);
+    free(d->outputs);
     free(d);
 }
 
