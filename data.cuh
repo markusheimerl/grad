@@ -7,14 +7,14 @@
 #include <math.h>
 #include <cuda_runtime.h>
 
-#define INPUT_MIN -3.0
-#define INPUT_MAX 3.0
+#define INPUT_MIN -5.0
+#define INPUT_MAX 5.0
 #define OUTPUT_MIN 30.0
 #define OUTPUT_MAX 70.0
 
 typedef struct {
-    double ***inputs;       // [sequence][timesteps][features]
-    double **targets;       // [sequence][features]
+    float ***inputs;       // [sequence][timesteps][features]
+    float **targets;       // [sequence][features]
     int n_sequences;        // number of sequences
     int sequence_length;    // timesteps per sequence
     int n_inputs;          // number of input features
@@ -31,19 +31,19 @@ typedef enum {
     N_PATTERNS
 } PatternType;
 
-static __host__ __device__ double compute_pattern(
+static __host__ __device__ float compute_pattern(
     PatternType pattern,
-    double** sequence,
+    float** sequence,
     int sequence_length,
     int n_inputs,
     int output_idx
 ) {
-    double result;
+    float result;
     
     switch(pattern) {
         case PATTERN_A: {
             // Weighted combination with sine modulation
-            double sum = 0;
+            float sum = 0;
             for(int t = 0; t < sequence_length; t++) {
                 for(int f = 0; f < n_inputs; f++) {
                     sum += sequence[t][f] * sin(t * M_PI / sequence_length);
@@ -70,7 +70,7 @@ static __host__ __device__ double compute_pattern(
         
         case PATTERN_C: {
             // Measure rate of change
-            double change_sum = 0;
+            float change_sum = 0;
             for(int t = 1; t < sequence_length; t++) {
                 for(int f = 0; f < n_inputs; f++) {
                     change_sum += fabs(sequence[t][f] - sequence[t-1][f]);
@@ -83,7 +83,7 @@ static __host__ __device__ double compute_pattern(
         case PATTERN_D: {
             // Count threshold crossings
             int cross_count = 0;
-            double threshold = 0.5;
+            float threshold = 0.5;
             for(int t = 1; t < sequence_length; t++) {
                 for(int f = 0; f < n_inputs; f++) {
                     if((sequence[t][f] > threshold && sequence[t-1][f] <= threshold) ||
@@ -109,7 +109,7 @@ static Dataset* generate_data(
     int sequence_length,
     int n_inputs,
     int n_outputs,
-    double noise_level
+    float noise_level
 ) {
     Dataset* data = (Dataset*)malloc(sizeof(Dataset));
     data->n_sequences = n_sequences;
@@ -118,8 +118,8 @@ static Dataset* generate_data(
     data->n_outputs = n_outputs;
     
     // Allocate memory
-    data->inputs = (double***)malloc(n_sequences * sizeof(double**));
-    data->targets = (double**)malloc(n_sequences * sizeof(double*));
+    data->inputs = (float***)malloc(n_sequences * sizeof(float**));
+    data->targets = (float**)malloc(n_sequences * sizeof(float*));
     
     // Generate feature names
     data->feature_names = (char**)malloc((n_inputs + n_outputs) * sizeof(char*));
@@ -139,30 +139,30 @@ static Dataset* generate_data(
     // Generate data
     for(int i = 0; i < n_sequences; i++) {
         // Generate input sequence
-        data->inputs[i] = (double**)malloc(sequence_length * sizeof(double*));
+        data->inputs[i] = (float**)malloc(sequence_length * sizeof(float*));
         for(int t = 0; t < sequence_length; t++) {
-            data->inputs[i][t] = (double*)malloc(n_inputs * sizeof(double));
+            data->inputs[i][t] = (float*)malloc(n_inputs * sizeof(float));
             
             for(int f = 0; f < n_inputs; f++) {
                 if(t == 0) {
-                    data->inputs[i][t][f] = (double)rand()/RAND_MAX * 
+                    data->inputs[i][t][f] = (float)rand()/RAND_MAX * 
                                           (INPUT_MAX - INPUT_MIN) + INPUT_MIN;
                 } else {
                     // Add some temporal correlation
                     data->inputs[i][t][f] = 0.1 * data->inputs[i][t-1][f] + 
-                                          0.9 * ((double)rand()/RAND_MAX * 
+                                          0.9 * ((float)rand()/RAND_MAX * 
                                           (INPUT_MAX - INPUT_MIN) + INPUT_MIN);
                 }
             }
         }
         
         // Generate targets
-        data->targets[i] = (double*)malloc(n_outputs * sizeof(double));
+        data->targets[i] = (float*)malloc(n_outputs * sizeof(float));
         for(int f = 0; f < n_outputs; f++) {
             data->targets[i][f] = compute_pattern(patterns[f], data->inputs[i], 
                                                 sequence_length, n_inputs, f);
             // Add noise
-            data->targets[i][f] += ((double)rand()/RAND_MAX - 0.5) * noise_level;
+            data->targets[i][f] += ((float)rand()/RAND_MAX - 0.5) * noise_level;
         }
     }
     

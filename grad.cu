@@ -1,1041 +1,1002 @@
 #include "data.cuh"
 #include <time.h>
+#include <curand.h>
 #include <curand_kernel.h>
 
-// Model configuration and structure definitions
-typedef struct {
-    int batch_size;
-    int sequence_length;
-    int n_inputs;
-    int n_outputs;
-    int n_conv1_filters;
-    int n_conv2_filters;
-    int dense_size;
-    int conv_kernel_size;
-} ModelConfig;
+#define CHECK_CUDA(call) { \
+    cudaError_t err = call; \
+    if (err != cudaSuccess) { \
+        printf("CUDA error at %s:%d: %s\n", __FILE__, __LINE__, \
+               cudaGetErrorString(err)); \
+        exit(1); \
+    } \
+}
+
+// Hyperparameters
+#define LEARNING_RATE 1e-3f
+#define BATCH_SIZE 32
+#define N_CONV_LAYERS 3
+#define N_FILTERS 64
+#define KERNEL_SIZE 3
+#define EPSILON 1e-5f
+#define MOMENTUM 0.9f
+#define MAX_GRAD_NORM 1.0f
 
 typedef struct {
-    // Dimensions
-    int batch_size;
+    float *weights;
+    float *bias;
+    float *running_mean;
+    float *running_var;
+    float *gamma;
+    float *beta;
+    
+    // Temporary storage for backprop
+    float *d_weights;
+    float *d_bias;
+    float *d_gamma;
+    float *d_beta;
+} ConvLayer;
+
+typedef struct {
+    float *weights;
+    float *bias;
+    
+    // Temporary storage for backprop
+    float *d_weights;
+    float *d_bias;
+} DenseLayer;
+
+typedef struct {
+    ConvLayer *conv_layers;
+    DenseLayer dense_layer;
+    int n_conv_layers;
+    int kernel_size;
+    int n_filters;
     int sequence_length;
     int n_inputs;
     int n_outputs;
-    int n_conv1_filters;
-    int n_conv2_filters;
-    int dense_size;
-    int conv_kernel_size;
-    
-    // Layer weights and biases
-    float *conv1_weights;  // [n_conv1_filters, kernel_size, n_inputs]
-    float *conv1_bias;     // [n_conv1_filters]
-    float *conv2_weights;  // [n_conv2_filters, kernel_size, n_conv1_filters]
-    float *conv2_bias;     // [n_conv2_filters]
-    float *dense1_weights; // [n_conv2_filters, dense_size]
-    float *dense1_bias;    // [dense_size]
-    float *dense2_weights; // [dense_size, n_outputs]
-    float *dense2_bias;    // [n_outputs]
-    
-    // Intermediate activations (for backprop)
-    float *conv1_output;   // After first conv + ReLU
-    float *conv2_output;   // After second conv + ReLU
-    float *pool_output;    // After global average pooling
-    float *dense1_output;  // After first dense + ReLU
 } Model;
 
-// Helper function to check CUDA errors
-#define CUDA_CHECK(call) \
-    do { \
-        cudaError_t error = call; \
-        if (error != cudaSuccess) { \
-            printf("CUDA error at %s:%d: %s\n", __FILE__, __LINE__, \
-                   cudaGetErrorString(error)); \
-            exit(1); \
-        } \
-    } while(0)
-
-// Initialize weights with Xavier/Glorot initialization
-__global__ void init_weights_kernel(float* weights, int fan_in, int fan_out, 
-                                  int total_elements, unsigned long seed) {
+__global__ void init_weights_kernel(float *weights, int size, float scale) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < total_elements) {
+    if (idx < size) {
         curandState state;
-        curand_init(seed + idx, 0, 0, &state);
-        
-        float limit = sqrt(6.0f / (fan_in + fan_out));
-        weights[idx] = (curand_uniform(&state) * 2.0f - 1.0f) * limit;
+        curand_init(clock64(), idx, 0, &state);
+        weights[idx] = (curand_uniform(&state) - 0.5f) * scale;
     }
 }
 
-// Create and initialize the model
-Model* create_model(ModelConfig config) {
-    Model* model = (Model*)malloc(sizeof(Model));
+static Model* create_model(int sequence_length, int n_inputs, int n_outputs) {
+    Model *model = (Model*)malloc(sizeof(Model));
+    model->n_conv_layers = N_CONV_LAYERS;
+    model->kernel_size = KERNEL_SIZE;
+    model->n_filters = N_FILTERS;
+    model->sequence_length = sequence_length;
+    model->n_inputs = n_inputs;
+    model->n_outputs = n_outputs;
     
-    // Copy configuration
-    model->batch_size = config.batch_size;
-    model->sequence_length = config.sequence_length;
-    model->n_inputs = config.n_inputs;
-    model->n_outputs = config.n_outputs;
-    model->n_conv1_filters = config.n_conv1_filters;
-    model->n_conv2_filters = config.n_conv2_filters;
-    model->dense_size = config.dense_size;
-    model->conv_kernel_size = config.conv_kernel_size;
+    // Allocate conv layers
+    model->conv_layers = (ConvLayer*)malloc(N_CONV_LAYERS * sizeof(ConvLayer));
     
-    // Calculate sizes for weight matrices
-    int conv1_weights_size = config.n_conv1_filters * config.conv_kernel_size * config.n_inputs;
-    int conv2_weights_size = config.n_conv2_filters * config.conv_kernel_size * config.n_conv1_filters;
-    int dense1_weights_size = config.n_conv2_filters * config.dense_size;
-    int dense2_weights_size = config.dense_size * config.n_outputs;
+    for (int i = 0; i < N_CONV_LAYERS; i++) {
+        int in_channels = (i == 0) ? n_inputs : N_FILTERS;
+        int weights_size = N_FILTERS * in_channels * KERNEL_SIZE;
+        
+        // Allocate layer parameters
+        CHECK_CUDA(cudaMalloc(&model->conv_layers[i].weights, weights_size * sizeof(float)));
+        CHECK_CUDA(cudaMalloc(&model->conv_layers[i].bias, N_FILTERS * sizeof(float)));
+        CHECK_CUDA(cudaMalloc(&model->conv_layers[i].running_mean, N_FILTERS * sizeof(float)));
+        CHECK_CUDA(cudaMalloc(&model->conv_layers[i].running_var, N_FILTERS * sizeof(float)));
+        CHECK_CUDA(cudaMalloc(&model->conv_layers[i].gamma, N_FILTERS * sizeof(float)));
+        CHECK_CUDA(cudaMalloc(&model->conv_layers[i].beta, N_FILTERS * sizeof(float)));
+        
+        // Allocate gradients
+        CHECK_CUDA(cudaMalloc(&model->conv_layers[i].d_weights, weights_size * sizeof(float)));
+        CHECK_CUDA(cudaMalloc(&model->conv_layers[i].d_bias, N_FILTERS * sizeof(float)));
+        CHECK_CUDA(cudaMalloc(&model->conv_layers[i].d_gamma, N_FILTERS * sizeof(float)));
+        CHECK_CUDA(cudaMalloc(&model->conv_layers[i].d_beta, N_FILTERS * sizeof(float)));
+        
+        // Initialize weights
+        float scale = sqrtf(2.0f / (in_channels * KERNEL_SIZE)); // He initialization
+        init_weights_kernel<<<(weights_size + 255) / 256, 256>>>(
+            model->conv_layers[i].weights, weights_size, scale);
+        
+        // Initialize other parameters
+        CHECK_CUDA(cudaMemset(model->conv_layers[i].bias, 0, N_FILTERS * sizeof(float)));
+        CHECK_CUDA(cudaMemset(model->conv_layers[i].running_mean, 0, N_FILTERS * sizeof(float)));
+        CHECK_CUDA(cudaMemset(model->conv_layers[i].running_var, 1, N_FILTERS * sizeof(float)));
+        CHECK_CUDA(cudaMemset(model->conv_layers[i].gamma, 1, N_FILTERS * sizeof(float)));
+        CHECK_CUDA(cudaMemset(model->conv_layers[i].beta, 0, N_FILTERS * sizeof(float)));
+    }
     
-    // Allocate memory for weights and biases
-    CUDA_CHECK(cudaMalloc(&model->conv1_weights, conv1_weights_size * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&model->conv1_bias, config.n_conv1_filters * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&model->conv2_weights, conv2_weights_size * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&model->conv2_bias, config.n_conv2_filters * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&model->dense1_weights, dense1_weights_size * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&model->dense1_bias, config.dense_size * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&model->dense2_weights, dense2_weights_size * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&model->dense2_bias, config.n_outputs * sizeof(float)));
+    // Initialize dense layer
+    int dense_weights_size = N_FILTERS * n_outputs;
+    CHECK_CUDA(cudaMalloc(&model->dense_layer.weights, dense_weights_size * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&model->dense_layer.bias, n_outputs * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&model->dense_layer.d_weights, dense_weights_size * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&model->dense_layer.d_bias, n_outputs * sizeof(float)));
     
-    // Allocate memory for intermediate activations
-    CUDA_CHECK(cudaMalloc(&model->conv1_output, 
-        config.batch_size * (config.sequence_length - config.conv_kernel_size + 1) * 
-        config.n_conv1_filters * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&model->conv2_output,
-        config.batch_size * (config.sequence_length - 2*config.conv_kernel_size + 2) * 
-        config.n_conv2_filters * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&model->pool_output,
-        config.batch_size * config.n_conv2_filters * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&model->dense1_output,
-        config.batch_size * config.dense_size * sizeof(float)));
-    
-    // Initialize weights
-    int threads_per_block = 256;
-    
-    // Conv1 weights
-    int blocks = (conv1_weights_size + threads_per_block - 1) / threads_per_block;
-    init_weights_kernel<<<blocks, threads_per_block>>>(
-        model->conv1_weights, config.n_inputs, config.n_conv1_filters,
-        conv1_weights_size, time(NULL));
-    
-    // Conv2 weights
-    blocks = (conv2_weights_size + threads_per_block - 1) / threads_per_block;
-    init_weights_kernel<<<blocks, threads_per_block>>>(
-        model->conv2_weights, config.n_conv1_filters, config.n_conv2_filters,
-        conv2_weights_size, time(NULL) + 1);
-    
-    // Dense1 weights
-    blocks = (dense1_weights_size + threads_per_block - 1) / threads_per_block;
-    init_weights_kernel<<<blocks, threads_per_block>>>(
-        model->dense1_weights, config.n_conv2_filters, config.dense_size,
-        dense1_weights_size, time(NULL) + 2);
-    
-    // Dense2 weights
-    blocks = (dense2_weights_size + threads_per_block - 1) / threads_per_block;
-    init_weights_kernel<<<blocks, threads_per_block>>>(
-        model->dense2_weights, config.dense_size, config.n_outputs,
-        dense2_weights_size, time(NULL) + 3);
-    
-    // Initialize biases to zero
-    CUDA_CHECK(cudaMemset(model->conv1_bias, 0, config.n_conv1_filters * sizeof(float)));
-    CUDA_CHECK(cudaMemset(model->conv2_bias, 0, config.n_conv2_filters * sizeof(float)));
-    CUDA_CHECK(cudaMemset(model->dense1_bias, 0, config.dense_size * sizeof(float)));
-    CUDA_CHECK(cudaMemset(model->dense2_bias, 0, config.n_outputs * sizeof(float)));
+    float dense_scale = sqrtf(2.0f / N_FILTERS);
+    init_weights_kernel<<<(dense_weights_size + 255) / 256, 256>>>(
+        model->dense_layer.weights, dense_weights_size, dense_scale);
+    CHECK_CUDA(cudaMemset(model->dense_layer.bias, 0, n_outputs * sizeof(float)));
     
     return model;
 }
 
-// Free model memory
-void free_model(Model* model) {
-    if (model) {
-        CUDA_CHECK(cudaFree(model->conv1_weights));
-        CUDA_CHECK(cudaFree(model->conv1_bias));
-        CUDA_CHECK(cudaFree(model->conv2_weights));
-        CUDA_CHECK(cudaFree(model->conv2_bias));
-        CUDA_CHECK(cudaFree(model->dense1_weights));
-        CUDA_CHECK(cudaFree(model->dense1_bias));
-        CUDA_CHECK(cudaFree(model->dense2_weights));
-        CUDA_CHECK(cudaFree(model->dense2_bias));
-        
-        CUDA_CHECK(cudaFree(model->conv1_output));
-        CUDA_CHECK(cudaFree(model->conv2_output));
-        CUDA_CHECK(cudaFree(model->pool_output));
-        CUDA_CHECK(cudaFree(model->dense1_output));
-        
-        free(model);
-    }
-}
-
-// ReLU activation kernel
-__global__ void relu_kernel(float* data, int size) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size) {
-        data[idx] = fmaxf(0.0f, data[idx]);
-    }
-}
-
-// 1D Convolution kernel
-__global__ void conv1d_kernel(
-    const float* input,      // [batch_size, sequence_length, in_channels]
-    const float* weights,    // [out_channels, kernel_size, in_channels]
-    const float* bias,       // [out_channels]
-    float* output,          // [batch_size, sequence_length - kernel_size + 1, out_channels]
-    int batch_size,
-    int sequence_length,
-    int in_channels,
-    int out_channels,
-    int kernel_size
+// Forward pass kernels
+__global__ void conv1d_forward_kernel(
+    const float *input, float *output,
+    const float *weights, const float *bias,
+    int batch_size, int sequence_length, int n_inputs, 
+    int n_filters, int kernel_size
 ) {
     int batch_idx = blockIdx.x;
-    int out_seq_idx = blockIdx.y;
-    int out_channel = threadIdx.x;
+    int filter_idx = blockIdx.y;
+    int seq_idx = threadIdx.x;
     
-    if (batch_idx >= batch_size || out_seq_idx >= (sequence_length - kernel_size + 1) || 
-        out_channel >= out_channels) return;
+    if (seq_idx < sequence_length) {
+        float sum = bias[filter_idx];
         
-    float sum = bias[out_channel];
+        for (int k = 0; k < kernel_size; k++) {
+            int seq_pos = seq_idx - kernel_size/2 + k;
+            if (seq_pos >= 0 && seq_pos < sequence_length) {
+                for (int c = 0; c < n_inputs; c++) {
+                    float input_val = input[
+                        batch_idx * sequence_length * n_inputs + 
+                        seq_pos * n_inputs + c
+                    ];
+                    float weight = weights[
+                        filter_idx * n_inputs * kernel_size + 
+                        c * kernel_size + k
+                    ];
+                    sum += input_val * weight;
+                }
+            }
+        }
+        
+        output[
+            batch_idx * sequence_length * n_filters + 
+            seq_idx * n_filters + filter_idx
+        ] = sum;
+    }
+}
+
+__global__ void batch_norm_forward_kernel(
+    float *input, float *output,
+    const float *gamma, const float *beta,
+    float *running_mean, float *running_var,
+    int batch_size, int sequence_length, int n_filters,
+    float momentum, float epsilon, bool is_training
+) {
+    int filter_idx = blockIdx.x;
+    int seq_idx = threadIdx.x;
     
-    // Compute convolution for this output position
-    for (int k = 0; k < kernel_size; k++) {
-        for (int in_c = 0; in_c < in_channels; in_c++) {
-            int input_idx = batch_idx * sequence_length * in_channels + 
-                          (out_seq_idx + k) * in_channels + in_c;
-            int weight_idx = out_channel * kernel_size * in_channels + 
-                           k * in_channels + in_c;
-            sum += input[input_idx] * weights[weight_idx];
+    if (seq_idx < sequence_length) {
+        if (is_training) {
+            // Compute mean and variance for this filter
+            float sum = 0.0f;
+            float sq_sum = 0.0f;
+            
+            for (int b = 0; b < batch_size; b++) {
+                float val = input[
+                    b * sequence_length * n_filters + 
+                    seq_idx * n_filters + filter_idx
+                ];
+                sum += val;
+                sq_sum += val * val;
+            }
+            
+            float mean = sum / (batch_size * sequence_length);
+            float var = (sq_sum / (batch_size * sequence_length)) - (mean * mean);
+            
+            // Update running statistics
+            running_mean[filter_idx] = momentum * running_mean[filter_idx] + 
+                                     (1.0f - momentum) * mean;
+            running_var[filter_idx] = momentum * running_var[filter_idx] + 
+                                    (1.0f - momentum) * var;
+            
+            // Normalize and scale
+            for (int b = 0; b < batch_size; b++) {
+                int idx = b * sequence_length * n_filters + 
+                         seq_idx * n_filters + filter_idx;
+                float normalized = (input[idx] - mean) / sqrtf(var + epsilon);
+                output[idx] = gamma[filter_idx] * normalized + beta[filter_idx];
+            }
+        } else {
+            // Inference mode: use running statistics
+            for (int b = 0; b < batch_size; b++) {
+                int idx = b * sequence_length * n_filters + 
+                         seq_idx * n_filters + filter_idx;
+                float normalized = (input[idx] - running_mean[filter_idx]) / 
+                                 sqrtf(running_var[filter_idx] + epsilon);
+                output[idx] = gamma[filter_idx] * normalized + beta[filter_idx];
+            }
         }
     }
-    
-    int output_idx = batch_idx * (sequence_length - kernel_size + 1) * out_channels + 
-                     out_seq_idx * out_channels + out_channel;
-    output[output_idx] = sum;
 }
 
-// Global Average Pooling kernel
-__global__ void global_avg_pooling_kernel(
-    const float* input,     // [batch_size, sequence_length, channels]
-    float* output,         // [batch_size, channels]
-    int batch_size,
-    int sequence_length,
-    int channels
+__global__ void relu_forward_kernel(
+    float *input, float *output,
+    int batch_size, int sequence_length, int n_filters
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total_elements = batch_size * sequence_length * n_filters;
+    
+    if (idx < total_elements) {
+        output[idx] = fmaxf(0.0f, input[idx]);
+    }
+}
+
+__global__ void residual_add_kernel(
+    float *input, float *residual,
+    int batch_size, int sequence_length, int n_filters
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int total_elements = batch_size * sequence_length * n_filters;
+    
+    if (idx < total_elements) {
+        input[idx] += residual[idx];
+    }
+}
+
+__global__ void global_avg_pool_kernel(
+    const float *input, float *output,
+    int batch_size, int sequence_length, int n_filters
 ) {
     int batch_idx = blockIdx.x;
-    int channel = threadIdx.x;
+    int filter_idx = threadIdx.x;
     
-    if (batch_idx >= batch_size || channel >= channels) return;
-    
-    float sum = 0.0f;
-    for (int i = 0; i < sequence_length; i++) {
-        int idx = batch_idx * sequence_length * channels + i * channels + channel;
-        sum += input[idx];
+    if (filter_idx < n_filters) {
+        float sum = 0.0f;
+        for (int s = 0; s < sequence_length; s++) {
+            sum += input[
+                batch_idx * sequence_length * n_filters + 
+                s * n_filters + filter_idx
+            ];
+        }
+        output[batch_idx * n_filters + filter_idx] = sum / sequence_length;
     }
-    
-    output[batch_idx * channels + channel] = sum / sequence_length;
 }
 
-// Dense layer kernel
-__global__ void dense_kernel(
-    const float* input,     // [batch_size, in_features]
-    const float* weights,   // [in_features, out_features]
-    const float* bias,      // [out_features]
-    float* output,         // [batch_size, out_features]
-    int batch_size,
-    int in_features,
-    int out_features
-) {
-    int batch_idx = blockIdx.x;
-    int out_feature = threadIdx.x;
-    
-    if (batch_idx >= batch_size || out_feature >= out_features) return;
-    
-    float sum = bias[out_feature];
-    for (int i = 0; i < in_features; i++) {
-        sum += input[batch_idx * in_features + i] * 
-               weights[i * out_features + out_feature];
-    }
-    
-    output[batch_idx * out_features + out_feature] = sum;
-}
-
-// Forward pass function
-void forward_pass(Model* model, float* input_data) {
-    dim3 conv1_grid(model->batch_size, 
-                   model->sequence_length - model->conv_kernel_size + 1);
-    dim3 conv1_block(model->n_conv1_filters);
-    
-    // First convolution layer
-    conv1d_kernel<<<conv1_grid, conv1_block>>>(
-        input_data,
-        model->conv1_weights,
-        model->conv1_bias,
-        model->conv1_output,
-        model->batch_size,
-        model->sequence_length,
-        model->n_inputs,
-        model->n_conv1_filters,
-        model->conv_kernel_size
-    );
-    
-    // ReLU after first conv
-    int conv1_output_size = model->batch_size * 
-                           (model->sequence_length - model->conv_kernel_size + 1) * 
-                           model->n_conv1_filters;
-    int threads_per_block = 256;
-    int blocks = (conv1_output_size + threads_per_block - 1) / threads_per_block;
-    relu_kernel<<<blocks, threads_per_block>>>(model->conv1_output, conv1_output_size);
-    
-    // Second convolution layer
-    dim3 conv2_grid(model->batch_size, 
-                   model->sequence_length - 2*model->conv_kernel_size + 2);
-    dim3 conv2_block(model->n_conv2_filters);
-    
-    conv1d_kernel<<<conv2_grid, conv2_block>>>(
-        model->conv1_output,
-        model->conv2_weights,
-        model->conv2_bias,
-        model->conv2_output,
-        model->batch_size,
-        model->sequence_length - model->conv_kernel_size + 1,
-        model->n_conv1_filters,
-        model->n_conv2_filters,
-        model->conv_kernel_size
-    );
-    
-    // ReLU after second conv
-    int conv2_output_size = model->batch_size * 
-                           (model->sequence_length - 2*model->conv_kernel_size + 2) * 
-                           model->n_conv2_filters;
-    blocks = (conv2_output_size + threads_per_block - 1) / threads_per_block;
-    relu_kernel<<<blocks, threads_per_block>>>(model->conv2_output, conv2_output_size);
-    
-    // Global Average Pooling
-    dim3 pool_grid(model->batch_size);
-    dim3 pool_block(model->n_conv2_filters);
-    
-    global_avg_pooling_kernel<<<pool_grid, pool_block>>>(
-        model->conv2_output,
-        model->pool_output,
-        model->batch_size,
-        model->sequence_length - 2*model->conv_kernel_size + 2,
-        model->n_conv2_filters
-    );
-    
-    // First dense layer
-    dim3 dense1_grid(model->batch_size);
-    dim3 dense1_block(model->dense_size);
-    
-    dense_kernel<<<dense1_grid, dense1_block>>>(
-        model->pool_output,
-        model->dense1_weights,
-        model->dense1_bias,
-        model->dense1_output,
-        model->batch_size,
-        model->n_conv2_filters,
-        model->dense_size
-    );
-    
-    // ReLU after first dense
-    int dense1_output_size = model->batch_size * model->dense_size;
-    blocks = (dense1_output_size + threads_per_block - 1) / threads_per_block;
-    relu_kernel<<<blocks, threads_per_block>>>(model->dense1_output, dense1_output_size);
-    
-    // Final dense layer (output layer)
-    dim3 dense2_grid(model->batch_size);
-    dim3 dense2_block(model->n_outputs);
-    
-    dense_kernel<<<dense2_grid, dense2_block>>>(
-        model->dense1_output,
-        model->dense2_weights,
-        model->dense2_bias,
-        model->pool_output,  // Reuse pool_output as final output storage
-        model->batch_size,
-        model->dense_size,
-        model->n_outputs
-    );
-}
-
-// MSE Loss gradient kernel
-__global__ void mse_gradient_kernel(
-    const float* predictions,  // [batch_size, n_outputs]
-    const float* targets,      // [batch_size, n_outputs]
-    float* gradient,           // [batch_size, n_outputs]
-    int batch_size,
-    int n_outputs
+__global__ void dense_forward_kernel(
+    const float *input, float *output,
+    const float *weights, const float *bias,
+    int batch_size, int n_filters, int n_outputs
 ) {
     int batch_idx = blockIdx.x;
     int output_idx = threadIdx.x;
     
-    if (batch_idx >= batch_size || output_idx >= n_outputs) return;
-    
-    int idx = batch_idx * n_outputs + output_idx;
-    gradient[idx] = 2.0f * (predictions[idx] - targets[idx]) / batch_size;
-}
-
-// ReLU gradient kernel
-__global__ void relu_gradient_kernel(
-    const float* input,
-    const float* grad_output,
-    float* grad_input,
-    int size
-) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size) {
-        grad_input[idx] = input[idx] > 0.0f ? grad_output[idx] : 0.0f;
+    if (output_idx < n_outputs) {
+        float sum = bias[output_idx];
+        for (int f = 0; f < n_filters; f++) {
+            sum += input[batch_idx * n_filters + f] * 
+                   weights[f * n_outputs + output_idx];
+        }
+        output[batch_idx * n_outputs + output_idx] = sum;
     }
 }
 
-// Dense layer backward kernel (gradient w.r.t. input)
-__global__ void dense_backward_input_kernel(
-    const float* grad_output,  // [batch_size, out_features]
-    const float* weights,      // [in_features, out_features]
-    float* grad_input,         // [batch_size, in_features]
+// Structure to hold intermediate activations
+typedef struct {
+    float *conv_inputs;     // Input to each conv layer
+    float *conv_outputs;    // Output after conv
+    float *bn_outputs;      // Output after batch norm
+    float *relu_outputs;    // Output after ReLU
+    float *residual_outputs; // Residual connections
+    float *pooled_output;   // After global average pooling
+    float *final_output;    // Network output
+} Activations;
+
+static Activations* create_activations(Model *model, int batch_size) {
+    Activations *acts = (Activations*)malloc(sizeof(Activations));
+    int seq_features = batch_size * model->sequence_length * model->n_filters;
+    int input_features = batch_size * model->sequence_length * model->n_inputs;
+    
+    // Allocate memory for all intermediate activations
+    CHECK_CUDA(cudaMalloc(&acts->conv_inputs, input_features * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&acts->conv_outputs, seq_features * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&acts->bn_outputs, seq_features * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&acts->relu_outputs, seq_features * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&acts->residual_outputs, seq_features * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&acts->pooled_output, 
+        batch_size * model->n_filters * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&acts->final_output, 
+        batch_size * model->n_outputs * sizeof(float)));
+    
+    return acts;
+}
+
+static void free_activations(Activations *acts) {
+    CHECK_CUDA(cudaFree(acts->conv_inputs));
+    CHECK_CUDA(cudaFree(acts->conv_outputs));
+    CHECK_CUDA(cudaFree(acts->bn_outputs));
+    CHECK_CUDA(cudaFree(acts->relu_outputs));
+    CHECK_CUDA(cudaFree(acts->residual_outputs));
+    CHECK_CUDA(cudaFree(acts->pooled_output));
+    CHECK_CUDA(cudaFree(acts->final_output));
+    free(acts);
+}
+
+static void forward_pass(
+    Model *model,
+    Activations *acts,
+    const float *input,
     int batch_size,
-    int in_features,
-    int out_features
+    bool is_training
+) {
+    // Copy input to device
+    CHECK_CUDA(cudaMemcpy(acts->conv_inputs, input,
+        batch_size * model->sequence_length * model->n_inputs * sizeof(float),
+        cudaMemcpyHostToDevice));
+    
+    float *layer_input = acts->conv_inputs;
+    
+    // Process each conv layer
+    for (int i = 0; i < model->n_conv_layers; i++) {
+        ConvLayer *layer = &model->conv_layers[i];
+        int in_channels = (i == 0) ? model->n_inputs : model->n_filters;
+        
+        // Save residual connection
+        if (i > 0) {
+            CHECK_CUDA(cudaMemcpy(acts->residual_outputs, layer_input,
+                batch_size * model->sequence_length * model->n_filters * sizeof(float),
+                cudaMemcpyDeviceToDevice));
+        }
+        
+        // Convolution
+        dim3 conv_blocks(batch_size, model->n_filters);
+        dim3 conv_threads(model->sequence_length);
+        conv1d_forward_kernel<<<conv_blocks, conv_threads>>>(
+            layer_input,
+            acts->conv_outputs,
+            layer->weights,
+            layer->bias,
+            batch_size,
+            model->sequence_length,
+            in_channels,
+            model->n_filters,
+            model->kernel_size
+        );
+        
+        // Batch Normalization
+        dim3 bn_blocks(model->n_filters);
+        dim3 bn_threads(model->sequence_length);
+        batch_norm_forward_kernel<<<bn_blocks, bn_threads>>>(
+            acts->conv_outputs,
+            acts->bn_outputs,
+            layer->gamma,
+            layer->beta,
+            layer->running_mean,
+            layer->running_var,
+            batch_size,
+            model->sequence_length,
+            model->n_filters,
+            MOMENTUM,
+            EPSILON,
+            is_training
+        );
+        
+        // ReLU
+        int total_elements = batch_size * model->sequence_length * model->n_filters;
+        int block_size = 256;
+        int num_blocks = (total_elements + block_size - 1) / block_size;
+        relu_forward_kernel<<<num_blocks, block_size>>>(
+            acts->bn_outputs,
+            acts->relu_outputs,
+            batch_size,
+            model->sequence_length,
+            model->n_filters
+        );
+        
+        // Add residual connection if not first layer
+        if (i > 0) {
+            residual_add_kernel<<<num_blocks, block_size>>>(
+                acts->relu_outputs,
+                acts->residual_outputs,
+                batch_size,
+                model->sequence_length,
+                model->n_filters
+            );
+        }
+        
+        layer_input = acts->relu_outputs;
+    }
+    
+    // Global Average Pooling
+    global_avg_pool_kernel<<<batch_size, model->n_filters>>>(
+        layer_input,
+        acts->pooled_output,
+        batch_size,
+        model->sequence_length,
+        model->n_filters
+    );
+    
+    // Dense Layer
+    dense_forward_kernel<<<batch_size, model->n_outputs>>>(
+        acts->pooled_output,
+        acts->final_output,
+        model->dense_layer.weights,
+        model->dense_layer.bias,
+        batch_size,
+        model->n_filters,
+        model->n_outputs
+    );
+}
+
+// Gradient storage structure
+typedef struct {
+    float *d_conv_inputs;
+    float *d_conv_outputs;
+    float *d_bn_outputs;
+    float *d_relu_outputs;
+    float *d_pooled_output;
+    float *d_final_output;
+} Gradients;
+
+static Gradients* create_gradients(Model *model, int batch_size) {
+    Gradients *grads = (Gradients*)malloc(sizeof(Gradients));
+    int seq_features = batch_size * model->sequence_length * model->n_filters;
+    int input_features = batch_size * model->sequence_length * model->n_inputs;
+    
+    CHECK_CUDA(cudaMalloc(&grads->d_conv_inputs, input_features * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&grads->d_conv_outputs, seq_features * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&grads->d_bn_outputs, seq_features * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&grads->d_relu_outputs, seq_features * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&grads->d_pooled_output, 
+        batch_size * model->n_filters * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&grads->d_final_output, 
+        batch_size * model->n_outputs * sizeof(float)));
+    
+    return grads;
+}
+
+__global__ void dense_backward_kernel(
+    const float *d_output,
+    const float *input,
+    const float *weights,
+    float *d_input,
+    float *d_weights,
+    float *d_bias,
+    int batch_size,
+    int n_filters,
+    int n_outputs
 ) {
     int batch_idx = blockIdx.x;
-    int in_feature = threadIdx.x;
+    int filter_idx = threadIdx.x;
     
-    if (batch_idx >= batch_size || in_feature >= in_features) return;
-    
-    float sum = 0.0f;
-    for (int i = 0; i < out_features; i++) {
-        sum += grad_output[batch_idx * out_features + i] * 
-               weights[in_feature * out_features + i];
-    }
-    
-    grad_input[batch_idx * in_features + in_feature] = sum;
-}
-
-// Dense layer backward kernel (gradient w.r.t. weights)
-__global__ void dense_backward_weights_kernel(
-    const float* input,        // [batch_size, in_features]
-    const float* grad_output,  // [batch_size, out_features]
-    float* grad_weights,       // [in_features, out_features]
-    float* grad_bias,          // [out_features]
-    int batch_size,
-    int in_features,
-    int out_features
-) {
-    int in_feature = blockIdx.x;
-    int out_feature = threadIdx.x;
-    
-    if (in_feature >= in_features || out_feature >= out_features) return;
-    
-    float weight_grad = 0.0f;
-    for (int b = 0; b < batch_size; b++) {
-        weight_grad += input[b * in_features + in_feature] * 
-                      grad_output[b * out_features + out_feature];
-    }
-    
-    grad_weights[in_feature * out_features + out_feature] = weight_grad / batch_size;
-    
-    if (in_feature == 0) {
-        float bias_grad = 0.0f;
-        for (int b = 0; b < batch_size; b++) {
-            bias_grad += grad_output[b * out_features + out_feature];
+    if (filter_idx < n_filters) {
+        float d_input_val = 0.0f;
+        for (int o = 0; o < n_outputs; o++) {
+            float d_output_val = d_output[batch_idx * n_outputs + o];
+            d_input_val += d_output_val * weights[filter_idx * n_outputs + o];
+            
+            // Accumulate weight gradients
+            atomicAdd(&d_weights[filter_idx * n_outputs + o],
+                     d_output_val * input[batch_idx * n_filters + filter_idx]);
         }
-        grad_bias[out_feature] = bias_grad / batch_size;
+        d_input[batch_idx * n_filters + filter_idx] = d_input_val;
+    }
+    
+    // Compute bias gradients
+    if (batch_idx == 0 && filter_idx < n_outputs) {
+        float d_bias_val = 0.0f;
+        for (int b = 0; b < batch_size; b++) {
+            d_bias_val += d_output[b * n_outputs + filter_idx];
+        }
+        d_bias[filter_idx] = d_bias_val;
     }
 }
 
-// Global Average Pooling backward kernel
-__global__ void global_avg_pooling_backward_kernel(
-    const float* grad_output,  // [batch_size, channels]
-    float* grad_input,         // [batch_size, sequence_length, channels]
+__global__ void global_avg_pool_backward_kernel(
+    const float *d_output,
+    float *d_input,
     int batch_size,
     int sequence_length,
-    int channels
+    int n_filters
 ) {
     int batch_idx = blockIdx.x;
-    int channel = threadIdx.x;
+    int filter_idx = threadIdx.x;
     
-    if (batch_idx >= batch_size || channel >= channels) return;
-    
-    float grad_value = grad_output[batch_idx * channels + channel] / sequence_length;
-    
-    for (int i = 0; i < sequence_length; i++) {
-        grad_input[batch_idx * sequence_length * channels + i * channels + channel] = grad_value;
+    if (filter_idx < n_filters) {
+        float d_val = d_output[batch_idx * n_filters + filter_idx] / sequence_length;
+        for (int s = 0; s < sequence_length; s++) {
+            d_input[batch_idx * sequence_length * n_filters + 
+                   s * n_filters + filter_idx] = d_val;
+        }
     }
 }
 
-// Conv1D backward kernel (gradient w.r.t. input)
-__global__ void conv1d_backward_input_kernel(
-    const float* grad_output,  // [batch_size, out_seq_len, out_channels]
-    const float* weights,      // [out_channels, kernel_size, in_channels]
-    float* grad_input,         // [batch_size, in_seq_len, in_channels]
-    int batch_size,
-    int in_seq_len,
-    int out_seq_len,
-    int in_channels,
-    int out_channels,
-    int kernel_size
-) {
-    int batch_idx = blockIdx.x;
-    int in_seq_idx = blockIdx.y;
-    int in_channel = threadIdx.x;
-    
-    if (batch_idx >= batch_size || in_seq_idx >= in_seq_len || 
-        in_channel >= in_channels) return;
-    
-    float sum = 0.0f;
-    
-    for (int out_c = 0; out_c < out_channels; out_c++) {
-        for (int k = 0; k < kernel_size; k++) {
-            int out_seq_idx = in_seq_idx - k;
-            if (out_seq_idx >= 0 && out_seq_idx < out_seq_len) {
-                sum += grad_output[batch_idx * out_seq_len * out_channels + 
-                                 out_seq_idx * out_channels + out_c] *
-                       weights[out_c * kernel_size * in_channels + 
-                              k * in_channels + in_channel];
-            }
-        }
-    }
-    
-    grad_input[batch_idx * in_seq_len * in_channels + 
-               in_seq_idx * in_channels + in_channel] = sum;
-}
-
-// Conv1D backward kernel (gradient w.r.t. weights)
-__global__ void conv1d_backward_weights_kernel(
-    const float* input,        // [batch_size, in_seq_len, in_channels]
-    const float* grad_output,  // [batch_size, out_seq_len, out_channels]
-    float* grad_weights,       // [out_channels, kernel_size, in_channels]
-    float* grad_bias,          // [out_channels]
-    int batch_size,
-    int in_seq_len,
-    int out_seq_len,
-    int in_channels,
-    int out_channels,
-    int kernel_size
-) {
-    int out_channel = blockIdx.x;
-    int k = blockIdx.y;
-    int in_channel = threadIdx.x;
-    
-    if (out_channel >= out_channels || k >= kernel_size || 
-        in_channel >= in_channels) return;
-    
-    float weight_grad = 0.0f;
-    
-    for (int b = 0; b < batch_size; b++) {
-        for (int out_seq_idx = 0; out_seq_idx < out_seq_len; out_seq_idx++) {
-            int in_seq_idx = out_seq_idx + k;
-            if (in_seq_idx < in_seq_len) {
-                weight_grad += input[b * in_seq_len * in_channels + 
-                                   in_seq_idx * in_channels + in_channel] *
-                              grad_output[b * out_seq_len * out_channels + 
-                                        out_seq_idx * out_channels + out_channel];
-            }
-        }
-    }
-    
-    grad_weights[out_channel * kernel_size * in_channels + 
-                k * in_channels + in_channel] = weight_grad / batch_size;
-    
-    if (k == 0 && in_channel == 0) {
-        float bias_grad = 0.0f;
-        for (int b = 0; b < batch_size; b++) {
-            for (int out_seq_idx = 0; out_seq_idx < out_seq_len; out_seq_idx++) {
-                bias_grad += grad_output[b * out_seq_len * out_channels + 
-                                      out_seq_idx * out_channels + out_channel];
-            }
-        }
-        grad_bias[out_channel] = bias_grad / (batch_size * out_seq_len);
-    }
-}
-
-// Weight update kernel
-__global__ void update_weights(
-    float* weights,
-    const float* gradients,
-    float learning_rate,
-    int size
+__global__ void relu_backward_kernel(
+    const float *d_output,
+    const float *input,
+    float *d_input,
+    int total_elements
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size) {
-        weights[idx] -= learning_rate * gradients[idx];
+    if (idx < total_elements) {
+        d_input[idx] = input[idx] > 0 ? d_output[idx] : 0;
     }
 }
 
-// Backward pass function
-void backward_pass(Model* model, float* input_data, float* target_data, 
-                  float* output_data, float learning_rate) {
-    // Allocate temporary gradient storage
-    float *grad_dense1, *grad_pool, *grad_conv2, *grad_conv1;
-    float *grad_weights_dense2, *grad_bias_dense2;
-    float *grad_weights_dense1, *grad_bias_dense1;
-    float *grad_weights_conv2, *grad_bias_conv2;
-    float *grad_weights_conv1, *grad_bias_conv1;
+__global__ void batch_norm_backward_kernel(
+    const float *d_output,
+    const float *input,
+    const float *gamma,
+    float *d_input,
+    float *d_gamma,
+    float *d_beta,
+    const float *running_mean,
+    const float *running_var,
+    int batch_size,
+    int sequence_length,
+    int n_filters,
+    float epsilon
+) {
+    int filter_idx = blockIdx.x;
+    int seq_idx = threadIdx.x;
     
-    // Allocate memory for gradients
-    CUDA_CHECK(cudaMalloc(&grad_dense1, 
-        model->batch_size * model->dense_size * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&grad_pool, 
-        model->batch_size * model->n_conv2_filters * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&grad_conv2, 
-        model->batch_size * (model->sequence_length - 2*model->conv_kernel_size + 2) * 
-        model->n_conv2_filters * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&grad_conv1, 
-        model->batch_size * (model->sequence_length - model->conv_kernel_size + 1) * 
-        model->n_conv1_filters * sizeof(float)));
-    
-    // Allocate memory for weight gradients
-    CUDA_CHECK(cudaMalloc(&grad_weights_dense2, 
-        model->dense_size * model->n_outputs * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&grad_bias_dense2, 
-        model->n_outputs * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&grad_weights_dense1, 
-        model->n_conv2_filters * model->dense_size * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&grad_bias_dense1, 
-        model->dense_size * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&grad_weights_conv2, 
-        model->n_conv2_filters * model->conv_kernel_size * 
-        model->n_conv1_filters * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&grad_bias_conv2, 
-        model->n_conv2_filters * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&grad_weights_conv1, 
-        model->n_conv1_filters * model->conv_kernel_size * 
-        model->n_inputs * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&grad_bias_conv1, 
-        model->n_conv1_filters * sizeof(float)));
-
-    // Compute initial gradient (MSE loss gradient)
-    float* grad_output;
-    CUDA_CHECK(cudaMalloc(&grad_output, 
-        model->batch_size * model->n_outputs * sizeof(float)));
-    
-    dim3 loss_grid(model->batch_size);
-    dim3 loss_block(model->n_outputs);
-    mse_gradient_kernel<<<loss_grid, loss_block>>>(
-        output_data, target_data, grad_output,
-        model->batch_size, model->n_outputs
-    );
-
-    // Backward through dense2 layer
-    dim3 dense2_grid(model->dense_size);
-    dim3 dense2_block(model->n_outputs);
-    dense_backward_weights_kernel<<<dense2_grid, dense2_block>>>(
-        model->dense1_output,
-        grad_output,
-        grad_weights_dense2,
-        grad_bias_dense2,
-        model->batch_size,
-        model->dense_size,
-        model->n_outputs
-    );
-    
-    dim3 dense2_input_grid(model->batch_size);
-    dim3 dense2_input_block(model->dense_size);
-    dense_backward_input_kernel<<<dense2_input_grid, dense2_input_block>>>(
-        grad_output,
-        model->dense2_weights,
-        grad_dense1,
-        model->batch_size,
-        model->dense_size,
-        model->n_outputs
-    );
-
-    // ReLU gradient for dense1
-    int dense1_size = model->batch_size * model->dense_size;
-    int threads_per_block = 256;
-    int blocks = (dense1_size + threads_per_block - 1) / threads_per_block;
-    relu_gradient_kernel<<<blocks, threads_per_block>>>(
-        model->dense1_output,
-        grad_dense1,
-        grad_dense1,
-        dense1_size
-    );
-
-    // Backward through dense1 layer
-    dim3 dense1_grid(model->n_conv2_filters);
-    dim3 dense1_block(model->dense_size);
-    dense_backward_weights_kernel<<<dense1_grid, dense1_block>>>(
-        model->pool_output,
-        grad_dense1,
-        grad_weights_dense1,
-        grad_bias_dense1,
-        model->batch_size,
-        model->n_conv2_filters,
-        model->dense_size
-    );
-    
-    dim3 dense1_input_grid(model->batch_size);
-    dim3 dense1_input_block(model->n_conv2_filters);
-    dense_backward_input_kernel<<<dense1_input_grid, dense1_input_block>>>(
-        grad_dense1,
-        model->dense1_weights,
-        grad_pool,
-        model->batch_size,
-        model->n_conv2_filters,
-        model->dense_size
-    );
-
-    // Backward through global average pooling
-    dim3 pool_grid(model->batch_size);
-    dim3 pool_block(model->n_conv2_filters);
-    global_avg_pooling_backward_kernel<<<pool_grid, pool_block>>>(
-        grad_pool,
-        grad_conv2,
-        model->batch_size,
-        model->sequence_length - 2*model->conv_kernel_size + 2,
-        model->n_conv2_filters
-    );
-
-    // ReLU gradient for conv2
-    int conv2_size = model->batch_size * 
-                    (model->sequence_length - 2*model->conv_kernel_size + 2) * 
-                    model->n_conv2_filters;
-    blocks = (conv2_size + threads_per_block - 1) / threads_per_block;
-    relu_gradient_kernel<<<blocks, threads_per_block>>>(
-        model->conv2_output,
-        grad_conv2,
-        grad_conv2,
-        conv2_size
-    );
-
-    // Backward through conv2 layer
-    dim3 conv2_grid(model->n_conv2_filters, model->conv_kernel_size);
-    dim3 conv2_block(model->n_conv1_filters);
-    conv1d_backward_weights_kernel<<<conv2_grid, conv2_block>>>(
-        model->conv1_output,
-        grad_conv2,
-        grad_weights_conv2,
-        grad_bias_conv2,
-        model->batch_size,
-        model->sequence_length - model->conv_kernel_size + 1,
-        model->sequence_length - 2*model->conv_kernel_size + 2,
-        model->n_conv1_filters,
-        model->n_conv2_filters,
-        model->conv_kernel_size
-    );
-    
-    dim3 conv2_input_grid(model->batch_size, 
-                         model->sequence_length - model->conv_kernel_size + 1);
-    dim3 conv2_input_block(model->n_conv1_filters);
-    conv1d_backward_input_kernel<<<conv2_input_grid, conv2_input_block>>>(
-        grad_conv2,
-        model->conv2_weights,
-        grad_conv1,
-        model->batch_size,
-        model->sequence_length - model->conv_kernel_size + 1,
-        model->sequence_length - 2*model->conv_kernel_size + 2,
-        model->n_conv1_filters,
-        model->n_conv2_filters,
-        model->conv_kernel_size
-    );
-
-    // ReLU gradient for conv1
-    int conv1_size = model->batch_size * 
-                    (model->sequence_length - model->conv_kernel_size + 1) * 
-                    model->n_conv1_filters;
-    blocks = (conv1_size + threads_per_block - 1) / threads_per_block;
-    relu_gradient_kernel<<<blocks, threads_per_block>>>(
-        model->conv1_output,
-        grad_conv1,
-        grad_conv1,
-        conv1_size
-    );
-
-    // Backward through conv1 layer
-    dim3 conv1_grid(model->n_conv1_filters, model->conv_kernel_size);
-    dim3 conv1_block(model->n_inputs);
-    conv1d_backward_weights_kernel<<<conv1_grid, conv1_block>>>(
-        input_data,
-        grad_conv1,
-        grad_weights_conv1,
-        grad_bias_conv1,
-        model->batch_size,
-        model->sequence_length,
-        model->sequence_length - model->conv_kernel_size + 1,
-        model->n_inputs,
-        model->n_conv1_filters,
-        model->conv_kernel_size
-    );
-
-    // Update weights using SGD
-    update_weights<<<blocks, threads_per_block>>>(
-        model->conv1_weights, grad_weights_conv1, learning_rate,
-        model->n_conv1_filters * model->conv_kernel_size * model->n_inputs
-    );
-    update_weights<<<blocks, threads_per_block>>>(
-        model->conv1_bias, grad_bias_conv1, learning_rate,
-        model->n_conv1_filters
-    );
-    update_weights<<<blocks, threads_per_block>>>(
-        model->conv2_weights, grad_weights_conv2, learning_rate,
-        model->n_conv2_filters * model->conv_kernel_size * model->n_conv1_filters
-    );
-    update_weights<<<blocks, threads_per_block>>>(
-        model->conv2_bias, grad_bias_conv2, learning_rate,
-        model->n_conv2_filters
-    );
-    update_weights<<<blocks, threads_per_block>>>(
-        model->dense1_weights, grad_weights_dense1, learning_rate,
-        model->n_conv2_filters * model->dense_size
-    );
-    update_weights<<<blocks, threads_per_block>>>(
-        model->dense1_bias, grad_bias_dense1, learning_rate,
-        model->dense_size
-    );
-    update_weights<<<blocks, threads_per_block>>>(
-        model->dense2_weights, grad_weights_dense2, learning_rate,
-        model->dense_size * model->n_outputs
-    );
-    update_weights<<<blocks, threads_per_block>>>(
-        model->dense2_bias, grad_bias_dense2, learning_rate,
-        model->n_outputs
-    );
-
-    // Free temporary gradient storage
-    cudaFree(grad_dense1);
-    cudaFree(grad_pool);
-    cudaFree(grad_conv2);
-    cudaFree(grad_conv1);
-    cudaFree(grad_weights_dense2);
-    cudaFree(grad_bias_dense2);
-    cudaFree(grad_weights_dense1);
-    cudaFree(grad_bias_dense1);
-    cudaFree(grad_weights_conv2);
-    cudaFree(grad_bias_conv2);
-    cudaFree(grad_weights_conv1);
-    cudaFree(grad_bias_conv1);
-    cudaFree(grad_output);
+    if (seq_idx < sequence_length) {
+        float mean = running_mean[filter_idx];
+        float var = running_var[filter_idx];
+        float std_dev = sqrtf(var + epsilon);
+        
+        float d_gamma_val = 0.0f;
+        float d_beta_val = 0.0f;
+        
+        for (int b = 0; b < batch_size; b++) {
+            int idx = b * sequence_length * n_filters + 
+                     seq_idx * n_filters + filter_idx;
+            
+            float normalized = (input[idx] - mean) / std_dev;
+            float d_output_val = d_output[idx];
+            
+            d_gamma_val += normalized * d_output_val;
+            d_beta_val += d_output_val;
+            
+            d_input[idx] = gamma[filter_idx] * d_output_val / std_dev;
+        }
+        
+        if (seq_idx == 0) {
+            atomicAdd(&d_gamma[filter_idx], d_gamma_val);
+            atomicAdd(&d_beta[filter_idx], d_beta_val);
+        }
+    }
 }
 
-// Compute MSE loss
-__global__ void compute_mse_loss_kernel(
-    const float* predictions,
-    const float* targets,
-    float* loss,
+__global__ void conv1d_backward_kernel(
+    const float *d_output,
+    const float *input,
+    const float *weights,
+    float *d_input,
+    float *d_weights,
+    float *d_bias,
+    int batch_size,
+    int sequence_length,
+    int n_inputs,
+    int n_filters,
+    int kernel_size
+) {
+    int batch_idx = blockIdx.x;
+    int filter_idx = blockIdx.y;
+    int seq_idx = threadIdx.x;
+    
+    if (seq_idx < sequence_length) {
+        // Compute bias gradients
+        if (batch_idx == 0 && seq_idx == 0) {
+            float d_bias_val = 0.0f;
+            for (int b = 0; b < batch_size; b++) {
+                for (int s = 0; s < sequence_length; s++) {
+                    d_bias_val += d_output[b * sequence_length * n_filters +
+                                         s * n_filters + filter_idx];
+                }
+            }
+            d_bias[filter_idx] = d_bias_val;
+        }
+        
+        // Compute input and weight gradients
+        for (int k = 0; k < kernel_size; k++) {
+            int seq_pos = seq_idx - kernel_size/2 + k;
+            if (seq_pos >= 0 && seq_pos < sequence_length) {
+                for (int c = 0; c < n_inputs; c++) {
+                    float d_output_val = d_output[
+                        batch_idx * sequence_length * n_filters +
+                        seq_idx * n_filters + filter_idx
+                    ];
+                    
+                    // Input gradients
+                    atomicAdd(&d_input[
+                        batch_idx * sequence_length * n_inputs +
+                        seq_pos * n_inputs + c
+                    ], d_output_val * weights[
+                        filter_idx * n_inputs * kernel_size +
+                        c * kernel_size + k
+                    ]);
+                    
+                    // Weight gradients
+                    atomicAdd(&d_weights[
+                        filter_idx * n_inputs * kernel_size +
+                        c * kernel_size + k
+                    ], d_output_val * input[
+                        batch_idx * sequence_length * n_inputs +
+                        seq_pos * n_inputs + c
+                    ]);
+                }
+            }
+        }
+    }
+}
+
+static void backward_pass(
+    Model *model,
+    Activations *acts,
+    Gradients *grads,
+    const float *targets,
+    int batch_size
+) {
+    // Compute loss gradient
+    int total_elements = batch_size * model->n_outputs;
+    int block_size = 256;
+    int num_blocks = (total_elements + block_size - 1) / block_size;
+    
+    // Dense layer backward
+    dense_backward_kernel<<<batch_size, model->n_filters>>>(
+        grads->d_final_output,
+        acts->pooled_output,
+        model->dense_layer.weights,
+        grads->d_pooled_output,
+        model->dense_layer.d_weights,
+        model->dense_layer.d_bias,
+        batch_size,
+        model->n_filters,
+        model->n_outputs
+    );
+    
+    float *d_layer_output = grads->d_pooled_output;
+    
+    // Backward through conv layers
+    for (int i = model->n_conv_layers - 1; i >= 0; i--) {
+        ConvLayer *layer = &model->conv_layers[i];
+        int in_channels = (i == 0) ? model->n_inputs : model->n_filters;
+        
+        // Global average pooling backward (for last layer)
+        if (i == model->n_conv_layers - 1) {
+            global_avg_pool_backward_kernel<<<batch_size, model->n_filters>>>(
+                d_layer_output,
+                grads->d_relu_outputs,
+                batch_size,
+                model->sequence_length,
+                model->n_filters
+            );
+            d_layer_output = grads->d_relu_outputs;
+        }
+        
+        // Add residual gradients if not first layer
+        if (i > 0) {
+            int total_elements = batch_size * model->sequence_length * model->n_filters;
+            int block_size = 256;
+            int num_blocks = (total_elements + block_size - 1) / block_size;
+            residual_add_kernel<<<num_blocks, block_size>>>(
+                d_layer_output,
+                grads->d_relu_outputs,
+                batch_size,
+                model->sequence_length,
+                model->n_filters
+            );
+        }
+        
+        // ReLU backward
+        relu_backward_kernel<<<num_blocks, block_size>>>(
+            d_layer_output,
+            acts->relu_outputs,
+            grads->d_bn_outputs,
+            total_elements
+        );
+        
+        // Batch norm backward
+        batch_norm_backward_kernel<<<model->n_filters, model->sequence_length>>>(
+            grads->d_bn_outputs,
+            acts->conv_outputs,
+            layer->gamma,
+            grads->d_conv_outputs,
+            layer->d_gamma,
+            layer->d_beta,
+            layer->running_mean,
+            layer->running_var,
+            batch_size,
+            model->sequence_length,
+            model->n_filters,
+            EPSILON
+        );
+        
+        // Conv backward
+        dim3 conv_blocks(batch_size, model->n_filters);
+        dim3 conv_threads(model->sequence_length);
+        conv1d_backward_kernel<<<conv_blocks, conv_threads>>>(
+            grads->d_conv_outputs,
+            acts->conv_inputs,
+            layer->weights,
+            grads->d_conv_inputs,
+            layer->d_weights,
+            layer->d_bias,
+            batch_size,
+            model->sequence_length,
+            in_channels,
+            model->n_filters,
+            model->kernel_size
+        );
+        
+        d_layer_output = grads->d_conv_inputs;
+    }
+}
+
+// Loss function kernels
+__global__ void mse_loss_kernel(
+    const float *predictions,
+    const float *targets,
+    float *loss,
+    float *d_predictions,
     int batch_size,
     int n_outputs
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < batch_size * n_outputs) {
         float diff = predictions[idx] - targets[idx];
+        d_predictions[idx] = 2.0f * diff / (batch_size * n_outputs);
         atomicAdd(loss, diff * diff / (batch_size * n_outputs));
     }
 }
 
-float compute_loss(const float* predictions, const float* targets, 
-                  int batch_size, int n_outputs) {
-    float* d_loss;
-    float h_loss = 0.0f;
-    CUDA_CHECK(cudaMalloc(&d_loss, sizeof(float)));
-    CUDA_CHECK(cudaMemset(d_loss, 0, sizeof(float)));
-    
-    int total_elements = batch_size * n_outputs;
-    int threads_per_block = 256;
-    int blocks = (total_elements + threads_per_block - 1) / threads_per_block;
-    
-    compute_mse_loss_kernel<<<blocks, threads_per_block>>>(
-        predictions, targets, d_loss, batch_size, n_outputs);
-    
-    CUDA_CHECK(cudaMemcpy(&h_loss, d_loss, sizeof(float), cudaMemcpyDeviceToHost));
-    CUDA_CHECK(cudaFree(d_loss));
-    
-    return h_loss;
-}
-
-// Prepare batch data
-void prepare_batch(Dataset* dataset, int batch_idx, int batch_size,
-                  float* d_batch_inputs, float* d_batch_targets) {
-    int sequence_size = dataset->sequence_length * dataset->n_inputs;
-    int target_size = dataset->n_outputs;
-    
-    // Temporary host storage
-    float* h_batch_inputs = (float*)malloc(batch_size * sequence_size * sizeof(float));
-    float* h_batch_targets = (float*)malloc(batch_size * target_size * sizeof(float));
-    
-    // Copy data to contiguous array
-    for(int i = 0; i < batch_size; i++) {
-        int dataset_idx = batch_idx * batch_size + i;
-        if(dataset_idx >= dataset->n_sequences) break;
-        
-        // Copy inputs
-        for(int t = 0; t < dataset->sequence_length; t++) {
-            for(int f = 0; f < dataset->n_inputs; f++) {
-                h_batch_inputs[i * sequence_size + t * dataset->n_inputs + f] = 
-                    dataset->inputs[dataset_idx][t][f];
-            }
-        }
-        
-        // Copy targets
-        for(int f = 0; f < dataset->n_outputs; f++) {
-            h_batch_targets[i * target_size + f] = dataset->targets[dataset_idx][f];
+__global__ void clip_gradients_kernel(float *grads, int size, float max_norm) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        float grad = grads[idx];
+        if (grad > max_norm) {
+            grads[idx] = max_norm;
+        } else if (grad < -max_norm) {
+            grads[idx] = -max_norm;
         }
     }
-    
-    // Transfer to GPU
-    CUDA_CHECK(cudaMemcpy(d_batch_inputs, h_batch_inputs, 
-        batch_size * sequence_size * sizeof(float), cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_batch_targets, h_batch_targets,
-        batch_size * target_size * sizeof(float), cudaMemcpyHostToDevice));
-    
-    free(h_batch_inputs);
-    free(h_batch_targets);
 }
 
+__global__ void update_parameters_kernel(
+    float *params,
+    const float *grads,
+    int size,
+    float learning_rate
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        params[idx] -= learning_rate * grads[idx];
+    }
+}
 
-// Evaluation function
-float evaluate_model(Model* model, Dataset* data, int batch_size) {
-    float *d_batch_inputs, *d_batch_targets;
-    int sequence_size = data->sequence_length * data->n_inputs;
-    int target_size = data->n_outputs;
+static void update_parameters(Model *model, float learning_rate) {
+    int block_size = 256;
     
-    CUDA_CHECK(cudaMalloc(&d_batch_inputs, 
-        batch_size * sequence_size * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_batch_targets, 
-        batch_size * target_size * sizeof(float)));
-    
-    int n_batches = (data->n_sequences + batch_size - 1) / batch_size;
-    float total_loss = 0.0f;
-    
-    for(int batch = 0; batch < n_batches; batch++) {
-        prepare_batch(data, batch, batch_size, d_batch_inputs, d_batch_targets);
+    // Update conv layer parameters
+    for (int i = 0; i < model->n_conv_layers; i++) {
+        ConvLayer *layer = &model->conv_layers[i];
+        int in_channels = (i == 0) ? model->n_inputs : model->n_filters;
         
-        forward_pass(model, d_batch_inputs);
+        // Weights
+        int weights_size = model->n_filters * in_channels * model->kernel_size;
+        int num_blocks = (weights_size + block_size - 1) / block_size;
         
-        float batch_loss = compute_loss(model->pool_output, d_batch_targets,
-                                     batch_size, model->n_outputs);
-        total_loss += batch_loss;
+        // Clip and update weights
+        clip_gradients_kernel<<<num_blocks, block_size>>>(
+            layer->d_weights, weights_size, MAX_GRAD_NORM);
+        update_parameters_kernel<<<num_blocks, block_size>>>(
+            layer->weights, layer->d_weights, weights_size, learning_rate);
+        
+        // Bias
+        num_blocks = (model->n_filters + block_size - 1) / block_size;
+        clip_gradients_kernel<<<num_blocks, block_size>>>(
+            layer->d_bias, model->n_filters, MAX_GRAD_NORM);
+        update_parameters_kernel<<<num_blocks, block_size>>>(
+            layer->bias, layer->d_bias, model->n_filters, learning_rate);
+        
+        // Batch norm parameters
+        clip_gradients_kernel<<<num_blocks, block_size>>>(
+            layer->d_gamma, model->n_filters, MAX_GRAD_NORM);
+        clip_gradients_kernel<<<num_blocks, block_size>>>(
+            layer->d_beta, model->n_filters, MAX_GRAD_NORM);
+        update_parameters_kernel<<<num_blocks, block_size>>>(
+            layer->gamma, layer->d_gamma, model->n_filters, learning_rate);
+        update_parameters_kernel<<<num_blocks, block_size>>>(
+            layer->beta, layer->d_beta, model->n_filters, learning_rate);
     }
     
-    CUDA_CHECK(cudaFree(d_batch_inputs));
-    CUDA_CHECK(cudaFree(d_batch_targets));
+    // Update dense layer parameters
+    int dense_weights_size = model->n_filters * model->n_outputs;
+    int num_blocks = (dense_weights_size + block_size - 1) / block_size;
     
-    return total_loss / n_batches;
+    // Clip and update dense weights
+    clip_gradients_kernel<<<num_blocks, block_size>>>(
+        model->dense_layer.d_weights, dense_weights_size, MAX_GRAD_NORM);
+    update_parameters_kernel<<<num_blocks, block_size>>>(
+        model->dense_layer.weights, model->dense_layer.d_weights,
+        dense_weights_size, learning_rate);
+    
+    // Clip and update dense bias
+    num_blocks = (model->n_outputs + block_size - 1) / block_size;
+    clip_gradients_kernel<<<num_blocks, block_size>>>(
+        model->dense_layer.d_bias, model->n_outputs, MAX_GRAD_NORM);
+    update_parameters_kernel<<<num_blocks, block_size>>>(
+        model->dense_layer.bias, model->dense_layer.d_bias,
+        model->n_outputs, learning_rate);
 }
 
 // Training function
-void train_model(Model* model, Dataset* train_data, Dataset* val_data,
-                int n_epochs, int batch_size, float learning_rate) {
-    // Allocate GPU memory for batch data
-    float *d_batch_inputs, *d_batch_targets, *d_batch_outputs;
-    int sequence_size = train_data->sequence_length * train_data->n_inputs;
-    int target_size = train_data->n_outputs;
+static void train(
+    Model *model,
+    Dataset *data,
+    int n_epochs,
+    int batch_size,
+    float learning_rate
+) {
+    // Create activations and gradients
+    Activations *acts = create_activations(model, batch_size);
+    Gradients *grads = create_gradients(model, batch_size);
     
-    CUDA_CHECK(cudaMalloc(&d_batch_inputs, 
-        batch_size * sequence_size * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_batch_targets, 
-        batch_size * target_size * sizeof(float)));
-    CUDA_CHECK(cudaMalloc(&d_batch_outputs, 
-        batch_size * target_size * sizeof(float)));
+    // Allocate device memory for batch data
+    float *d_batch_inputs, *d_batch_targets, *d_loss;
+    int batch_input_size = batch_size * model->sequence_length * model->n_inputs;
+    int batch_target_size = batch_size * model->n_outputs;
     
-    int n_batches = (train_data->n_sequences + batch_size - 1) / batch_size;
+    CHECK_CUDA(cudaMalloc(&d_batch_inputs, batch_input_size * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&d_batch_targets, batch_target_size * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&d_loss, sizeof(float)));
     
-    for(int epoch = 0; epoch < n_epochs; epoch++) {
+    // Training loop
+    int n_batches = data->n_sequences / batch_size;
+    for (int epoch = 0; epoch < n_epochs; epoch++) {
         float total_loss = 0.0f;
         
-        // Training loop
-        for(int batch = 0; batch < n_batches; batch++) {
+        for (int batch = 0; batch < n_batches; batch++) {
             // Prepare batch data
-            prepare_batch(train_data, batch, batch_size, 
-                        d_batch_inputs, d_batch_targets);
+            float *batch_inputs = (float*)malloc(batch_input_size * sizeof(float));
+            float *batch_targets = (float*)malloc(batch_target_size * sizeof(float));
+            
+            for (int i = 0; i < batch_size; i++) {
+                int seq_idx = batch * batch_size + i;
+                
+                // Copy inputs
+                for (int t = 0; t < model->sequence_length; t++) {
+                    for (int f = 0; f < model->n_inputs; f++) {
+                        batch_inputs[i * model->sequence_length * model->n_inputs +
+                                   t * model->n_inputs + f] = 
+                            data->inputs[seq_idx][t][f];
+                    }
+                }
+                
+                // Copy targets
+                for (int f = 0; f < model->n_outputs; f++) {
+                    batch_targets[i * model->n_outputs + f] = 
+                        data->targets[seq_idx][f];
+                }
+            }
+            
+            // Copy batch to device
+            CHECK_CUDA(cudaMemcpy(d_batch_inputs, batch_inputs,
+                batch_input_size * sizeof(float), cudaMemcpyHostToDevice));
+            CHECK_CUDA(cudaMemcpy(d_batch_targets, batch_targets,
+                batch_target_size * sizeof(float), cudaMemcpyHostToDevice));
             
             // Forward pass
-            forward_pass(model, d_batch_inputs);
+            forward_pass(model, acts, d_batch_inputs, batch_size, true);
             
-            // Compute loss
-            float batch_loss = compute_loss(model->pool_output, d_batch_targets,
-                                         batch_size, model->n_outputs);
+            // Compute loss and gradients
+            CHECK_CUDA(cudaMemset(d_loss, 0, sizeof(float)));
+            int total_elements = batch_size * model->n_outputs;
+            int block_size = 256;
+            int num_blocks = (total_elements + block_size - 1) / block_size;
+            
+            mse_loss_kernel<<<num_blocks, block_size>>>(
+                acts->final_output,
+                d_batch_targets,
+                d_loss,
+                grads->d_final_output,
+                batch_size,
+                model->n_outputs
+            );
+            
+            // Backward pass
+            backward_pass(model, acts, grads, d_batch_targets, batch_size);
+            
+            // Update parameters
+            update_parameters(model, learning_rate);
+            
+            // Get loss value
+            float batch_loss;
+            CHECK_CUDA(cudaMemcpy(&batch_loss, d_loss, sizeof(float),
+                cudaMemcpyDeviceToHost));
             total_loss += batch_loss;
             
-            // Backward pass and update weights
-            backward_pass(model, d_batch_inputs, d_batch_targets,
-                        model->pool_output, learning_rate);
+            free(batch_inputs);
+            free(batch_targets);
         }
         
-        // Validation
-        float val_loss = evaluate_model(model, val_data, batch_size);
-        
-        printf("Epoch %d/%d - train_loss: %.4f - val_loss: %.4f\n",
-               epoch + 1, n_epochs, total_loss / n_batches, val_loss);
+        printf("Epoch %d/%d - Loss: %f\n", epoch + 1, n_epochs,
+               total_loss / n_batches);
     }
     
-    // Free GPU memory
-    CUDA_CHECK(cudaFree(d_batch_inputs));
-    CUDA_CHECK(cudaFree(d_batch_targets));
-    CUDA_CHECK(cudaFree(d_batch_outputs));
+    // Cleanup
+    CHECK_CUDA(cudaFree(d_batch_inputs));
+    CHECK_CUDA(cudaFree(d_batch_targets));
+    CHECK_CUDA(cudaFree(d_loss));
+    free_activations(acts);
+    free(grads);
 }
 
+// Model cleanup function
+static void free_model(Model *model) {
+    // Free conv layers
+    for (int i = 0; i < model->n_conv_layers; i++) {
+        ConvLayer *layer = &model->conv_layers[i];
+        
+        // Free layer parameters
+        CHECK_CUDA(cudaFree(layer->weights));
+        CHECK_CUDA(cudaFree(layer->bias));
+        CHECK_CUDA(cudaFree(layer->running_mean));
+        CHECK_CUDA(cudaFree(layer->running_var));
+        CHECK_CUDA(cudaFree(layer->gamma));
+        CHECK_CUDA(cudaFree(layer->beta));
+        
+        // Free gradients
+        CHECK_CUDA(cudaFree(layer->d_weights));
+        CHECK_CUDA(cudaFree(layer->d_bias));
+        CHECK_CUDA(cudaFree(layer->d_gamma));
+        CHECK_CUDA(cudaFree(layer->d_beta));
+    }
+    
+    // Free conv layers array
+    free(model->conv_layers);
+    
+    // Free dense layer
+    CHECK_CUDA(cudaFree(model->dense_layer.weights));
+    CHECK_CUDA(cudaFree(model->dense_layer.bias));
+    CHECK_CUDA(cudaFree(model->dense_layer.d_weights));
+    CHECK_CUDA(cudaFree(model->dense_layer.d_bias));
+    
+    // Free model struct
+    free(model);
+}
+
+// Main function
 int main() {
-    // Set random seed
     srand(time(NULL));
     
-    // Generate synthetic dataset
-    int n_sequences = 1000;
-    int sequence_length = 32;
-    int n_inputs = 6;
-    int n_outputs = 4;
-    float noise_level = 0.1;
+    // Generate synthetic data
+    Dataset* data = generate_data(1000, 32, 6, 4, 0.1);
     
-    Dataset* train_data = generate_data(n_sequences, sequence_length, 
-                                      n_inputs, n_outputs, noise_level);
-    Dataset* val_data = generate_data(200, sequence_length, 
-                                    n_inputs, n_outputs, noise_level);
-    
-    // Create model configuration
-    ModelConfig config = {
-        .batch_size = 32,
-        .sequence_length = sequence_length,
-        .n_inputs = n_inputs,
-        .n_outputs = n_outputs,
-        .n_conv1_filters = 32,
-        .n_conv2_filters = 64,
-        .dense_size = 128,
-        .conv_kernel_size = 3
-    };
-    
-    // Create and initialize model
-    Model* model = create_model(config);
+    // Create and train model
+    Model* model = create_model(data->sequence_length, data->n_inputs,
+                              data->n_outputs);
     
     // Training parameters
     int n_epochs = 50;
-    int batch_size = config.batch_size;
-    float learning_rate = 0.001f;
+    int batch_size = 32;
+    float learning_rate = LEARNING_RATE;
     
     // Train the model
-    printf("Starting training...\n");
-    train_model(model, train_data, val_data, n_epochs, batch_size, learning_rate);
-    
-    // Save final predictions
-    printf("Generating final predictions...\n");
-    float* predictions = (float*)malloc(val_data->n_sequences * 
-                                      val_data->n_outputs * sizeof(float));
-    evaluate_model(model, val_data, batch_size);
+    train(model, data, n_epochs, batch_size, learning_rate);
     
     // Save results
     time_t now = time(NULL);
     char fname[64];
-    strftime(fname, sizeof(fname), "%Y%m%d_%H%M%S_predictions.csv", 
+    strftime(fname, sizeof(fname), "%Y%m%d_%H%M%S_data.csv",
              localtime(&now));
-    
-    FILE* fp = fopen(fname, "w");
-    if(fp) {
-        fprintf(fp, "sequence");
-        for(int i = 0; i < n_outputs; i++)
-            fprintf(fp, ",y%d_true,y%d_pred", i, i);
-        fprintf(fp, "\n");
-        
-        for(int i = 0; i < val_data->n_sequences; i++) {
-            fprintf(fp, "%d", i);
-            for(int j = 0; j < n_outputs; j++) {
-                fprintf(fp, ",%.6f,%.6f", 
-                        val_data->targets[i][j],
-                        predictions[i * n_outputs + j]);
-            }
-            fprintf(fp, "\n");
-        }
-        fclose(fp);
-        printf("Predictions saved to: %s\n", fname);
-    }
+    save_csv(fname, data);
+    printf("Data saved to: %s\n", fname);
     
     // Cleanup
-    free(predictions);
+    free_dataset(data);
     free_model(model);
-    free_dataset(train_data);
-    free_dataset(val_data);
+    
+    // Ensure all CUDA operations are complete
+    CHECK_CUDA(cudaDeviceSynchronize());
+    CHECK_CUDA(cudaDeviceReset());
     
     return 0;
 }
