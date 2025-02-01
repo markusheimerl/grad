@@ -400,6 +400,33 @@ int main() {
     // Generate synthetic data
     OpenLoopData* data = generate_open_loop_data(100, 50, 3, 2, 0.1);
     
+    // Save data with timestamp
+    time_t current_time = time(NULL);
+    struct tm* timeinfo = localtime(&current_time);
+    char data_fname[64];
+    strftime(data_fname, sizeof(data_fname), "%Y%m%d_%H%M%S_open_loop_data.csv", timeinfo);
+    
+    save_open_loop_csv(data_fname, data);
+    printf("Data saved to: %s\n", data_fname);
+    
+    // Print example sequence
+    printf("\nExample sequence (first 5 timesteps of first sequence):\n");
+    printf("Timestep | Input Features\n");
+    printf("---------+---------------\n");
+    
+    for(int t = 0; t < 5; t++) {
+        printf("%8d | ", t);
+        for(int f = 0; f < data->input_features; f++) {
+            printf("%6.3f ", data->windows[0][t][f]);
+        }
+        printf("\n");
+    }
+    
+    printf("\nTarget outputs for this sequence:\n");
+    for(int f = 0; f < data->output_features; f++) {
+        printf("Output %d: %.3f\n", f, data->outputs[0][f]);
+    }
+    
     // Initialize model
     CNNModel* model = init_model(1, 50, 3, 2, 0.001f);
     
@@ -450,8 +477,6 @@ int main() {
     }
     
     // Save model with timestamp
-    time_t current_time = time(NULL);
-    struct tm* timeinfo = localtime(&current_time);
     char model_fname[64];
     strftime(model_fname, sizeof(model_fname), "%Y%m%d_%H%M%S_cnn.bin", timeinfo);
     
@@ -464,6 +489,7 @@ int main() {
         fwrite(&model->learning_rate, sizeof(float), 1, fp);
         fclose(fp);
     }
+    printf("Model saved to: %s\n", model_fname);
     
     // Cleanup
     free(h_output);
