@@ -2,16 +2,11 @@ CC = clang
 CFLAGS = -O3 -march=native -ffast-math
 LDFLAGS = -static -lm -flto 
 
-TARGET = grad.out
-SRC = grad.c
-
-.PHONY: clean run
-
-$(TARGET): $(SRC)
+grad.out: grad.c
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
-run: $(TARGET)
-	./$(TARGET)
+run: grad.out
+	./grad.out
 
 clean:
-	rm -f $(TARGET) *.csv *.bin
+	rm -f *.out *.csv *.bin
