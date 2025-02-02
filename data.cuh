@@ -13,13 +13,14 @@
 #define OUTPUT_MAX 70.0
 
 typedef struct {
-    float ***inputs;       // [sequence][timesteps][features]
-    float **targets;       // [sequence][features]
-    int n_sequences;        // number of sequences
-    int sequence_length;    // timesteps per sequence
-    int n_inputs;          // number of input features
-    int n_outputs;         // number of output features
-    char **feature_names;   // Names of all features
+    float **inputs;        // [global_timesteps][features]
+    float **targets;       // [global_timesteps][features]
+    int window_size;       // size of sliding window
+    int total_timesteps;   // total number of timesteps (window_size + n_sequences - 1)
+    int n_sequences;       // number of complete sequences (windows)
+    int n_inputs;         // number of input features
+    int n_outputs;        // number of output features
+    char **feature_names;  // Names of all features
 } Dataset;
 
 // Pattern types for generating synthetic data
@@ -42,7 +43,6 @@ static __host__ __device__ float compute_pattern(
     
     switch(pattern) {
         case PATTERN_A: {
-            // Weighted combination with sine modulation
             float sum = 0;
             for(int t = 0; t < sequence_length; t++) {
                 for(int f = 0; f < n_inputs; f++) {
@@ -54,7 +54,6 @@ static __host__ __device__ float compute_pattern(
         }
         
         case PATTERN_B: {
-            // Count local maxima
             int peak_count = 0;
             for(int t = 1; t < sequence_length-1; t++) {
                 for(int f = 0; f < n_inputs; f++) {
@@ -69,7 +68,6 @@ static __host__ __device__ float compute_pattern(
         }
         
         case PATTERN_C: {
-            // Measure rate of change
             float change_sum = 0;
             for(int t = 1; t < sequence_length; t++) {
                 for(int f = 0; f < n_inputs; f++) {
@@ -81,7 +79,6 @@ static __host__ __device__ float compute_pattern(
         }
         
         case PATTERN_D: {
-            // Count threshold crossings
             int cross_count = 0;
             float threshold = 0.5;
             for(int t = 1; t < sequence_length; t++) {
@@ -100,26 +97,38 @@ static __host__ __device__ float compute_pattern(
             result = 0.0;
     }
     
-    // Scale to output range
     return ((result + 1.0) / 2.0) * (OUTPUT_MAX - OUTPUT_MIN) + OUTPUT_MIN;
 }
 
 static Dataset* generate_data(
     int n_sequences,
-    int sequence_length,
+    int window_size,
     int n_inputs,
     int n_outputs,
     float noise_level
 ) {
     Dataset* data = (Dataset*)malloc(sizeof(Dataset));
+    data->window_size = window_size;
     data->n_sequences = n_sequences;
-    data->sequence_length = sequence_length;
     data->n_inputs = n_inputs;
     data->n_outputs = n_outputs;
+    data->total_timesteps = window_size + n_sequences - 1;
     
-    // Allocate memory
-    data->inputs = (float***)malloc(n_sequences * sizeof(float**));
-    data->targets = (float**)malloc(n_sequences * sizeof(float*));
+    // Allocate memory for continuous input series
+    data->inputs = (float**)malloc(data->total_timesteps * sizeof(float*));
+    for(int t = 0; t < data->total_timesteps; t++) {
+        data->inputs[t] = (float*)malloc(n_inputs * sizeof(float));
+    }
+    
+    // Allocate memory for outputs (one per timestep, including initial zeros)
+    data->targets = (float**)malloc(data->total_timesteps * sizeof(float*));
+    for(int t = 0; t < data->total_timesteps; t++) {
+        data->targets[t] = (float*)malloc(n_outputs * sizeof(float));
+        // Initialize all to zero
+        for(int f = 0; f < n_outputs; f++) {
+            data->targets[t][f] = 0.0f;
+        }
+    }
     
     // Generate feature names
     data->feature_names = (char**)malloc((n_inputs + n_outputs) * sizeof(char*));
@@ -136,34 +145,37 @@ static Dataset* generate_data(
         patterns[i] = (PatternType)(rand() % N_PATTERNS);
     }
     
-    // Generate data
-    for(int i = 0; i < n_sequences; i++) {
-        // Generate input sequence
-        data->inputs[i] = (float**)malloc(sequence_length * sizeof(float*));
-        for(int t = 0; t < sequence_length; t++) {
-            data->inputs[i][t] = (float*)malloc(n_inputs * sizeof(float));
-            
-            for(int f = 0; f < n_inputs; f++) {
-                if(t == 0) {
-                    data->inputs[i][t][f] = (float)rand()/RAND_MAX * 
-                                          (INPUT_MAX - INPUT_MIN) + INPUT_MIN;
-                } else {
-                    // Add some temporal correlation
-                    data->inputs[i][t][f] = 0.1 * data->inputs[i][t-1][f] + 
-                                          0.9 * ((float)rand()/RAND_MAX * 
-                                          (INPUT_MAX - INPUT_MIN) + INPUT_MIN);
-                }
+    // Generate continuous input series
+    for(int t = 0; t < data->total_timesteps; t++) {
+        for(int f = 0; f < n_inputs; f++) {
+            if(t == 0) {
+                data->inputs[t][f] = (float)rand()/RAND_MAX * 
+                                   (INPUT_MAX - INPUT_MIN) + INPUT_MIN;
+            } else {
+                data->inputs[t][f] = 0.1 * data->inputs[t-1][f] + 
+                                   0.9 * ((float)rand()/RAND_MAX * 
+                                   (INPUT_MAX - INPUT_MIN) + INPUT_MIN);
             }
         }
-        
-        // Generate targets
-        data->targets[i] = (float*)malloc(n_outputs * sizeof(float));
-        for(int f = 0; f < n_outputs; f++) {
-            data->targets[i][f] = compute_pattern(patterns[f], data->inputs[i], 
-                                                sequence_length, n_inputs, f);
-            // Add noise
-            data->targets[i][f] += ((float)rand()/RAND_MAX - 0.5) * noise_level;
+    }
+    
+    // Generate targets for each complete window
+    for(int t = window_size - 1; t < data->total_timesteps; t++) {
+        // Create temporary window array for pattern computation
+        float** window = (float**)malloc(window_size * sizeof(float*));
+        for(int w = 0; w < window_size; w++) {
+            window[w] = data->inputs[t - window_size + 1 + w];
         }
+        
+        // Compute outputs for this window
+        for(int f = 0; f < n_outputs; f++) {
+            data->targets[t][f] = compute_pattern(patterns[f], window, 
+                                                window_size, n_inputs, f);
+            // Add noise
+            data->targets[t][f] += ((float)rand()/RAND_MAX - 0.5) * noise_level;
+        }
+        
+        free(window);
     }
     
     free(patterns);
@@ -182,48 +194,40 @@ static void save_csv(const char* filename, Dataset* data) {
     fprintf(fp, "\n");
     
     // Write data
-    for(int i = 0; i < data->n_sequences; i++) {
-        for(int t = 0; t < data->sequence_length; t++) {
-            fprintf(fp, "%d,%d", i, t);
-            
-            // Write inputs
-            for(int f = 0; f < data->n_inputs; f++) {
-                fprintf(fp, ",%.6f", data->inputs[i][t][f]);
-            }
-            
-            // Write targets (only for last timestep)
-            if(t == data->sequence_length - 1) {
-                for(int f = 0; f < data->n_outputs; f++) {
-                    fprintf(fp, ",%.6f", data->targets[i][f]);
-                }
-            } else {
-                for(int f = 0; f < data->n_outputs; f++) {
-                    fprintf(fp, ",");
-                }
-            }
-            fprintf(fp, "\n");
+    for(int t = 0; t < data->total_timesteps; t++) {
+        // Determine sequence number (0 until window_size-1, then increment)
+        int seq_num = t < data->window_size - 1 ? 0 : t - data->window_size + 1;
+        
+        fprintf(fp, "%d,%d", seq_num, t);
+        
+        // Write inputs
+        for(int f = 0; f < data->n_inputs; f++) {
+            fprintf(fp, ",%.6f", data->inputs[t][f]);
         }
+        
+        // Write targets (zeros for initial timesteps, computed values after)
+        for(int f = 0; f < data->n_outputs; f++) {
+            fprintf(fp, ",%.6f", data->targets[t][f]);
+        }
+        fprintf(fp, "\n");
     }
     
     fclose(fp);
 }
 
 static void free_dataset(Dataset* data) {
-    for(int i = 0; i < data->n_sequences; i++) {
-        for(int t = 0; t < data->sequence_length; t++) {
-            free(data->inputs[i][t]);
-        }
-        free(data->inputs[i]);
-        free(data->targets[i]);
+    for(int t = 0; t < data->total_timesteps; t++) {
+        free(data->inputs[t]);
+        free(data->targets[t]);
     }
+    free(data->inputs);
+    free(data->targets);
     
     for(int i = 0; i < data->n_inputs + data->n_outputs; i++) {
         free(data->feature_names[i]);
     }
-    
     free(data->feature_names);
-    free(data->inputs);
-    free(data->targets);
+    
     free(data);
 }
 
