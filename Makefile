@@ -1,8 +1,8 @@
-CC = clang
-CFLAGS = -O3 -march=native -ffast-math
-LDFLAGS = -static -lm -flto 
+CC = nvcc
+CFLAGS = -O3 -arch=sm_60
+LDFLAGS = -lcudart -lcurand -lm
 
-grad.out: grad.c
+grad.out: grad.cu
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
 run: grad.out
