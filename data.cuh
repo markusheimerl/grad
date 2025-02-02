@@ -7,10 +7,10 @@
 #include <math.h>
 #include <cuda_runtime.h>
 
-#define INPUT_MIN -5.0
-#define INPUT_MAX 5.0
-#define OUTPUT_MIN 30.0
-#define OUTPUT_MAX 70.0
+#define INPUT_MIN -2.0
+#define INPUT_MAX 2.0
+#define OUTPUT_MIN -2.0
+#define OUTPUT_MAX 2.0
 
 typedef struct {
     float **inputs;        // [global_timesteps][features]
@@ -152,8 +152,8 @@ static Dataset* generate_data(
                 data->inputs[t][f] = (float)rand()/RAND_MAX * 
                                    (INPUT_MAX - INPUT_MIN) + INPUT_MIN;
             } else {
-                data->inputs[t][f] = 0.1 * data->inputs[t-1][f] + 
-                                   0.9 * ((float)rand()/RAND_MAX * 
+                data->inputs[t][f] = 0.8 * data->inputs[t-1][f] + 
+                                   0.2 * ((float)rand()/RAND_MAX * 
                                    (INPUT_MAX - INPUT_MIN) + INPUT_MIN);
             }
         }
