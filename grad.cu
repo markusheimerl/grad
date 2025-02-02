@@ -131,7 +131,7 @@ static Model* create_model(int window_size, int n_inputs, int n_outputs, int bat
     CHECK_NULL(model);
     
     model->batch_size = batch_size;
-    model->learning_rate = 0.001f;
+    model->learning_rate = 1e-4f;
     
     // Initialize layers
     init_conv_layer(&model->conv1, n_inputs, 32, 3);
@@ -882,33 +882,6 @@ __global__ void clip_gradients_kernel(
     }
 }
 
-static void normalize_batch(float* batch, int batch_size, int feature_size) {
-    for(int i = 0; i < batch_size; i++) {
-        float* sample = batch + i * feature_size;
-        
-        // Compute mean
-        float mean = 0.0f;
-        for(int j = 0; j < feature_size; j++) {
-            mean += sample[j];
-        }
-        mean /= feature_size;
-        
-        // Compute variance
-        float var = 0.0f;
-        for(int j = 0; j < feature_size; j++) {
-            float diff = sample[j] - mean;
-            var += diff * diff;
-        }
-        var /= feature_size;
-        
-        // Normalize
-        float std = sqrt(var + 1e-8f);
-        for(int j = 0; j < feature_size; j++) {
-            sample[j] = (sample[j] - mean) / std;
-        }
-    }
-}
-
 // Training loop function
 static void train_model(
     Model* model,
@@ -932,13 +905,9 @@ static void train_model(
     
     int n_batches = data->n_sequences / batch_size;
     const float gradient_clip = 1.0f;
-    const float initial_lr = 0.001f;
     
     for (int epoch = 0; epoch < epochs; epoch++) {
         float epoch_loss = 0.0f;
-        
-        // Update learning rate
-        model->learning_rate = initial_lr * (1.0f - (float)epoch / epochs);
         
         for (int batch = 0; batch < n_batches; batch++) {
             // Prepare batch data
@@ -958,10 +927,6 @@ static void train_model(
                         data->targets[seq_idx + data->window_size - 1][f];
                 }
             }
-            
-            // Normalize batch input
-            normalize_batch(h_batch_input, batch_size, 
-                          data->n_inputs * data->window_size);
             
             // Copy to device
             CHECK_CUDA(cudaMemcpy(d_batch_input, h_batch_input,
@@ -1042,8 +1007,8 @@ static void train_model(
             epoch_loss += batch_loss;
         }
         
-        printf("Epoch %d/%d - Loss: %f (lr: %f)\n", 
-               epoch + 1, epochs, epoch_loss / n_batches, model->learning_rate);
+        printf("Epoch %d/%d - Loss: %f\n", 
+               epoch + 1, epochs, epoch_loss / n_batches);
     }
     
     cudaFree(d_batch_input);
@@ -1097,9 +1062,9 @@ int main() {
     
     // Create and train model with smaller batch size
     Model* model = create_model(data->window_size, data->n_inputs, 
-                              data->n_outputs, 16);
+                              data->n_outputs, 64);
     
-    train_model(model, data, 100, 16);
+    train_model(model, data, 10, 64);
     
     // Save results
     time_t now = time(NULL);
