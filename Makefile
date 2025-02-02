@@ -1,6 +1,6 @@
 CC = clang
 CFLAGS = -O3 -march=native -ffast-math
-LDFLAGS = -flto -lm
+LDFLAGS = -static -lm -flto 
 
 TARGET = grad.out
 SRC = grad.c
