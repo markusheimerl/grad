@@ -1,30 +1,19 @@
-#include "grad.cuh"
+#include "grad.h"
 #include <time.h>
 
 int main() {
-    // Set random seed
     srand(time(NULL));
-    
-    // Initialize CUDA device
-    int device;
-    CHECK_CUDA(cudaGetDevice(&device));
-    cudaDeviceProp props;
-    CHECK_CUDA(cudaGetDeviceProperties(&props, device));
-    printf("Using GPU: %s\n", props.name);
     
     // Generate synthetic data
     Data* data = synth(1000, 15, 4, 0.1);
-    printf("Generated synthetic dataset with %d samples\n", data->n);
     
     // Initialize network
     int sz[] = {15, 256, 128, 64, 32, 4};
     int n_layers = sizeof(sz)/sizeof(sz[0]);
     Net* net = init_net(n_layers, sz, 1e-3);
-    printf("Initialized neural network with %d layers\n", n_layers);
     
     // Training loop
     int epochs = 200;
-    clock_t start = clock();
 
     for(int epoch = 0; epoch < epochs; epoch++) {
         for(int i = 0; i < data->n; i++) {
@@ -33,15 +22,9 @@ int main() {
         }
         
         if(epoch % 5 == 0 || epoch == epochs - 1) {
-            double error = mse(net, data);
-            double elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
-            printf("Epoch %d/%d, MSE: %f, Time: %.2f s\n", 
-                   epoch + 1, epochs, error, elapsed);
+            printf("Epoch %d, MSE: %f\n", epoch, mse(net, data));
         }
     }
-    
-    double total_time = (double)(clock() - start) / CLOCKS_PER_SEC;
-    printf("\nTraining completed in %.2f seconds\n", total_time);
     
     // Print some example predictions
     printf("\nExample predictions (first 10 samples):\n");
@@ -82,17 +65,17 @@ int main() {
         printf("]\n");
     }
 
-    // Save network and data
     char net_fname[64], data_fname[64];
-    time_t current_time = time(NULL);
-    struct tm* time_info = localtime(&current_time);
-    
-    strftime(net_fname, sizeof(net_fname), "%Y%m%d_%H%M%S_net.bin", time_info);
+    strftime(net_fname, sizeof(net_fname), "%Y%m%d_%H%M%S_net.bin", 
+             localtime(&(time_t){time(NULL)}));
     save_net(net_fname, net);
+    free_net(net);
     
-    strftime(data_fname, sizeof(data_fname), "%Y%m%d_%H%M%S_data.csv", time_info);
+    strftime(data_fname, sizeof(data_fname), "%Y%m%d_%H%M%S_data.csv", 
+             localtime(&(time_t){time(NULL)}));
     save_csv(data_fname, data);
-    
+    free_data(data);
+
     // Verification of saved and loaded data/network
     printf("\n=== Verification of saved/loaded data and network ===\n");
 
@@ -100,21 +83,17 @@ int main() {
     Net* loaded_net = load_net(net_fname);
     if (!loaded_net) {
         printf("Failed to load network from file: %s\n", net_fname);
-        free_net(net);
-        free_data(data);
         return 1;
     }
 
     Data* loaded_data = load_csv(data_fname, 15, 4);
     if (!loaded_data) {
         printf("Failed to load data from file: %s\n", data_fname);
-        free_net(net);
         free_net(loaded_net);
-        free_data(data);
         return 1;
     }
 
-    // Calculate and print MSE with loaded network
+    // Calculate and print MSE with loaded network and data
     printf("\nMSE with loaded network: %f\n", mse(loaded_net, loaded_data));
 
     // Print some predictions with loaded network
@@ -144,13 +123,8 @@ int main() {
     }
 
     // Clean up
-    free_net(net);
     free_net(loaded_net);
-    free_data(data);
     free_data(loaded_data);
-    
-    // Cleanup CUDA
-    CHECK_CUDA(cudaDeviceReset());
 
     return 0;
 }
