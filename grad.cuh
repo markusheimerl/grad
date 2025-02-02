@@ -330,13 +330,16 @@ double get_warmup_lr(int epoch, int warmup_epochs, double initial_lr) {
     return initial_lr;
 }
 
-void bwd(Net* net, double* output_gradient, int epoch, int total_epochs) {
-    if (!net || !output_gradient) return;
-    
+void backward(Net* net, double* target, int epoch, int total_epochs) {
     int last = net->n_layers-1;
     
+    // Compute output gradient
+    for(int i = 0; i < net->layers[last].size; i++) {
+        net->layers[last].dx[i] = net->layers[last].x[i] - target[i];
+    }
+    
     // Copy output gradient to device
-    CHECK_CUDA(cudaMemcpy(net->layers[last].d_dx, output_gradient,
+    CHECK_CUDA(cudaMemcpy(net->layers[last].d_dx, net->layers[last].dx,
                          net->layers[last].size * sizeof(double),
                          cudaMemcpyHostToDevice));
     
@@ -400,21 +403,6 @@ void bwd(Net* net, double* output_gradient, int epoch, int total_epochs) {
     }
     
     net->t++;
-}
-
-void backward(Net* net, double* target, int epoch, int total_epochs) {
-    if (!net || !target) return;
-    
-    int last = net->n_layers-1;
-    double* output_gradient = (double*)malloc(net->layers[last].size * sizeof(double));
-    if (!output_gradient) return;
-    
-    for(int i = 0; i < net->layers[last].size; i++) {
-        output_gradient[i] = net->layers[last].x[i] - target[i];
-    }
-    
-    bwd(net, output_gradient, epoch, total_epochs);
-    free(output_gradient);
 }
 
 double mse(Net* net, Data* data) {
