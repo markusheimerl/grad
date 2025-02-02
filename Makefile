@@ -1,12 +1,17 @@
-NVCC = nvcc
-CFLAGS = -O3 -arch=sm_60
-LDFLAGS = -lcudart
+CC = clang
+CFLAGS = -O3 -march=native -ffast-math
+LDFLAGS = -flto -lm
 
-grad.out: grad.cu
-	$(NVCC) $(CFLAGS) $^ $(LDFLAGS) -o $@
+TARGET = grad.out
+SRC = grad.c
 
-run: grad.out
-	./grad.out
+.PHONY: clean run
+
+$(TARGET): $(SRC)
+	$(CC) $(CFLAGS) $^ $(LDFLAGS) -o $@
+
+run: $(TARGET)
+	./$(TARGET)
 
 clean:
-	rm -f *.out *.csv *.bin
+	rm -f $(TARGET) *.csv *.bin
