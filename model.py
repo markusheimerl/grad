@@ -3,24 +3,17 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler
 
-# Load and preprocess the data
+# Load the data
 data = pd.read_csv('20250208_163908_data.csv')
 X = data.iloc[:, :15].values  # First 15 columns are inputs (x0-x14)
 y = data.iloc[:, 15:].values  # Last 4 columns are outputs (y0-y3)
 
-# Scale the data
-scaler_X = StandardScaler()
-scaler_y = StandardScaler()
-X_scaled = scaler_X.fit_transform(X)
-y_scaled = scaler_y.fit_transform(y)
-
 # Convert to PyTorch tensors
-X_train = torch.FloatTensor(X_scaled)
-y_train = torch.FloatTensor(y_scaled)
+X_train = torch.FloatTensor(X)
+y_train = torch.FloatTensor(y)
 
-# Define the neural network (making it bigger for better fitting)
+# Define the neural network
 class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
@@ -43,7 +36,7 @@ criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 # Training parameters
-num_epochs = 2000
+num_epochs = 1000
 batch_size = 32
 
 # Training loop
@@ -72,16 +65,13 @@ for epoch in range(num_epochs):
 model.eval()
 with torch.no_grad():
     # Make predictions
-    y_pred = model(X_train)
-    
-    # Convert predictions back to original scale
-    y_pred = scaler_y.inverse_transform(y_pred.numpy())
-    y_train_orig = scaler_y.inverse_transform(y_train.numpy())
+    y_pred = model(X_train).numpy()
+    y_train_np = y_train.numpy()
     
     # Calculate R² score for each output
     from sklearn.metrics import r2_score
     for i in range(4):
-        r2 = r2_score(y_train_orig[:, i], y_pred[:, i])
+        r2 = r2_score(y_train_np[:, i], y_pred[:, i])
         print(f'R² score for output y{i}: {r2:.4f}')
     
     # Show sample predictions
@@ -93,12 +83,12 @@ with torch.no_grad():
         print(f"\ny{i}:")
         for j in range(15):  # First 15 samples
             pred = y_pred[j, i]
-            actual = y_train_orig[j, i]
+            actual = y_train_np[j, i]
             diff = pred - actual
             print(f"Sample {j}:\t{pred:8.3f}\t{actual:8.3f}\t{diff:8.3f}")
         
         # Calculate and print mean absolute error for this output
-        mae = np.mean(np.abs(y_pred[:, i] - y_train_orig[:, i]))
+        mae = np.mean(np.abs(y_pred[:, i] - y_train_np[:, i]))
         print(f"Mean Absolute Error for y{i}: {mae:.3f}")
 
 # Save the model
