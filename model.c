@@ -1,3 +1,5 @@
+// gcc -o model model.c -ldnnl -lm -O3 -march=native -ffast-math
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,29 +39,59 @@
 
 // Layer structure
 typedef struct {
+    // Descriptors
     dnnl_memory_desc_t src_md;
     dnnl_memory_desc_t weights_md;
     dnnl_memory_desc_t bias_md;
     dnnl_memory_desc_t dst_md;
+    
+    // Primitive descriptors
     dnnl_primitive_desc_t fwd_pd;
     dnnl_primitive_desc_t bwd_pd;
+    dnnl_primitive_desc_t relu_fwd_pd;
+    dnnl_primitive_desc_t relu_bwd_pd;
+    
+    // Primitives
     dnnl_primitive_t forward;
     dnnl_primitive_t backward;
+    dnnl_primitive_t relu_forward;
+    dnnl_primitive_t relu_backward;
+    
+    // Memory objects
+    dnnl_memory_t src_memory;
+    dnnl_memory_t weights_memory;
+    dnnl_memory_t bias_memory;
+    dnnl_memory_t dst_memory;
+    dnnl_memory_t relu_dst_memory;
+    dnnl_memory_t diff_src_memory;
+    dnnl_memory_t diff_weights_memory;
+    dnnl_memory_t diff_bias_memory;
+    dnnl_memory_t diff_dst_memory;
+    dnnl_memory_t relu_diff_dst_memory;
+    
+    // Data buffers
     float* weights;
     float* bias;
     float* weights_grad;
     float* bias_grad;
+    float* output;
+    float* relu_output;
+    float* input_grad;
+    
     int input_size;
     int output_size;
 } Layer;
 
 // Adam optimizer structure
 typedef struct {
-    float* m;  // First moment
-    float* v;  // Second moment
-    float beta1_t;  // beta1^t
-    float beta2_t;  // beta2^t
-    int size;
+    float* m_weights;  // First moment for weights
+    float* v_weights;  // Second moment for weights
+    float* m_bias;     // First moment for bias
+    float* v_bias;     // Second moment for bias
+    float beta1_t;     // beta1^t
+    float beta2_t;     // beta2^t
+    int weights_size;
+    int bias_size;
 } AdamOptimizer;
 
 // Model structure
@@ -74,20 +106,6 @@ typedef struct {
 } Model;
 
 // Function declarations
-float* allocate_float_array(size_t size);
-void xavier_init(float* array, int fan_in, int fan_out);
-void create_layer(Layer* layer, int input_size, int output_size, 
-                 dnnl_engine_t engine, dnnl_primitive_attr_t attr);
-AdamOptimizer* create_optimizer(int size);
-void update_weights_adam(AdamOptimizer* opt, float* weights, float* gradients, 
-                        int size, float lr);
-float calculate_mse(float* pred, float* target, int size);
-float calculate_r2_score(float* y_true, float* y_pred, int size);
-void read_csv(const char* filename, float** X, float** y, int* num_samples);
-void save_model(Model* model, const char* filename);
-void load_model(Model* model, const char* filename);
-
-// Utility function implementations
 float* allocate_float_array(size_t size) {
     float* array = (float*)malloc(size * sizeof(float));
     MALLOC_CHECK(array);
@@ -101,6 +119,28 @@ void xavier_init(float* array, int fan_in, int fan_out) {
     }
 }
 
+AdamOptimizer* create_optimizer(int weights_size, int bias_size) {
+    AdamOptimizer* opt = (AdamOptimizer*)malloc(sizeof(AdamOptimizer));
+    MALLOC_CHECK(opt);
+    
+    opt->m_weights = allocate_float_array(weights_size);
+    opt->v_weights = allocate_float_array(weights_size);
+    opt->m_bias = allocate_float_array(bias_size);
+    opt->v_bias = allocate_float_array(bias_size);
+    
+    memset(opt->m_weights, 0, weights_size * sizeof(float));
+    memset(opt->v_weights, 0, weights_size * sizeof(float));
+    memset(opt->m_bias, 0, bias_size * sizeof(float));
+    memset(opt->v_bias, 0, bias_size * sizeof(float));
+    
+    opt->beta1_t = BETA1;
+    opt->beta2_t = BETA2;
+    opt->weights_size = weights_size;
+    opt->bias_size = bias_size;
+    
+    return opt;
+}
+
 void read_csv(const char* filename, float** X, float** y, int* num_samples) {
     FILE* file = fopen(filename, "r");
     if (!file) {
@@ -108,7 +148,6 @@ void read_csv(const char* filename, float** X, float** y, int* num_samples) {
         exit(1);
     }
 
-    // Count lines first
     char line[4096];
     *num_samples = 0;
     while (fgets(line, sizeof(line), file)) {
@@ -116,15 +155,12 @@ void read_csv(const char* filename, float** X, float** y, int* num_samples) {
     }
     (*num_samples)--; // Remove header line
 
-    // Allocate memory
     *X = allocate_float_array(*num_samples * INPUT_SIZE);
     *y = allocate_float_array(*num_samples * OUTPUT_SIZE);
 
-    // Reset file pointer and skip header
     rewind(file);
-    fgets(line, sizeof(line), file);
+    fgets(line, sizeof(line), file); // Skip header
 
-    // Read data
     int row = 0;
     while (fgets(line, sizeof(line), file)) {
         char* token = strtok(line, ",");
@@ -169,58 +205,19 @@ float calculate_r2_score(float* y_true, float* y_pred, int size) {
     return 1.0f - (ss_res / ss_tot);
 }
 
-// Adam optimizer implementation
-AdamOptimizer* create_optimizer(int size) {
-    AdamOptimizer* opt = (AdamOptimizer*)malloc(sizeof(AdamOptimizer));
-    MALLOC_CHECK(opt);
-    
-    opt->m = allocate_float_array(size);
-    opt->v = allocate_float_array(size);
-    memset(opt->m, 0, size * sizeof(float));
-    memset(opt->v, 0, size * sizeof(float));
-    opt->beta1_t = BETA1;
-    opt->beta2_t = BETA2;
-    opt->size = size;
-    
-    return opt;
-}
-
-void update_weights_adam(AdamOptimizer* opt, float* weights, float* gradients, 
-                        int size, float lr) {
-    float beta1_correction = 1.0f / (1.0f - opt->beta1_t);
-    float beta2_correction = 1.0f / (1.0f - opt->beta2_t);
-    
-    for (int i = 0; i < size; i++) {
-        // Update biased first moment estimate
-        opt->m[i] = BETA1 * opt->m[i] + (1.0f - BETA1) * gradients[i];
-        // Update biased second raw moment estimate
-        opt->v[i] = BETA2 * opt->v[i] + (1.0f - BETA2) * gradients[i] * gradients[i];
-        
-        // Compute bias-corrected first moment estimate
-        float m_hat = opt->m[i] * beta1_correction;
-        // Compute bias-corrected second raw moment estimate
-        float v_hat = opt->v[i] * beta2_correction;
-        
-        // Update weights
-        weights[i] -= lr * m_hat / (sqrt(v_hat) + EPSILON);
-    }
-    
-    // Update beta powers
-    opt->beta1_t *= BETA1;
-    opt->beta2_t *= BETA2;
-}
-
-// Layer creation and initialization
 void create_layer(Layer* layer, int input_size, int output_size, 
                  dnnl_engine_t engine, dnnl_primitive_attr_t attr) {
     layer->input_size = input_size;
     layer->output_size = output_size;
     
-    // Allocate memory for weights and biases
+    // Allocate memory for weights, biases, and gradients
     layer->weights = allocate_float_array(input_size * output_size);
     layer->bias = allocate_float_array(output_size);
     layer->weights_grad = allocate_float_array(input_size * output_size);
     layer->bias_grad = allocate_float_array(output_size);
+    layer->output = allocate_float_array(BATCH_SIZE * output_size);
+    layer->relu_output = allocate_float_array(BATCH_SIZE * output_size);
+    layer->input_grad = allocate_float_array(BATCH_SIZE * input_size);
     
     // Initialize weights using Xavier initialization
     xavier_init(layer->weights, input_size, output_size);
@@ -235,44 +232,129 @@ void create_layer(Layer* layer, int input_size, int output_size,
         (int64_t[]){output_size}, dnnl_f32, dnnl_x));
     CHECK(dnnl_memory_desc_create_with_tag(&layer->dst_md, 2,
         (int64_t[]){BATCH_SIZE, output_size}, dnnl_f32, dnnl_nc));
-    
-    // Create forward primitive descriptor
+
+    // Create forward primitive descriptor for linear layer
     CHECK(dnnl_inner_product_forward_primitive_desc_create(
         &layer->fwd_pd, engine, dnnl_forward_training,
         layer->src_md, layer->weights_md, layer->bias_md,
         layer->dst_md, attr));
+
+    // Create ReLU forward descriptor and primitive descriptor
+    dnnl_eltwise_desc_t relu_desc;
+    CHECK(dnnl_eltwise_forward_desc_init(&relu_desc,
+        dnnl_forward_training, dnnl_eltwise_relu,
+        layer->dst_md, 0.0f, 0.0f));
     
-    // Create backward primitive descriptor
+    CHECK(dnnl_primitive_desc_create(&layer->relu_fwd_pd,
+        &relu_desc, attr, engine, NULL));
+
+    // Create backward primitive descriptors
     dnnl_memory_desc_t diff_src_md, diff_weights_md, diff_bias_md, diff_dst_md;
     CHECK(dnnl_memory_desc_clone(&diff_src_md, layer->src_md));
     CHECK(dnnl_memory_desc_clone(&diff_weights_md, layer->weights_md));
     CHECK(dnnl_memory_desc_clone(&diff_bias_md, layer->bias_md));
     CHECK(dnnl_memory_desc_clone(&diff_dst_md, layer->dst_md));
-    
+
+    // Create backward primitive descriptor for linear layer
     CHECK(dnnl_inner_product_backward_primitive_desc_create(
         &layer->bwd_pd, engine, dnnl_backward,
         diff_src_md, diff_weights_md, diff_bias_md,
         diff_dst_md, layer->weights_md, attr, layer->fwd_pd));
+
+    // Create ReLU backward descriptor and primitive descriptor
+    dnnl_eltwise_desc_t relu_bwd_desc;
+    CHECK(dnnl_eltwise_backward_desc_init(&relu_bwd_desc,
+        dnnl_eltwise_relu, diff_dst_md, diff_dst_md, 0.0f, 0.0f));
     
+    CHECK(dnnl_primitive_desc_create(&layer->relu_bwd_pd,
+        &relu_bwd_desc, attr, engine, layer->relu_fwd_pd));
+
     // Create primitives
     CHECK(dnnl_primitive_create(&layer->forward, layer->fwd_pd));
     CHECK(dnnl_primitive_create(&layer->backward, layer->bwd_pd));
+    CHECK(dnnl_primitive_create(&layer->relu_forward, layer->relu_fwd_pd));
+    CHECK(dnnl_primitive_create(&layer->relu_backward, layer->relu_bwd_pd));
+
+    // Create memory objects
+    CHECK(dnnl_memory_create(&layer->src_memory, layer->src_md, engine, NULL));
+    CHECK(dnnl_memory_create(&layer->weights_memory, layer->weights_md, engine, layer->weights));
+    CHECK(dnnl_memory_create(&layer->bias_memory, layer->bias_md, engine, layer->bias));
+    CHECK(dnnl_memory_create(&layer->dst_memory, layer->dst_md, engine, layer->output));
+    CHECK(dnnl_memory_create(&layer->relu_dst_memory, layer->dst_md, engine, layer->relu_output));
+    
+    CHECK(dnnl_memory_create(&layer->diff_src_memory, diff_src_md, engine, layer->input_grad));
+    CHECK(dnnl_memory_create(&layer->diff_weights_memory, diff_weights_md, engine, layer->weights_grad));
+    CHECK(dnnl_memory_create(&layer->diff_bias_memory, diff_bias_md, engine, layer->bias_grad));
+    CHECK(dnnl_memory_create(&layer->diff_dst_memory, diff_dst_md, engine, NULL));
+    CHECK(dnnl_memory_create(&layer->relu_diff_dst_memory, diff_dst_md, engine, NULL));
 }
 
-// ReLU activation implementation
-void apply_relu(float* data, int size) {
-    for (int i = 0; i < size; i++) {
-        data[i] = data[i] > 0 ? data[i] : 0;
+void destroy_layer(Layer* layer) {
+    // Destroy primitives
+    dnnl_primitive_destroy(layer->forward);
+    dnnl_primitive_destroy(layer->backward);
+    dnnl_primitive_destroy(layer->relu_forward);
+    dnnl_primitive_destroy(layer->relu_backward);
+
+    // Destroy primitive descriptors
+    dnnl_primitive_desc_destroy(layer->fwd_pd);
+    dnnl_primitive_desc_destroy(layer->bwd_pd);
+    dnnl_primitive_desc_destroy(layer->relu_fwd_pd);
+    dnnl_primitive_desc_destroy(layer->relu_bwd_pd);
+
+    // Destroy memory objects
+    dnnl_memory_destroy(layer->src_memory);
+    dnnl_memory_destroy(layer->weights_memory);
+    dnnl_memory_destroy(layer->bias_memory);
+    dnnl_memory_destroy(layer->dst_memory);
+    dnnl_memory_destroy(layer->relu_dst_memory);
+    dnnl_memory_destroy(layer->diff_src_memory);
+    dnnl_memory_destroy(layer->diff_weights_memory);
+    dnnl_memory_destroy(layer->diff_bias_memory);
+    dnnl_memory_destroy(layer->diff_dst_memory);
+    dnnl_memory_destroy(layer->relu_diff_dst_memory);
+
+    // Free data buffers
+    free(layer->weights);
+    free(layer->bias);
+    free(layer->weights_grad);
+    free(layer->bias_grad);
+    free(layer->output);
+    free(layer->relu_output);
+    free(layer->input_grad);
+}
+
+void update_weights_adam(AdamOptimizer* opt, float* weights, float* bias,
+                        float* weights_grad, float* bias_grad, float lr) {
+    float beta1_correction = 1.0f / (1.0f - opt->beta1_t);
+    float beta2_correction = 1.0f / (1.0f - opt->beta2_t);
+
+    // Update weights
+    for (int i = 0; i < opt->weights_size; i++) {
+        opt->m_weights[i] = BETA1 * opt->m_weights[i] + (1.0f - BETA1) * weights_grad[i];
+        opt->v_weights[i] = BETA2 * opt->v_weights[i] + (1.0f - BETA2) * weights_grad[i] * weights_grad[i];
+        
+        float m_hat = opt->m_weights[i] * beta1_correction;
+        float v_hat = opt->v_weights[i] * beta2_correction;
+        
+        weights[i] -= lr * m_hat / (sqrt(v_hat) + EPSILON);
     }
-}
 
-void apply_relu_gradient(float* grad, float* data, int size) {
-    for (int i = 0; i < size; i++) {
-        grad[i] = data[i] > 0 ? grad[i] : 0;
+    // Update bias
+    for (int i = 0; i < opt->bias_size; i++) {
+        opt->m_bias[i] = BETA1 * opt->m_bias[i] + (1.0f - BETA1) * bias_grad[i];
+        opt->v_bias[i] = BETA2 * opt->v_bias[i] + (1.0f - BETA2) * bias_grad[i] * bias_grad[i];
+        
+        float m_hat = opt->m_bias[i] * beta1_correction;
+        float v_hat = opt->v_bias[i] * beta2_correction;
+        
+        bias[i] -= lr * m_hat / (sqrt(v_hat) + EPSILON);
     }
+
+    opt->beta1_t *= BETA1;
+    opt->beta2_t *= BETA2;
 }
 
-// Model creation
 Model* create_model(void) {
     Model* model = (Model*)malloc(sizeof(Model));
     MALLOC_CHECK(model);
@@ -281,7 +363,7 @@ Model* create_model(void) {
     CHECK(dnnl_engine_create(&model->engine, dnnl_cpu, 0));
     CHECK(dnnl_stream_create(&model->stream, model->engine, dnnl_stream_default_flags));
     
-    // Create primitive attribute (used for layer creation)
+    // Create primitive attribute
     dnnl_primitive_attr_t attr;
     CHECK(dnnl_primitive_attr_create(&attr));
     
@@ -292,10 +374,10 @@ Model* create_model(void) {
     create_layer(&model->layer4, HIDDEN3_SIZE, OUTPUT_SIZE, model->engine, attr);
     
     // Create optimizers
-    model->optimizers[0] = create_optimizer(INPUT_SIZE * HIDDEN1_SIZE + HIDDEN1_SIZE);
-    model->optimizers[1] = create_optimizer(HIDDEN1_SIZE * HIDDEN2_SIZE + HIDDEN2_SIZE);
-    model->optimizers[2] = create_optimizer(HIDDEN2_SIZE * HIDDEN3_SIZE + HIDDEN3_SIZE);
-    model->optimizers[3] = create_optimizer(HIDDEN3_SIZE * OUTPUT_SIZE + OUTPUT_SIZE);
+    model->optimizers[0] = create_optimizer(INPUT_SIZE * HIDDEN1_SIZE, HIDDEN1_SIZE);
+    model->optimizers[1] = create_optimizer(HIDDEN1_SIZE * HIDDEN2_SIZE, HIDDEN2_SIZE);
+    model->optimizers[2] = create_optimizer(HIDDEN2_SIZE * HIDDEN3_SIZE, HIDDEN3_SIZE);
+    model->optimizers[3] = create_optimizer(HIDDEN3_SIZE * OUTPUT_SIZE, OUTPUT_SIZE);
     
     // Cleanup
     CHECK(dnnl_primitive_attr_destroy(attr));
@@ -303,229 +385,164 @@ Model* create_model(void) {
     return model;
 }
 
-// Model destruction
 void destroy_model(Model* model) {
-    // Destroy layers
-    dnnl_primitive_destroy(model->layer1.forward);
-    dnnl_primitive_destroy(model->layer1.backward);
-    dnnl_primitive_destroy(model->layer2.forward);
-    dnnl_primitive_destroy(model->layer2.backward);
-    dnnl_primitive_destroy(model->layer3.forward);
-    dnnl_primitive_destroy(model->layer3.backward);
-    dnnl_primitive_destroy(model->layer4.forward);
-    dnnl_primitive_destroy(model->layer4.backward);
+    destroy_layer(&model->layer1);
+    destroy_layer(&model->layer2);
+    destroy_layer(&model->layer3);
+    destroy_layer(&model->layer4);
     
-    // Free memory
-    free(model->layer1.weights);
-    free(model->layer1.bias);
-    free(model->layer1.weights_grad);
-    free(model->layer1.bias_grad);
-    free(model->layer2.weights);
-    free(model->layer2.bias);
-    free(model->layer2.weights_grad);
-    free(model->layer2.bias_grad);
-    free(model->layer3.weights);
-    free(model->layer3.bias);
-    free(model->layer3.weights_grad);
-    free(model->layer3.bias_grad);
-    free(model->layer4.weights);
-    free(model->layer4.bias);
-    free(model->layer4.weights_grad);
-    free(model->layer4.bias_grad);
-    
-    // Free optimizers
     for (int i = 0; i < 4; i++) {
-        free(model->optimizers[i]->m);
-        free(model->optimizers[i]->v);
+        free(model->optimizers[i]->m_weights);
+        free(model->optimizers[i]->v_weights);
+        free(model->optimizers[i]->m_bias);
+        free(model->optimizers[i]->v_bias);
         free(model->optimizers[i]);
     }
     
-    // Destroy DNNL objects
     dnnl_stream_destroy(model->stream);
     dnnl_engine_destroy(model->engine);
     
     free(model);
 }
 
-// Forward pass implementation
-void forward_pass(Model* model, float* input, float* output, float** layer_outputs, int training) {
-    dnnl_memory_t src_memory, weights_memory, bias_memory, dst_memory;
+void forward_pass(Model* model, float* input, float* output, int training) {
     const void* fwd_args[4];
+    const void* relu_args[2];
     
     // Layer 1
-    CHECK(dnnl_memory_create(&src_memory, model->layer1.src_md, model->engine, input));
-    CHECK(dnnl_memory_create(&weights_memory, model->layer1.weights_md, model->engine, model->layer1.weights));
-    CHECK(dnnl_memory_create(&bias_memory, model->layer1.bias_md, model->engine, model->layer1.bias));
-    CHECK(dnnl_memory_create(&dst_memory, model->layer1.dst_md, model->engine, layer_outputs[0]));
+    CHECK(dnnl_memory_set_data_handle(model->layer1.src_memory, input));
     
-    fwd_args[0] = src_memory;
-    fwd_args[1] = weights_memory;
-    fwd_args[2] = bias_memory;
-    fwd_args[3] = dst_memory;
+    fwd_args[0] = model->layer1.src_memory;
+    fwd_args[1] = model->layer1.weights_memory;
+    fwd_args[2] = model->layer1.bias_memory;
+    fwd_args[3] = model->layer1.dst_memory;
     
     CHECK(dnnl_primitive_execute(model->layer1.forward, model->stream, 4, fwd_args));
-    apply_relu(layer_outputs[0], BATCH_SIZE * HIDDEN1_SIZE);
+    
+    relu_args[0] = model->layer1.dst_memory;
+    relu_args[1] = model->layer1.relu_dst_memory;
+    
+    CHECK(dnnl_primitive_execute(model->layer1.relu_forward, model->stream, 2, relu_args));
     
     // Layer 2
-    CHECK(dnnl_memory_create(&src_memory, model->layer2.src_md, model->engine, layer_outputs[0]));
-    CHECK(dnnl_memory_create(&weights_memory, model->layer2.weights_md, model->engine, model->layer2.weights));
-    CHECK(dnnl_memory_create(&bias_memory, model->layer2.bias_md, model->engine, model->layer2.bias));
-    CHECK(dnnl_memory_create(&dst_memory, model->layer2.dst_md, model->engine, layer_outputs[1]));
+    CHECK(dnnl_memory_set_data_handle(model->layer2.src_memory, model->layer1.relu_output));
     
-    fwd_args[0] = src_memory;
-    fwd_args[1] = weights_memory;
-    fwd_args[2] = bias_memory;
-    fwd_args[3] = dst_memory;
+    fwd_args[0] = model->layer2.src_memory;
+    fwd_args[1] = model->layer2.weights_memory;
+    fwd_args[2] = model->layer2.bias_memory;
+    fwd_args[3] = model->layer2.dst_memory;
     
     CHECK(dnnl_primitive_execute(model->layer2.forward, model->stream, 4, fwd_args));
-    apply_relu(layer_outputs[1], BATCH_SIZE * HIDDEN2_SIZE);
+    
+    relu_args[0] = model->layer2.dst_memory;
+    relu_args[1] = model->layer2.relu_dst_memory;
+    
+    CHECK(dnnl_primitive_execute(model->layer2.relu_forward, model->stream, 2, relu_args));
     
     // Layer 3
-    CHECK(dnnl_memory_create(&src_memory, model->layer3.src_md, model->engine, layer_outputs[1]));
-    CHECK(dnnl_memory_create(&weights_memory, model->layer3.weights_md, model->engine, model->layer3.weights));
-    CHECK(dnnl_memory_create(&bias_memory, model->layer3.bias_md, model->engine, model->layer3.bias));
-    CHECK(dnnl_memory_create(&dst_memory, model->layer3.dst_md, model->engine, layer_outputs[2]));
+    CHECK(dnnl_memory_set_data_handle(model->layer3.src_memory, model->layer2.relu_output));
     
-    fwd_args[0] = src_memory;
-    fwd_args[1] = weights_memory;
-    fwd_args[2] = bias_memory;
-    fwd_args[3] = dst_memory;
+    fwd_args[0] = model->layer3.src_memory;
+    fwd_args[1] = model->layer3.weights_memory;
+    fwd_args[2] = model->layer3.bias_memory;
+    fwd_args[3] = model->layer3.dst_memory;
     
     CHECK(dnnl_primitive_execute(model->layer3.forward, model->stream, 4, fwd_args));
-    apply_relu(layer_outputs[2], BATCH_SIZE * HIDDEN3_SIZE);
+    
+    relu_args[0] = model->layer3.dst_memory;
+    relu_args[1] = model->layer3.relu_dst_memory;
+    
+    CHECK(dnnl_primitive_execute(model->layer3.relu_forward, model->stream, 2, relu_args));
     
     // Layer 4 (output layer)
-    CHECK(dnnl_memory_create(&src_memory, model->layer4.src_md, model->engine, layer_outputs[2]));
-    CHECK(dnnl_memory_create(&weights_memory, model->layer4.weights_md, model->engine, model->layer4.weights));
-    CHECK(dnnl_memory_create(&bias_memory, model->layer4.bias_md, model->engine, model->layer4.bias));
-    CHECK(dnnl_memory_create(&dst_memory, model->layer4.dst_md, model->engine, output));
+    CHECK(dnnl_memory_set_data_handle(model->layer4.src_memory, model->layer3.relu_output));
+    CHECK(dnnl_memory_set_data_handle(model->layer4.dst_memory, output));
     
-    fwd_args[0] = src_memory;
-    fwd_args[1] = weights_memory;
-    fwd_args[2] = bias_memory;
-    fwd_args[3] = dst_memory;
+    fwd_args[0] = model->layer4.src_memory;
+    fwd_args[1] = model->layer4.weights_memory;
+    fwd_args[2] = model->layer4.bias_memory;
+    fwd_args[3] = model->layer4.dst_memory;
     
     CHECK(dnnl_primitive_execute(model->layer4.forward, model->stream, 4, fwd_args));
+    
+    CHECK(dnnl_stream_wait(model->stream));
 }
 
-void backward_pass(Model* model, float* input, float* output, float* target, 
-                  float** layer_outputs, float** layer_gradients) {
+void backward_pass(Model* model, float* input, float* output, float* target) {
+    const void* bwd_args[6];
+    const void* relu_bwd_args[3];
+    
     // Calculate output gradient (MSE derivative)
     for (int i = 0; i < BATCH_SIZE * OUTPUT_SIZE; i++) {
-        layer_gradients[3][i] = 2.0f * (output[i] - target[i]) / BATCH_SIZE;
+        model->layer4.input_grad[i] = 2.0f * (output[i] - target[i]) / BATCH_SIZE;
     }
     
-    dnnl_memory_t src_memory, weights_memory, dst_memory;
-    dnnl_memory_t diff_src_memory, diff_weights_memory, diff_bias_memory, diff_dst_memory;
-    const void* bwd_args[6];
-
-    // Layer 4 backward (output layer)
-    CHECK(dnnl_memory_create(&diff_dst_memory, model->layer4.dst_md, model->engine, layer_gradients[3]));
-    CHECK(dnnl_memory_create(&src_memory, model->layer4.src_md, model->engine, layer_outputs[2]));
-    CHECK(dnnl_memory_create(&weights_memory, model->layer4.weights_md, model->engine, model->layer4.weights));
-    CHECK(dnnl_memory_create(&diff_src_memory, model->layer4.src_md, model->engine, layer_gradients[2]));
-    CHECK(dnnl_memory_create(&diff_weights_memory, model->layer4.weights_md, model->engine, model->layer4.weights_grad));
-    CHECK(dnnl_memory_create(&diff_bias_memory, model->layer4.bias_md, model->engine, model->layer4.bias_grad));
+    // Layer 4 backward
+    CHECK(dnnl_memory_set_data_handle(model->layer4.diff_dst_memory, model->layer4.input_grad));
     
-    bwd_args[0] = src_memory;
-    bwd_args[1] = diff_dst_memory;
-    bwd_args[2] = weights_memory;
-    bwd_args[3] = diff_src_memory;
-    bwd_args[4] = diff_weights_memory;
-    bwd_args[5] = diff_bias_memory;
+    bwd_args[0] = model->layer4.src_memory;
+    bwd_args[1] = model->layer4.diff_dst_memory;
+    bwd_args[2] = model->layer4.weights_memory;
+    bwd_args[3] = model->layer4.diff_src_memory;
+    bwd_args[4] = model->layer4.diff_weights_memory;
+    bwd_args[5] = model->layer4.diff_bias_memory;
     
     CHECK(dnnl_primitive_execute(model->layer4.backward, model->stream, 6, bwd_args));
     
-    // Clean up layer 4 memories
-    CHECK(dnnl_memory_destroy(src_memory));
-    CHECK(dnnl_memory_destroy(weights_memory));
-    CHECK(dnnl_memory_destroy(diff_dst_memory));
-    CHECK(dnnl_memory_destroy(diff_src_memory));
-    CHECK(dnnl_memory_destroy(diff_weights_memory));
-    CHECK(dnnl_memory_destroy(diff_bias_memory));
-
     // Layer 3 backward
-    apply_relu_gradient(layer_gradients[2], layer_outputs[2], BATCH_SIZE * HIDDEN3_SIZE);
+    CHECK(dnnl_memory_set_data_handle(model->layer3.diff_dst_memory, model->layer4.input_grad));
     
-    CHECK(dnnl_memory_create(&diff_dst_memory, model->layer3.dst_md, model->engine, layer_gradients[2]));
-    CHECK(dnnl_memory_create(&src_memory, model->layer3.src_md, model->engine, layer_outputs[1]));
-    CHECK(dnnl_memory_create(&weights_memory, model->layer3.weights_md, model->engine, model->layer3.weights));
-    CHECK(dnnl_memory_create(&diff_src_memory, model->layer3.src_md, model->engine, layer_gradients[1]));
-    CHECK(dnnl_memory_create(&diff_weights_memory, model->layer3.weights_md, model->engine, model->layer3.weights_grad));
-    CHECK(dnnl_memory_create(&diff_bias_memory, model->layer3.bias_md, model->engine, model->layer3.bias_grad));
+    relu_bwd_args[0] = model->layer3.dst_memory;
+    relu_bwd_args[1] = model->layer3.diff_dst_memory;
+    relu_bwd_args[2] = model->layer3.relu_diff_dst_memory;
     
-    bwd_args[0] = src_memory;
-    bwd_args[1] = diff_dst_memory;
-    bwd_args[2] = weights_memory;
-    bwd_args[3] = diff_src_memory;
-    bwd_args[4] = diff_weights_memory;
-    bwd_args[5] = diff_bias_memory;
+    CHECK(dnnl_primitive_execute(model->layer3.relu_backward, model->stream, 3, relu_bwd_args));
+    
+    bwd_args[0] = model->layer3.src_memory;
+    bwd_args[1] = model->layer3.relu_diff_dst_memory;
+    bwd_args[2] = model->layer3.weights_memory;
+    bwd_args[3] = model->layer3.diff_src_memory;
+    bwd_args[4] = model->layer3.diff_weights_memory;
+    bwd_args[5] = model->layer3.diff_bias_memory;
     
     CHECK(dnnl_primitive_execute(model->layer3.backward, model->stream, 6, bwd_args));
     
-    // Clean up layer 3 memories
-    CHECK(dnnl_memory_destroy(src_memory));
-    CHECK(dnnl_memory_destroy(weights_memory));
-    CHECK(dnnl_memory_destroy(diff_dst_memory));
-    CHECK(dnnl_memory_destroy(diff_src_memory));
-    CHECK(dnnl_memory_destroy(diff_weights_memory));
-    CHECK(dnnl_memory_destroy(diff_bias_memory));
-
     // Layer 2 backward
-    apply_relu_gradient(layer_gradients[1], layer_outputs[1], BATCH_SIZE * HIDDEN2_SIZE);
+    CHECK(dnnl_memory_set_data_handle(model->layer2.diff_dst_memory, model->layer3.input_grad));
     
-    CHECK(dnnl_memory_create(&diff_dst_memory, model->layer2.dst_md, model->engine, layer_gradients[1]));
-    CHECK(dnnl_memory_create(&src_memory, model->layer2.src_md, model->engine, layer_outputs[0]));
-    CHECK(dnnl_memory_create(&weights_memory, model->layer2.weights_md, model->engine, model->layer2.weights));
-    CHECK(dnnl_memory_create(&diff_src_memory, model->layer2.src_md, model->engine, layer_gradients[0]));
-    CHECK(dnnl_memory_create(&diff_weights_memory, model->layer2.weights_md, model->engine, model->layer2.weights_grad));
-    CHECK(dnnl_memory_create(&diff_bias_memory, model->layer2.bias_md, model->engine, model->layer2.bias_grad));
+    relu_bwd_args[0] = model->layer2.dst_memory;
+    relu_bwd_args[1] = model->layer2.diff_dst_memory;
+    relu_bwd_args[2] = model->layer2.relu_diff_dst_memory;
     
-    bwd_args[0] = src_memory;
-    bwd_args[1] = diff_dst_memory;
-    bwd_args[2] = weights_memory;
-    bwd_args[3] = diff_src_memory;
-    bwd_args[4] = diff_weights_memory;
-    bwd_args[5] = diff_bias_memory;
+    CHECK(dnnl_primitive_execute(model->layer2.relu_backward, model->stream, 3, relu_bwd_args));
+    
+    bwd_args[0] = model->layer2.src_memory;
+    bwd_args[1] = model->layer2.relu_diff_dst_memory;
+    bwd_args[2] = model->layer2.weights_memory;
+    bwd_args[3] = model->layer2.diff_src_memory;
+    bwd_args[4] = model->layer2.diff_weights_memory;
+    bwd_args[5] = model->layer2.diff_bias_memory;
     
     CHECK(dnnl_primitive_execute(model->layer2.backward, model->stream, 6, bwd_args));
     
-    // Clean up layer 2 memories
-    CHECK(dnnl_memory_destroy(src_memory));
-    CHECK(dnnl_memory_destroy(weights_memory));
-    CHECK(dnnl_memory_destroy(diff_dst_memory));
-    CHECK(dnnl_memory_destroy(diff_src_memory));
-    CHECK(dnnl_memory_destroy(diff_weights_memory));
-    CHECK(dnnl_memory_destroy(diff_bias_memory));
-
     // Layer 1 backward
-    apply_relu_gradient(layer_gradients[0], layer_outputs[0], BATCH_SIZE * HIDDEN1_SIZE);
+    CHECK(dnnl_memory_set_data_handle(model->layer1.diff_dst_memory, model->layer2.input_grad));
     
-    CHECK(dnnl_memory_create(&diff_dst_memory, model->layer1.dst_md, model->engine, layer_gradients[0]));
-    CHECK(dnnl_memory_create(&src_memory, model->layer1.src_md, model->engine, input));
-    CHECK(dnnl_memory_create(&weights_memory, model->layer1.weights_md, model->engine, model->layer1.weights));
-    CHECK(dnnl_memory_create(&diff_src_memory, model->layer1.src_md, model->engine, layer_gradients[0]));
-    CHECK(dnnl_memory_create(&diff_weights_memory, model->layer1.weights_md, model->engine, model->layer1.weights_grad));
-    CHECK(dnnl_memory_create(&diff_bias_memory, model->layer1.bias_md, model->engine, model->layer1.bias_grad));
+    relu_bwd_args[0] = model->layer1.dst_memory;
+    relu_bwd_args[1] = model->layer1.diff_dst_memory;
+    relu_bwd_args[2] = model->layer1.relu_diff_dst_memory;
     
-    bwd_args[0] = src_memory;
-    bwd_args[1] = diff_dst_memory;
-    bwd_args[2] = weights_memory;
-    bwd_args[3] = diff_src_memory;
-    bwd_args[4] = diff_weights_memory;
-    bwd_args[5] = diff_bias_memory;
+    CHECK(dnnl_primitive_execute(model->layer1.relu_backward, model->stream, 3, relu_bwd_args));
+    
+    bwd_args[0] = model->layer1.src_memory;
+    bwd_args[1] = model->layer1.relu_diff_dst_memory;
+    bwd_args[2] = model->layer1.weights_memory;
+    bwd_args[3] = model->layer1.diff_src_memory;
+    bwd_args[4] = model->layer1.diff_weights_memory;
+    bwd_args[5] = model->layer1.diff_bias_memory;
     
     CHECK(dnnl_primitive_execute(model->layer1.backward, model->stream, 6, bwd_args));
     
-    // Clean up layer 1 memories
-    CHECK(dnnl_memory_destroy(src_memory));
-    CHECK(dnnl_memory_destroy(weights_memory));
-    CHECK(dnnl_memory_destroy(diff_dst_memory));
-    CHECK(dnnl_memory_destroy(diff_src_memory));
-    CHECK(dnnl_memory_destroy(diff_weights_memory));
-    CHECK(dnnl_memory_destroy(diff_bias_memory));
-
-    // Ensure all operations are complete
     CHECK(dnnl_stream_wait(model->stream));
 }
 
@@ -540,20 +557,6 @@ int main() {
     // Create model
     Model* model = create_model();
     
-    // Allocate memory for intermediate results
-    float** layer_outputs = (float**)malloc(4 * sizeof(float*));
-    float** layer_gradients = (float**)malloc(4 * sizeof(float*));
-    
-    layer_outputs[0] = allocate_float_array(BATCH_SIZE * HIDDEN1_SIZE);
-    layer_outputs[1] = allocate_float_array(BATCH_SIZE * HIDDEN2_SIZE);
-    layer_outputs[2] = allocate_float_array(BATCH_SIZE * HIDDEN3_SIZE);
-    layer_outputs[3] = allocate_float_array(BATCH_SIZE * OUTPUT_SIZE);
-    
-    layer_gradients[0] = allocate_float_array(BATCH_SIZE * HIDDEN1_SIZE);
-    layer_gradients[1] = allocate_float_array(BATCH_SIZE * HIDDEN2_SIZE);
-    layer_gradients[2] = allocate_float_array(BATCH_SIZE * HIDDEN3_SIZE);
-    layer_gradients[3] = allocate_float_array(BATCH_SIZE * OUTPUT_SIZE);
-    
     // Training loop
     float* batch_X = allocate_float_array(BATCH_SIZE * INPUT_SIZE);
     float* batch_y = allocate_float_array(BATCH_SIZE * OUTPUT_SIZE);
@@ -566,41 +569,57 @@ int main() {
         for (int batch = 0; batch < num_samples / BATCH_SIZE; batch++) {
             // Prepare batch
             int batch_start = batch * BATCH_SIZE;
-            memcpy(batch_X, &X[batch_start * INPUT_SIZE], BATCH_SIZE * INPUT_SIZE * sizeof(float));
-            memcpy(batch_y, &y[batch_start * OUTPUT_SIZE], BATCH_SIZE * OUTPUT_SIZE * sizeof(float));
+            memcpy(batch_X, &X[batch_start * INPUT_SIZE], 
+                   BATCH_SIZE * INPUT_SIZE * sizeof(float));
+            memcpy(batch_y, &y[batch_start * OUTPUT_SIZE], 
+                   BATCH_SIZE * OUTPUT_SIZE * sizeof(float));
             
             // Forward pass
-            forward_pass(model, batch_X, output, layer_outputs, 1);
+            forward_pass(model, batch_X, output, 1);
             
             // Calculate loss
-            float batch_loss = calculate_mse(output, batch_y, BATCH_SIZE * OUTPUT_SIZE);
+            float batch_loss = calculate_mse(output, batch_y, 
+                                           BATCH_SIZE * OUTPUT_SIZE);
             epoch_loss += batch_loss;
             
             // Backward pass
-            backward_pass(model, batch_X, output, batch_y, layer_outputs, layer_gradients);
+            backward_pass(model, batch_X, output, batch_y);
             
             // Update weights using Adam
-            update_weights_adam(model->optimizers[0], model->layer1.weights, 
-                              model->layer1.weights_grad, 
-                              INPUT_SIZE * HIDDEN1_SIZE, LEARNING_RATE);
-            // ... Similar updates for other layers
+            update_weights_adam(model->optimizers[0], 
+                              model->layer1.weights, model->layer1.bias,
+                              model->layer1.weights_grad, model->layer1.bias_grad,
+                              LEARNING_RATE);
+            
+            update_weights_adam(model->optimizers[1], 
+                              model->layer2.weights, model->layer2.bias,
+                              model->layer2.weights_grad, model->layer2.bias_grad,
+                              LEARNING_RATE);
+            
+            update_weights_adam(model->optimizers[2], 
+                              model->layer3.weights, model->layer3.bias,
+                              model->layer3.weights_grad, model->layer3.bias_grad,
+                              LEARNING_RATE);
+            
+            update_weights_adam(model->optimizers[3], 
+                              model->layer4.weights, model->layer4.bias,
+                              model->layer4.weights_grad, model->layer4.bias_grad,
+                              LEARNING_RATE);
         }
         
         if ((epoch + 1) % 100 == 0) {
             printf("Epoch [%d/%d], Loss: %.4f\n", 
-                   epoch + 1, NUM_EPOCHS, epoch_loss / (num_samples / BATCH_SIZE));
+                   epoch + 1, NUM_EPOCHS, 
+                   epoch_loss / (num_samples / BATCH_SIZE));
         }
     }
     
     // Calculate and print R² scores
-    forward_pass(model, X, output, layer_outputs, 0);
+    forward_pass(model, X, output, 0);
     for (int i = 0; i < OUTPUT_SIZE; i++) {
         float r2 = calculate_r2_score(&y[i], &output[i], num_samples);
         printf("R² score for output y%d: %.4f\n", i, r2);
     }
-    
-    // Save model
-    save_model(model, "model.bin");
     
     // Cleanup
     free(X);
@@ -608,12 +627,6 @@ int main() {
     free(batch_X);
     free(batch_y);
     free(output);
-    for (int i = 0; i < 4; i++) {
-        free(layer_outputs[i]);
-        free(layer_gradients[i]);
-    }
-    free(layer_outputs);
-    free(layer_gradients);
     destroy_model(model);
     
     return 0;
