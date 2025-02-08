@@ -4,13 +4,11 @@
 #include <math.h>
 
 #define INPUT_SIZE 15
-#define HIDDEN1_SIZE 128
-#define HIDDEN2_SIZE 128
-#define HIDDEN3_SIZE 64
+#define HIDDEN_SIZE 128
 #define OUTPUT_SIZE 4
 #define MAX_ROWS 10000
 #define BATCH_SIZE 32
-#define EPOCHS 1000
+#define EPOCHS 4000
 
 typedef struct {
     double* weights;
@@ -19,7 +17,7 @@ typedef struct {
 } Layer;
 
 typedef struct {
-    Layer layers[4];
+    Layer layers[2];  // Reduced to 2 layers (hidden and output)
     int num_samples;
     double* input_data;
     double* target_data;
@@ -37,7 +35,7 @@ typedef struct {
 } AdamLayer;
 
 typedef struct {
-    AdamLayer layers[4];
+    AdamLayer layers[2];  // Reduced to 2 layers
     double beta1;
     double beta2;
     double epsilon;
@@ -45,7 +43,6 @@ typedef struct {
     int t;  // Time step
 } Adam;
 
-// Add these functions before main()
 void init_adam_param(AdamParam* param, int size) {
     param->size = size;
     param->m = calloc(size, sizeof(double));
@@ -59,17 +56,11 @@ void init_adam(Adam* adam, Network* net) {
     adam->lr = 0.001;
     adam->t = 0;
     
-    init_adam_param(&adam->layers[0].weights, INPUT_SIZE * HIDDEN1_SIZE);
-    init_adam_param(&adam->layers[0].biases, HIDDEN1_SIZE);
+    init_adam_param(&adam->layers[0].weights, INPUT_SIZE * HIDDEN_SIZE);
+    init_adam_param(&adam->layers[0].biases, HIDDEN_SIZE);
     
-    init_adam_param(&adam->layers[1].weights, HIDDEN1_SIZE * HIDDEN2_SIZE);
-    init_adam_param(&adam->layers[1].biases, HIDDEN2_SIZE);
-    
-    init_adam_param(&adam->layers[2].weights, HIDDEN2_SIZE * HIDDEN3_SIZE);
-    init_adam_param(&adam->layers[2].biases, HIDDEN3_SIZE);
-    
-    init_adam_param(&adam->layers[3].weights, HIDDEN3_SIZE * OUTPUT_SIZE);
-    init_adam_param(&adam->layers[3].biases, OUTPUT_SIZE);
+    init_adam_param(&adam->layers[1].weights, HIDDEN_SIZE * OUTPUT_SIZE);
+    init_adam_param(&adam->layers[1].biases, OUTPUT_SIZE);
 }
 
 void backward_and_update(Network* net, Adam* adam, int batch_idx) {
@@ -77,12 +68,10 @@ void backward_and_update(Network* net, Adam* adam, int batch_idx) {
                      BATCH_SIZE : (net->num_samples - batch_idx);
     
     // Temporary storage for gradients
-    double* gradients[4];
-    double* input_gradients[4];
-    for(int i = 0; i < 4; i++) {
-        int output_size = (i == 0) ? HIDDEN1_SIZE : 
-                         (i == 1) ? HIDDEN2_SIZE :
-                         (i == 2) ? HIDDEN3_SIZE : OUTPUT_SIZE;
+    double* gradients[2];
+    double* input_gradients[2];
+    for(int i = 0; i < 2; i++) {
+        int output_size = (i == 0) ? HIDDEN_SIZE : OUTPUT_SIZE;
         gradients[i] = calloc(batch_size * output_size, sizeof(double));
         input_gradients[i] = calloc(batch_size * output_size, sizeof(double));
     }
@@ -90,24 +79,19 @@ void backward_and_update(Network* net, Adam* adam, int batch_idx) {
     // Output layer gradients
     for(int i = 0; i < batch_size; i++) {
         for(int j = 0; j < OUTPUT_SIZE; j++) {
-            gradients[3][i * OUTPUT_SIZE + j] = 
-                (net->layers[3].output[i * OUTPUT_SIZE + j] - 
+            gradients[1][i * OUTPUT_SIZE + j] = 
+                (net->layers[1].output[i * OUTPUT_SIZE + j] - 
                  net->target_data[(batch_idx + i) * OUTPUT_SIZE + j]) * (2.0 / (batch_size * OUTPUT_SIZE));
         }
     }
-    
-    // Backward pass through layers
-    for(int layer = 3; layer >= 0; layer--) {
-        int input_size = (layer == 0) ? INPUT_SIZE : 
-                        (layer == 1) ? HIDDEN1_SIZE :
-                        (layer == 2) ? HIDDEN2_SIZE : HIDDEN3_SIZE;
-        int output_size = (layer == 0) ? HIDDEN1_SIZE : 
-                         (layer == 1) ? HIDDEN2_SIZE :
-                         (layer == 2) ? HIDDEN3_SIZE : OUTPUT_SIZE;
+
+        // Backward pass through layers
+    for(int layer = 1; layer >= 0; layer--) {
+        int input_size = (layer == 0) ? INPUT_SIZE : HIDDEN_SIZE;
+        int output_size = (layer == 0) ? HIDDEN_SIZE : OUTPUT_SIZE;
         
-        // Weight gradients
         double* prev_output = (layer == 0) ? &net->input_data[batch_idx * INPUT_SIZE] :
-                                           net->layers[layer-1].output;
+                                           net->layers[0].output;
         
         // Update weights and biases using Adam
         adam->t++;
@@ -157,10 +141,9 @@ void backward_and_update(Network* net, Adam* adam, int batch_idx) {
                         sum += gradients[layer][i * output_size + k] * 
                                net->layers[layer].weights[j * output_size + k];
                     }
-                    if(layer > 0) {  // Apply ReLU gradient
-                        double prev_output = net->layers[layer-1].output[i * input_size + j];
-                        sum *= (prev_output > 0) ? 1.0 : 0.0;
-                    }
+                    // Apply ReLU gradient
+                    double prev_output = net->layers[layer-1].output[i * input_size + j];
+                    sum *= (prev_output > 0) ? 1.0 : 0.0;
                     gradients[layer-1][i * input_size + j] = sum;
                 }
             }
@@ -168,7 +151,7 @@ void backward_and_update(Network* net, Adam* adam, int batch_idx) {
     }
     
     // Free temporary storage
-    for(int i = 0; i < 4; i++) {
+    for(int i = 0; i < 2; i++) {
         free(gradients[i]);
         free(input_gradients[i]);
     }
@@ -194,51 +177,27 @@ void forward(Network* net, int batch_idx) {
     // Copy input batch
     double* current_input = &net->input_data[batch_idx * INPUT_SIZE];
     
-    // Layer 1
+    // Hidden layer
     for(int i = 0; i < batch_size; i++) {
-        for(int j = 0; j < HIDDEN1_SIZE; j++) {
+        for(int j = 0; j < HIDDEN_SIZE; j++) {
             double sum = net->layers[0].biases[j];
             for(int k = 0; k < INPUT_SIZE; k++) {
                 sum += current_input[i * INPUT_SIZE + k] * 
-                       net->layers[0].weights[k * HIDDEN1_SIZE + j];
+                       net->layers[0].weights[k * HIDDEN_SIZE + j];
             }
-            net->layers[0].output[i * HIDDEN1_SIZE + j] = sum > 0 ? sum : 0; // ReLU
+            net->layers[0].output[i * HIDDEN_SIZE + j] = sum > 0 ? sum : 0; // ReLU
         }
     }
     
-    // Layer 2
-    for(int i = 0; i < batch_size; i++) {
-        for(int j = 0; j < HIDDEN2_SIZE; j++) {
-            double sum = net->layers[1].biases[j];
-            for(int k = 0; k < HIDDEN1_SIZE; k++) {
-                sum += net->layers[0].output[i * HIDDEN1_SIZE + k] * 
-                       net->layers[1].weights[k * HIDDEN2_SIZE + j];
-            }
-            net->layers[1].output[i * HIDDEN2_SIZE + j] = sum > 0 ? sum : 0; // ReLU
-        }
-    }
-    
-    // Layer 3
-    for(int i = 0; i < batch_size; i++) {
-        for(int j = 0; j < HIDDEN3_SIZE; j++) {
-            double sum = net->layers[2].biases[j];
-            for(int k = 0; k < HIDDEN2_SIZE; k++) {
-                sum += net->layers[1].output[i * HIDDEN2_SIZE + k] * 
-                       net->layers[2].weights[k * HIDDEN3_SIZE + j];
-            }
-            net->layers[2].output[i * HIDDEN3_SIZE + j] = sum > 0 ? sum : 0; // ReLU
-        }
-    }
-    
-    // Layer 4 (output)
+    // Output layer
     for(int i = 0; i < batch_size; i++) {
         for(int j = 0; j < OUTPUT_SIZE; j++) {
-            double sum = net->layers[3].biases[j];
-            for(int k = 0; k < HIDDEN3_SIZE; k++) {
-                sum += net->layers[2].output[i * HIDDEN3_SIZE + k] * 
-                       net->layers[3].weights[k * OUTPUT_SIZE + j];
+            double sum = net->layers[1].biases[j];
+            for(int k = 0; k < HIDDEN_SIZE; k++) {
+                sum += net->layers[0].output[i * HIDDEN_SIZE + k] * 
+                       net->layers[1].weights[k * OUTPUT_SIZE + j];
             }
-            net->layers[3].output[i * OUTPUT_SIZE + j] = sum;
+            net->layers[1].output[i * OUTPUT_SIZE + j] = sum;
         }
     }
 }
@@ -254,7 +213,7 @@ double calculate_loss(Network* net) {
         
         for(int i = 0; i < batch_size; i++) {
             for(int j = 0; j < OUTPUT_SIZE; j++) {
-                double diff = net->layers[3].output[i * OUTPUT_SIZE + j] - 
+                double diff = net->layers[1].output[i * OUTPUT_SIZE + j] - 
                              net->target_data[(batch + i) * OUTPUT_SIZE + j];
                 total_loss += diff * diff;
                 count++;
@@ -266,11 +225,10 @@ double calculate_loss(Network* net) {
 }
 
 int main() {
-    srand(42);  // Match PyTorch initialization
+    srand(42);
 
     Network net;
     
-    // Read CSV
     FILE* f = fopen("20250208_163908_data.csv", "r");
     if (!f) {
         printf("Failed to open data file\n");
@@ -278,7 +236,7 @@ int main() {
     }
 
     char line[4096];
-    fgets(line, sizeof(line), f); // Skip header
+    fgets(line, sizeof(line), f);
     
     net.input_data = malloc(MAX_ROWS * INPUT_SIZE * sizeof(double));
     net.target_data = malloc(MAX_ROWS * OUTPUT_SIZE * sizeof(double));
@@ -298,32 +256,25 @@ int main() {
     }
     fclose(f);
     
-    // Initialize network
-    init_layer(&net.layers[0], INPUT_SIZE, HIDDEN1_SIZE);
-    init_layer(&net.layers[1], HIDDEN1_SIZE, HIDDEN2_SIZE);
-    init_layer(&net.layers[2], HIDDEN2_SIZE, HIDDEN3_SIZE);
-    init_layer(&net.layers[3], HIDDEN3_SIZE, OUTPUT_SIZE);
+    init_layer(&net.layers[0], INPUT_SIZE, HIDDEN_SIZE);
+    init_layer(&net.layers[1], HIDDEN_SIZE, OUTPUT_SIZE);
     
-    // Initialize Adam optimizer
     Adam adam;
     init_adam(&adam, &net);
     
-    // Training loop
     for(int epoch = 0; epoch < EPOCHS; epoch++) {
-        // Mini-batch training
         for(int i = 0; i < net.num_samples; i += BATCH_SIZE) {
             forward(&net, i);
             backward_and_update(&net, &adam, i);
         }
         
-        // Print progress every 100 epochs
         if((epoch + 1) % 100 == 0) {
             double loss = calculate_loss(&net);
-            printf("Epoch [%d/%d], Train Loss: %.4f\n", epoch + 1, EPOCHS, loss);
+            printf("Epoch [%d/%d], Loss: %.4f\n", epoch + 1, EPOCHS, loss);
         }
     }
 
-    // Calculate R² scores and show predictions
+        // Calculate R² scores and show predictions
     double predictions[MAX_ROWS * OUTPUT_SIZE];
     
     // Get predictions for all samples
@@ -333,7 +284,7 @@ int main() {
         for(int j = 0; j < batch_size; j++) {
             for(int k = 0; k < OUTPUT_SIZE; k++) {
                 predictions[i * OUTPUT_SIZE + j * OUTPUT_SIZE + k] = 
-                    net.layers[3].output[j * OUTPUT_SIZE + k];
+                    net.layers[1].output[j * OUTPUT_SIZE + k];
             }
         }
     }
@@ -381,12 +332,12 @@ int main() {
         mae /= net.num_samples;
         printf("Mean Absolute Error for y%d: %.3f\n", output, mae);
     }
-    
+
     // Free memory
     free(net.input_data);
     free(net.target_data);
     
-    for(int i = 0; i < 4; i++) {
+    for(int i = 0; i < 2; i++) {
         free(net.layers[i].weights);
         free(net.layers[i].biases);
         free(net.layers[i].output);
