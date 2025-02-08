@@ -32,7 +32,7 @@ criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 # Training parameters
-num_epochs = 1000
+num_epochs = 4000
 batch_size = 32
 
 # Training loop
@@ -88,4 +88,4 @@ with torch.no_grad():
         print(f"Mean Absolute Error for y{i}: {mae:.3f}")
 
 # Save the model
-torch.save(model.state_dict(), 'model.pth')
+# torch.save(model.state_dict(), 'model.pth')
