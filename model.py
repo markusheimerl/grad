@@ -18,16 +18,12 @@ class Net(nn.Module):
     def __init__(self):
         super(Net, self).__init__()
         self.layer1 = nn.Linear(15, 128)
-        self.layer2 = nn.Linear(128, 128)
-        self.layer3 = nn.Linear(128, 64)
-        self.layer4 = nn.Linear(64, 4)
+        self.layer2 = nn.Linear(128, 4)
         self.activation = nn.ReLU()
 
     def forward(self, x):
         x = self.activation(self.layer1(x))
-        x = self.activation(self.layer2(x))
-        x = self.activation(self.layer3(x))
-        x = self.layer4(x)
+        x = self.layer2(x)
         return x
 
 # Initialize the model, loss function, and optimizer
