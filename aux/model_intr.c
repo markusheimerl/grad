@@ -148,17 +148,21 @@ void relu(float* x, int size) {
 
 // Neural network structure
 typedef struct {
-    float* fc1_weight; // 512 x 15
-    float* fc2_weight; // 4 x 512
+    float* fc1_weight;     // 512 x 15
+    float* fc2_weight;     // 4 x 512
+    float* fc1_weight_grad; // 512 x 15
+    float* fc2_weight_grad; // 4 x 512
 } Net;
 
 // Initialize the network
 Net* init_net() {
     Net* net = (Net*)malloc(sizeof(Net));
     
-    // Allocate and initialize weights
+    // Allocate and initialize weights and gradients
     net->fc1_weight = (float*)malloc(512 * 15 * sizeof(float));
     net->fc2_weight = (float*)malloc(4 * 512 * sizeof(float));
+    net->fc1_weight_grad = (float*)malloc(512 * 15 * sizeof(float));
+    net->fc2_weight_grad = (float*)malloc(4 * 512 * sizeof(float));
     
     // Initialize weights
     float scale1 = 1.0f / sqrt(15);
@@ -179,6 +183,8 @@ Net* init_net() {
 void free_net(Net* net) {
     free(net->fc1_weight);
     free(net->fc2_weight);
+    free(net->fc1_weight_grad);
+    free(net->fc2_weight_grad);
     free(net);
 }
 
@@ -240,9 +246,7 @@ int main() {
     const int num_epochs = 10000;
     const float learning_rate = 0.001f;
     
-    // Allocate memory for gradients and intermediate values
-    float* fc1_weight_grad = (float*)malloc(512 * 15 * sizeof(float));
-    float* fc2_weight_grad = (float*)malloc(4 * 512 * sizeof(float));
+    // Allocate memory for intermediate values
     float* layer1_output = (float*)malloc(num_samples * 512 * sizeof(float));
     float* predictions = (float*)malloc(num_samples * 4 * sizeof(float));
     float* error = (float*)malloc(num_samples * 4 * sizeof(float));
@@ -275,11 +279,11 @@ int main() {
         
         // Backward pass
         // Clear gradients
-        memset(fc1_weight_grad, 0, 512 * 15 * sizeof(float));
-        memset(fc2_weight_grad, 0, 4 * 512 * sizeof(float));
+        memset(net->fc1_weight_grad, 0, 512 * 15 * sizeof(float));
+        memset(net->fc2_weight_grad, 0, 4 * 512 * sizeof(float));
         
         // Gradient of second layer
-        matrix_transpose_multiply(layer1_output, error, fc2_weight_grad, 
+        matrix_transpose_multiply(layer1_output, error, net->fc2_weight_grad, 
                                 512, num_samples, 4, 1);
         
         // Backpropagate error through second layer
@@ -292,15 +296,15 @@ int main() {
         }
         
         // Gradient of first layer
-        matrix_transpose_multiply(X, error_hidden, fc1_weight_grad, 
+        matrix_transpose_multiply(X, error_hidden, net->fc1_weight_grad, 
                                 15, num_samples, 512, 1);
         
         // Update weights (SGD step)
         for (int i = 0; i < 512 * 15; i++) {
-            net->fc1_weight[i] -= learning_rate * fc1_weight_grad[i] / num_samples;
+            net->fc1_weight[i] -= learning_rate * net->fc1_weight_grad[i] / num_samples;
         }
         for (int i = 0; i < 4 * 512; i++) {
-            net->fc2_weight[i] -= learning_rate * fc2_weight_grad[i] / num_samples;
+            net->fc2_weight[i] -= learning_rate * net->fc2_weight_grad[i] / num_samples;
         }
         
         // Print progress
@@ -310,8 +314,6 @@ int main() {
     }
     
     // Cleanup
-    free(fc1_weight_grad);
-    free(fc2_weight_grad);
     free(layer1_output);
     free(predictions);
     free(error);
