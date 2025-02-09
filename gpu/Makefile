@@ -9,7 +9,7 @@ mlp.out: mlp.c
 
 run: mlp.out
 	@time ./mlp.out
-	@time python mlp.py
+	@time python ../mlp.py
 	
 clean:
 	rm -f *.out *.csv *.bin
