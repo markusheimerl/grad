@@ -3,7 +3,6 @@ import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 import glob
-import os
 
 # Check if CUDA is available
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
