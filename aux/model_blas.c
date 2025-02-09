@@ -13,11 +13,11 @@ typedef struct {
     float* fc2_weight_grad; // output_dim x hidden_dim
     
     // Helper arrays for forward/backward pass
-    float* layer1_output;   // num_samples x hidden_dim
-    float* predictions;     // num_samples x output_dim
-    float* error;          // num_samples x output_dim
-    float* pre_activation; // num_samples x hidden_dim
-    float* error_hidden;   // num_samples x hidden_dim
+    float* layer1_output;   // batch_size x hidden_dim
+    float* predictions;     // batch_size x output_dim
+    float* error;          // batch_size x output_dim
+    float* pre_activation; // batch_size x hidden_dim
+    float* error_hidden;   // batch_size x hidden_dim
     
     // Dimensions
     int input_dim;
@@ -123,18 +123,148 @@ void load_csv(const char* filename, float** X, float** y, int* num_samples) {
     fclose(file);
 }
 
+// Forward pass
+void forward_pass(Net* net, float* X) {
+    // First layer
+    cblas_sgemm(CblasRowMajor,
+                CblasNoTrans,
+                CblasNoTrans,
+                net->batch_size,
+                net->hidden_dim,
+                net->input_dim,
+                1.0f,
+                X,
+                net->input_dim,
+                net->fc1_weight,
+                net->hidden_dim,
+                0.0f,
+                net->layer1_output,
+                net->hidden_dim);
+    
+    // Store pre-activation values
+    memcpy(net->pre_activation, net->layer1_output, 
+           net->batch_size * net->hidden_dim * sizeof(float));
+    
+    // Swish activation
+    for (int i = 0; i < net->batch_size * net->hidden_dim; i++) {
+        net->layer1_output[i] = net->layer1_output[i] / (1.0f + expf(-net->layer1_output[i]));
+    }
+    
+    // Second layer
+    cblas_sgemm(CblasRowMajor,
+                CblasNoTrans,
+                CblasNoTrans,
+                net->batch_size,
+                net->output_dim,
+                net->hidden_dim,
+                1.0f,
+                net->layer1_output,
+                net->hidden_dim,
+                net->fc2_weight,
+                net->output_dim,
+                0.0f,
+                net->predictions,
+                net->output_dim);
+}
+
+// Calculate loss
+float calculate_loss(Net* net, float* y) {
+    float loss = 0.0f;
+    for (int i = 0; i < net->batch_size * net->output_dim; i++) {
+        net->error[i] = net->predictions[i] - y[i];
+        loss += net->error[i] * net->error[i];
+    }
+    return loss / (net->batch_size * net->output_dim);
+}
+
+// Zero gradients
+void zero_gradients(Net* net) {
+    memset(net->fc1_weight_grad, 0, net->hidden_dim * net->input_dim * sizeof(float));
+    memset(net->fc2_weight_grad, 0, net->output_dim * net->hidden_dim * sizeof(float));
+}
+
+// Backward pass
+void backward_pass(Net* net, float* X) {
+    // Gradient of second layer
+    cblas_sgemm(CblasRowMajor,
+                CblasTrans,
+                CblasNoTrans,
+                net->hidden_dim,
+                net->output_dim,
+                net->batch_size,
+                1.0f,
+                net->layer1_output,
+                net->hidden_dim,
+                net->error,
+                net->output_dim,
+                0.0f,
+                net->fc2_weight_grad,
+                net->output_dim);
+    
+    // Backpropagate error through second layer
+    cblas_sgemm(CblasRowMajor,
+                CblasNoTrans,
+                CblasTrans,
+                net->batch_size,
+                net->hidden_dim,
+                net->output_dim,
+                1.0f,
+                net->error,
+                net->output_dim,
+                net->fc2_weight,
+                net->output_dim,
+                0.0f,
+                net->error_hidden,
+                net->hidden_dim);
+    
+    // Swish derivative
+    for (int i = 0; i < net->batch_size * net->hidden_dim; i++) {
+        float sigmoid = 1.0f / (1.0f + expf(-net->pre_activation[i]));
+        net->error_hidden[i] *= sigmoid + net->pre_activation[i] * sigmoid * (1.0f - sigmoid);
+    }
+    
+    // Gradient of first layer
+    cblas_sgemm(CblasRowMajor,
+                CblasTrans,
+                CblasNoTrans,
+                net->input_dim,
+                net->hidden_dim,
+                net->batch_size,
+                1.0f,
+                X,
+                net->input_dim,
+                net->error_hidden,
+                net->hidden_dim,
+                0.0f,
+                net->fc1_weight_grad,
+                net->hidden_dim);
+}
+
+// Update weights
+void update_weights(Net* net, float learning_rate) {
+    for (int i = 0; i < net->hidden_dim * net->input_dim; i++) {
+        net->fc1_weight[i] -= learning_rate * net->fc1_weight_grad[i] / net->batch_size;
+    }
+    for (int i = 0; i < net->output_dim * net->hidden_dim; i++) {
+        net->fc2_weight[i] -= learning_rate * net->fc2_weight_grad[i] / net->batch_size;
+    }
+}
+
 int main() {
+    srand(42);
     openblas_set_num_threads(4);
+
     // Load data
     float *X, *y;
     int num_samples;
     load_csv("20250208_163908_data.csv", &X, &y, &num_samples);
     
-    // Initialize network with configurable dimensions
+    // Initialize network
     const int input_dim = 15;
     const int hidden_dim = 1024;
     const int output_dim = 4;
-    Net* net = init_net(input_dim, hidden_dim, output_dim, num_samples);
+    const int batch_size = num_samples; // Full batch training
+    Net* net = init_net(input_dim, hidden_dim, output_dim, batch_size);
     
     // Training parameters
     const int num_epochs = 10000;
@@ -143,121 +273,17 @@ int main() {
     // Training loop
     for (int epoch = 0; epoch < num_epochs; epoch++) {
         // Forward pass
-        // First layer
-        cblas_sgemm(CblasRowMajor,
-                    CblasNoTrans,
-                    CblasNoTrans,
-                    net->batch_size,
-                    net->hidden_dim,
-                    net->input_dim,
-                    1.0f,
-                    X,
-                    net->input_dim,
-                    net->fc1_weight,
-                    net->hidden_dim,
-                    0.0f,
-                    net->layer1_output,
-                    net->hidden_dim);
+        forward_pass(net, X);
         
-        // Store pre-activation values
-        memcpy(net->pre_activation, net->layer1_output, 
-               net->batch_size * net->hidden_dim * sizeof(float));
-        
-        // Swish activation
-        for (int i = 0; i < net->batch_size * net->hidden_dim; i++) {
-            net->layer1_output[i] = net->layer1_output[i] / (1.0f + expf(-net->layer1_output[i]));
-        }
-        
-        // Second layer
-        cblas_sgemm(CblasRowMajor,
-                    CblasNoTrans,
-                    CblasNoTrans,
-                    net->batch_size,
-                    net->output_dim,
-                    net->hidden_dim,
-                    1.0f,
-                    net->layer1_output,
-                    net->hidden_dim,
-                    net->fc2_weight,
-                    net->output_dim,
-                    0.0f,
-                    net->predictions,
-                    net->output_dim);
-        
-        // Calculate MSE loss and error
-        float loss = 0.0f;
-        for (int i = 0; i < net->batch_size * net->output_dim; i++) {
-            net->error[i] = net->predictions[i] - y[i];
-            loss += net->error[i] * net->error[i];
-        }
-        loss /= (net->batch_size * net->output_dim);
+        // Calculate loss
+        float loss = calculate_loss(net, y);
         
         // Backward pass
-        // Clear gradients
-        memset(net->fc1_weight_grad, 0, net->hidden_dim * net->input_dim * sizeof(float));
-        memset(net->fc2_weight_grad, 0, net->output_dim * net->hidden_dim * sizeof(float));
+        zero_gradients(net);
+        backward_pass(net, X);
         
-        // Gradient of second layer
-        cblas_sgemm(CblasRowMajor,
-                    CblasTrans,
-                    CblasNoTrans,
-                    net->hidden_dim,
-                    net->output_dim,
-                    net->batch_size,
-                    1.0f,
-                    net->layer1_output,
-                    net->hidden_dim,
-                    net->error,
-                    net->output_dim,
-                    0.0f,
-                    net->fc2_weight_grad,
-                    net->output_dim);
-        
-        // Backpropagate error through second layer
-        cblas_sgemm(CblasRowMajor,
-                    CblasNoTrans,
-                    CblasTrans,
-                    net->batch_size,
-                    net->hidden_dim,
-                    net->output_dim,
-                    1.0f,
-                    net->error,
-                    net->output_dim,
-                    net->fc2_weight,
-                    net->output_dim,
-                    0.0f,
-                    net->error_hidden,
-                    net->hidden_dim);
-        
-        // Swish derivative
-        for (int i = 0; i < net->batch_size * net->hidden_dim; i++) {
-            float sigmoid = 1.0f / (1.0f + expf(-net->pre_activation[i]));
-            net->error_hidden[i] *= sigmoid + net->pre_activation[i] * sigmoid * (1.0f - sigmoid);
-        }
-        
-        // Gradient of first layer
-        cblas_sgemm(CblasRowMajor,
-                    CblasTrans,
-                    CblasNoTrans,
-                    net->input_dim,
-                    net->hidden_dim,
-                    net->batch_size,
-                    1.0f,
-                    X,
-                    net->input_dim,
-                    net->error_hidden,
-                    net->hidden_dim,
-                    0.0f,
-                    net->fc1_weight_grad,
-                    net->hidden_dim);
-        
-        // Update weights (SGD step)
-        for (int i = 0; i < net->hidden_dim * net->input_dim; i++) {
-            net->fc1_weight[i] -= learning_rate * net->fc1_weight_grad[i] / net->batch_size;
-        }
-        for (int i = 0; i < net->output_dim * net->hidden_dim; i++) {
-            net->fc2_weight[i] -= learning_rate * net->fc2_weight_grad[i] / net->batch_size;
-        }
+        // Update weights
+        update_weights(net, learning_rate);
         
         // Print progress
         if ((epoch + 1) % 100 == 0) {
