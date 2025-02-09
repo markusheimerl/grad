@@ -3,7 +3,7 @@
 #include <math.h>
 #include <time.h>
 #include "data.h"
-#include "grad.h"
+#include "mlp.h"
 
 int main() {
     srand(time(NULL));

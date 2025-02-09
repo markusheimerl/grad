@@ -1,6 +1,9 @@
-# grad
-A differentiation library
+# mlp
+A multilayer perceptron implementation
 
+## How to run
 ```
-git clone https://github.com/oneapi-src/oneDNN.git && cd oneDNN && mkdir -p build && cd build && cmake .. && make -j$(nproc) && sudo make install && sudo ldconfig
+sudo apt update
+sudo apt install clang time libopenblas-dev
+make run
 ```

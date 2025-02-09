@@ -1,5 +1,5 @@
-#ifndef GRAD_H
-#define GRAD_H
+#ifndef MLP_H
+#define MLP_H
 
 #include <stdio.h>
 #include <stdlib.h>
