@@ -1,152 +1,151 @@
 #ifndef DATA_H
 #define DATA_H
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <math.h>
-
-#define INPUT_RANGE_MIN -3.0
-#define INPUT_RANGE_MAX 3.0
 #define MAX_SYNTHETIC_OUTPUTS 4
+#define INPUT_RANGE_MIN -3.0f
+#define INPUT_RANGE_MAX 3.0f
 
-typedef struct { 
-    double **X, **y;
-    int n, fx, fy;
-    char **headers;
-} Data;
-
-static double synth_fn(const double* x, int fx, int dim) {
+float synth_fn(const float* x, int fx, int dim) {
     switch(dim % MAX_SYNTHETIC_OUTPUTS) {
         case 0: 
-            return sin(x[0 % fx]*2)*cos(x[1 % fx]*1.5) + 
-                   pow(x[2 % fx],2)*x[3 % fx] + 
-                   exp(-pow(x[4 % fx]-x[5 % fx],2)) + 
-                   0.5*sin(x[6 % fx]*x[7 % fx]*M_PI) +
-                   tanh(x[8 % fx] + x[9 % fx]) +
-                   0.3*cos(x[10 % fx]*x[11 % fx]) +
-                   0.2*pow(x[12 % fx], 2) +
-                   x[13 % fx]*sin(x[14 % fx]);
+            return sinf(x[0 % fx]*2)*cosf(x[1 % fx]*1.5f) + 
+                   powf(x[2 % fx],2)*x[3 % fx] + 
+                   expf(-powf(x[4 % fx]-x[5 % fx],2)) + 
+                   0.5f*sinf(x[6 % fx]*x[7 % fx]*(float)M_PI) +
+                   tanhf(x[8 % fx] + x[9 % fx]) +
+                   0.3f*cosf(x[10 % fx]*x[11 % fx]) +
+                   0.2f*powf(x[12 % fx], 2) +
+                   x[13 % fx]*sinf(x[14 % fx]);
             
         case 1: 
-            return tanh(x[0 % fx]+x[1 % fx])*sin(x[2 % fx]*2) + 
-                   log(fabs(x[3 % fx])+1)*cos(x[4 % fx]) + 
-                   0.3*pow(x[5 % fx]-x[6 % fx],3) +
-                   exp(-pow(x[7 % fx],2)) +
-                   sin(x[8 % fx]*x[9 % fx]*0.5) +
-                   0.4*cos(x[10 % fx] + x[11 % fx]) +
-                   pow(x[12 % fx]*x[13 % fx], 2) +
-                   0.1*x[14 % fx];
+            return tanhf(x[0 % fx]+x[1 % fx])*sinf(x[2 % fx]*2) + 
+                   logf(fabsf(x[3 % fx])+1)*cosf(x[4 % fx]) + 
+                   0.3f*powf(x[5 % fx]-x[6 % fx],3) +
+                   expf(-powf(x[7 % fx],2)) +
+                   sinf(x[8 % fx]*x[9 % fx]*0.5f) +
+                   0.4f*cosf(x[10 % fx] + x[11 % fx]) +
+                   powf(x[12 % fx]*x[13 % fx], 2) +
+                   0.1f*x[14 % fx];
             
         case 2: 
-            return exp(-pow(x[0 % fx]-0.5,2))*sin(x[1 % fx]*3) + 
-                   pow(cos(x[2 % fx]),2)*x[3 % fx] + 
-                   0.2*sinh(x[4 % fx]*x[5 % fx]) +
-                   0.5*tanh(x[6 % fx] + x[7 % fx]) +
-                   pow(x[8 % fx], 3)*0.1 +
-                   cos(x[9 % fx]*x[10 % fx]*M_PI) +
-                   0.3*exp(-pow(x[11 % fx]-x[12 % fx],2)) +
-                   0.2*(x[13 % fx] + x[14 % fx]);
+            return expf(-powf(x[0 % fx]-0.5f,2))*sinf(x[1 % fx]*3) + 
+                   powf(cosf(x[2 % fx]),2)*x[3 % fx] + 
+                   0.2f*sinhf(x[4 % fx]*x[5 % fx]) +
+                   0.5f*tanhf(x[6 % fx] + x[7 % fx]) +
+                   powf(x[8 % fx], 3)*0.1f +
+                   cosf(x[9 % fx]*x[10 % fx]*(float)M_PI) +
+                   0.3f*expf(-powf(x[11 % fx]-x[12 % fx],2)) +
+                   0.2f*(x[13 % fx] + x[14 % fx]);
             
         case 3:
-            return pow(sin(x[0 % fx]*x[1 % fx]), 2) +
-                   0.4*tanh(x[2 % fx] + x[3 % fx]*x[4 % fx]) +
-                   exp(-fabs(x[5 % fx]-x[6 % fx])) +
-                   0.3*cos(x[7 % fx]*x[8 % fx]*2) +
-                   pow(x[9 % fx], 2)*sin(x[10 % fx]) +
-                   0.2*log(fabs(x[11 % fx]*x[12 % fx])+1) +
-                   0.1*(x[13 % fx] - x[14 % fx]);
+            return powf(sinf(x[0 % fx]*x[1 % fx]), 2) +
+                   0.4f*tanhf(x[2 % fx] + x[3 % fx]*x[4 % fx]) +
+                   expf(-fabsf(x[5 % fx]-x[6 % fx])) +
+                   0.3f*cosf(x[7 % fx]*x[8 % fx]*2) +
+                   powf(x[9 % fx], 2)*sinf(x[10 % fx]) +
+                   0.2f*logf(fabsf(x[11 % fx]*x[12 % fx])+1) +
+                   0.1f*(x[13 % fx] - x[14 % fx]);
             
         default: 
-            return 0.0;
+            return 0.0f;
     }
 }
 
-Data* synth(int n, int fx, int fy, double noise) {
-    Data* d = malloc(sizeof(Data));
-    d->n = n; d->fx = fx; d->fy = fy;
+void generate_synthetic_data(float** X, float** y, int num_samples, int input_dim, int output_dim) {
+    // Allocate memory
+    *X = (float*)malloc(num_samples * input_dim * sizeof(float));
+    *y = (float*)malloc(num_samples * output_dim * sizeof(float));
     
-    d->headers = malloc((fx + fy) * sizeof(char*));
-    for(int i = 0; i < fx + fy; i++) {
-        d->headers[i] = malloc(8);
-        sprintf(d->headers[i], "%c%d", i < fx ? 'x' : 'y', i < fx ? i : i-fx);
+    // Generate random input data
+    for (int i = 0; i < num_samples * input_dim; i++) {
+        float rand_val = (float)rand() / (float)RAND_MAX;
+        (*X)[i] = INPUT_RANGE_MIN + rand_val * (INPUT_RANGE_MAX - INPUT_RANGE_MIN);
     }
     
-    d->X = malloc(n * sizeof(double*));
-    d->y = malloc(n * sizeof(double*));
-    for(int i = 0; i < n; i++) {
-        d->X[i] = malloc(fx * sizeof(double));
-        d->y[i] = malloc(fy * sizeof(double));
-        
-        for(int j = 0; j < fx; j++) {
-            d->X[i][j] = (double)rand()/RAND_MAX * 
-                        (INPUT_RANGE_MAX - INPUT_RANGE_MIN) + INPUT_RANGE_MIN;
-        }
-        
-        for(int j = 0; j < fy; j++) {
-            d->y[i][j] = synth_fn(d->X[i], fx, j);
-            d->y[i][j] += ((double)rand()/RAND_MAX - 0.5) * noise;
+    // Generate output data using synth_fn
+    for (int i = 0; i < num_samples; i++) {
+        for (int j = 0; j < output_dim; j++) {
+            (*y)[i * output_dim + j] = synth_fn(&(*X)[i * input_dim], input_dim, j);
         }
     }
-    return d;
 }
 
-void save_csv(const char* f, Data* d) {
-    FILE* fp = fopen(f, "w");
-    if(!fp) return;
-    
-    for(int i = 0; i < d->fx + d->fy; i++)
-        fprintf(fp, "%s%c", d->headers[i], i < d->fx + d->fy - 1 ? ',' : '\n');
-    
-    for(int i = 0; i < d->n; i++) {
-        for(int j = 0; j < d->fx; j++) fprintf(fp, "%.17f,", d->X[i][j]);
-        for(int j = 0; j < d->fy; j++) fprintf(fp, "%.17f%c", d->y[i][j], j == d->fy-1 ? '\n' : ',');
+void save_data_to_csv(float* X, float* y, int num_samples, int input_dim, int output_dim, const char* filename) {
+    FILE* file = fopen(filename, "w");
+    if (!file) {
+        printf("Error opening file for writing: %s\n", filename);
+        return;
     }
-    fclose(fp);
+    
+    // Write header
+    for (int i = 0; i < input_dim; i++) {
+        fprintf(file, "x%d,", i);
+    }
+    for (int i = 0; i < output_dim - 1; i++) {
+        fprintf(file, "y%d,", i);
+    }
+    fprintf(file, "y%d\n", output_dim - 1);
+    
+    // Write data
+    for (int i = 0; i < num_samples; i++) {
+        // Input features
+        for (int j = 0; j < input_dim; j++) {
+            fprintf(file, "%.17f,", X[i * input_dim + j]);
+        }
+        // Output values
+        for (int j = 0; j < output_dim - 1; j++) {
+            fprintf(file, "%.17f,", y[i * output_dim + j]);
+        }
+        fprintf(file, "%.17f\n", y[i * output_dim + output_dim - 1]);
+    }
+    
+    fclose(file);
+    printf("Data saved to %s\n", filename);
 }
 
-Data* load_csv(const char* f, int fx, int fy) {
-    FILE* fp = fopen(f, "r");
-    if(!fp) return NULL;
-    
-    Data* d = malloc(sizeof(Data));
-    d->fx = fx; d->fy = fy;
-    
-    char line[4096];
-    fgets(line, sizeof(line), fp);
-    
-    d->headers = malloc((fx + fy) * sizeof(char*));
-    char* token = strtok(line, ",\n");
-    for(int i = 0; i < fx + fy; i++) {
-        d->headers[i] = strdup(token);
-        token = strtok(NULL, ",\n");
+// Load CSV data
+void load_csv(const char* filename, float** X, float** y, int* num_samples) {
+    FILE* file = fopen(filename, "r");
+    if (!file) {
+        printf("Error opening file: %s\n", filename);
+        exit(1);
     }
     
-    d->n = 0;
-    while(fgets(line, sizeof(line), fp)) d->n++;
-    rewind(fp);
-    fgets(line, sizeof(line), fp);
+    // Skip header
+    char buffer[4096];
+    fgets(buffer, sizeof(buffer), file);
     
-    d->X = malloc(d->n * sizeof(double*));
-    d->y = malloc(d->n * sizeof(double*));
-    for(int i = 0; i < d->n; i++) {
-        d->X[i] = malloc(fx * sizeof(double));
-        d->y[i] = malloc(fy * sizeof(double));
-        fgets(line, sizeof(line), fp);
-        token = strtok(line, ",");
-        for(int j = 0; j < fx; j++) { d->X[i][j] = atof(token); token = strtok(NULL, ","); }
-        for(int j = 0; j < fy; j++) { d->y[i][j] = atof(token); token = strtok(NULL, ","); }
+    // Count lines
+    int count = 0;
+    while (fgets(buffer, sizeof(buffer), file)) {
+        count++;
     }
-    fclose(fp);
-    return d;
-}
-
-void free_data(Data* d) {
-    for(int i = 0; i < d->n; i++) { free(d->X[i]); free(d->y[i]); }
-    for(int i = 0; i < d->fx + d->fy; i++) free(d->headers[i]);
-    free(d->headers);
-    free(d->X); free(d->y);
-    free(d);
+    *num_samples = count;
+    
+    // Allocate memory
+    *X = (float*)malloc(count * 15 * sizeof(float));
+    *y = (float*)malloc(count * 4 * sizeof(float));
+    
+    // Reset file pointer and skip header again
+    fseek(file, 0, SEEK_SET);
+    fgets(buffer, sizeof(buffer), file);
+    
+    // Read data
+    int idx = 0;
+    while (fgets(buffer, sizeof(buffer), file)) {
+        char* token = strtok(buffer, ",");
+        for (int i = 0; i < 15; i++) {
+            (*X)[idx * 15 + i] = atof(token);
+            token = strtok(NULL, ",");
+        }
+        for (int i = 0; i < 4; i++) {
+            (*y)[idx * 4 + i] = atof(token);
+            token = strtok(NULL, ",");
+        }
+        idx++;
+    }
+    
+    fclose(file);
 }
 
 #endif
