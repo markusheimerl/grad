@@ -196,6 +196,7 @@ int main() {
     float* predictions = (float*)malloc(num_samples * 4 * sizeof(float));
     float* error = (float*)malloc(num_samples * 4 * sizeof(float));
     float* d_relu = (float*)malloc(num_samples * 512 * sizeof(float));
+    float* error_hidden = (float*)malloc(num_samples * 512 * sizeof(float));
     
     // Training loop
     for (int epoch = 0; epoch < num_epochs; epoch++) {
@@ -231,7 +232,6 @@ int main() {
                                 512, num_samples, 4, 1);
         
         // Backpropagate error through second layer
-        float* error_hidden = (float*)malloc(num_samples * 512 * sizeof(float));
         matrix_transpose_multiply(error, net->fc2_weight, error_hidden, 
                                 num_samples, 4, 512, 2);
         
@@ -257,8 +257,6 @@ int main() {
             printf("Epoch [%d/%d], Loss: %.8f\n", 
                    epoch + 1, num_epochs, loss);
         }
-        
-        free(error_hidden);
     }
     
     // Evaluation
@@ -332,6 +330,7 @@ int main() {
     free(predictions);
     free(error);
     free(d_relu);
+    free(error_hidden);
     free(X);
     free(y);
     free_net(net);
