@@ -2,58 +2,147 @@
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
+#include <immintrin.h>
 
-// Matrix multiplication C = A * B
-// A: m x n matrix
-// B: n x k matrix
-// C: m x k matrix
-void matrix_multiply(float* A, float* B, float* C, int m, int n, int k) {
-    for (int i = 0; i < m; i++) {
-        for (int j = 0; j < k; j++) {
-            float sum = 0.0f;
-            for (int l = 0; l < n; l++) {
-                sum += A[i * n + l] * B[l * k + j];
-            }
-            C[i * k + j] = sum;
+// Helper function to find minimum of two integers
+static inline int min(int a, int b) {
+    return (a < b) ? a : b;
+}
+
+// Helper function to find maximum of two floats
+static inline float max(float a, float b) {
+    return (a > b) ? a : b;
+}
+
+// Helper function to safely load 8 floats, handling edge cases
+static inline __m256 safe_load_8_floats(const float* ptr, int valid_elements) {
+    if (valid_elements >= 8) {
+        return _mm256_loadu_ps(ptr);
+    } else {
+        float temp[8] = {0};  // Zero-initialized buffer
+        for (int i = 0; i < valid_elements; i++) {
+            temp[i] = ptr[i];
+        }
+        return _mm256_loadu_ps(temp);
+    }
+}
+
+// Helper function to safely store 8 floats, handling edge cases
+static inline void safe_store_8_floats(float* ptr, __m256 vector, int valid_elements) {
+    if (valid_elements >= 8) {
+        _mm256_storeu_ps(ptr, vector);
+    } else {
+        float temp[8];
+        _mm256_storeu_ps(temp, vector);
+        for (int i = 0; i < valid_elements; i++) {
+            ptr[i] = temp[i];
         }
     }
 }
 
-// Matrix multiplication with transpose option
-// transpose_A_or_B: 0 for normal, 1 for transpose A, 2 for transpose B
+// Matrix multiplication C = A * B using AVX instructions
+void matrix_multiply(float* A, float* B, float* C, int m, int n, int k) {
+    // Initialize output matrix to zero
+    memset(C, 0, m * k * sizeof(float));
+    
+    // Process each row of A
+    for (int i = 0; i < m; i++) {
+        // Process output elements in groups of 8 (AVX vector size)
+        for (int j = 0; j < k; j += 8) {
+            __m256 sum = _mm256_setzero_ps();  // Initialize accumulator
+            int remaining_elements = k - j;     // Handle edge cases
+            
+            // Multiply and accumulate for each element in the row of A
+            for (int l = 0; l < n; l++) {
+                // Broadcast single value from A to all elements of vector
+                __m256 a_vector = _mm256_set1_ps(A[i * n + l]);
+                
+                // Load 8 elements from B (or fewer at the edge)
+                __m256 b_vector = safe_load_8_floats(&B[l * k + j], remaining_elements);
+                
+                // Multiply and add
+                sum = _mm256_add_ps(sum, _mm256_mul_ps(a_vector, b_vector));
+            }
+            
+            // Store the results
+            safe_store_8_floats(&C[i * k + j], sum, remaining_elements);
+        }
+    }
+}
+
+// Matrix multiplication with transpose options using AVX
 void matrix_transpose_multiply(float* A, float* B, float* C, 
                              int m, int n, int k, 
                              int transpose_A_or_B) {
     if (transpose_A_or_B == 0) {
-        // C = A^T * B
+        matrix_multiply(A, B, C, m, n, k);
+        return;
+    }
+    
+    // Initialize output matrix to zero
+    memset(C, 0, m * k * sizeof(float));
+    
+    if (transpose_A_or_B == 1) {  // C = A^T * B
         for (int i = 0; i < m; i++) {
-            for (int j = 0; j < k; j++) {
-                float sum = 0.0f;
+            for (int j = 0; j < k; j += 8) {
+                __m256 sum = _mm256_setzero_ps();
+                int remaining_elements = k - j;
+                
+                // Main computation loop
                 for (int l = 0; l < n; l++) {
-                    sum += A[l * m + i] * B[l * k + j];
+                    __m256 a_vector = _mm256_set1_ps(A[l * m + i]);  // Note transposed access
+                    __m256 b_vector = safe_load_8_floats(&B[l * k + j], remaining_elements);
+                    sum = _mm256_add_ps(sum, _mm256_mul_ps(a_vector, b_vector));
                 }
-                C[i * k + j] = sum;
+                
+                safe_store_8_floats(&C[i * k + j], sum, remaining_elements);
             }
         }
     }
-    else if (transpose_A_or_B == 1) {
-        // C = A * B^T
+    else if (transpose_A_or_B == 2) {  // C = A * B^T
         for (int i = 0; i < m; i++) {
-            for (int j = 0; j < k; j++) {
-                float sum = 0.0f;
+            for (int j = 0; j < k; j += 8) {
+                __m256 sum = _mm256_setzero_ps();
+                int remaining_elements = k - j;
+                
+                // Main computation loop
                 for (int l = 0; l < n; l++) {
-                    sum += A[i * n + l] * B[j * n + l];
+                    __m256 a_vector = _mm256_set1_ps(A[i * n + l]);
+                    
+                    // Load from transposed B matrix
+                    float temp[8] = {0};
+                    for (int x = 0; x < min(8, remaining_elements); x++) {
+                        temp[x] = B[(j + x) * n + l];
+                    }
+                    __m256 b_vector = _mm256_loadu_ps(temp);
+                    
+                    sum = _mm256_add_ps(sum, _mm256_mul_ps(a_vector, b_vector));
                 }
-                C[i * k + j] = sum;
+                
+                safe_store_8_floats(&C[i * k + j], sum, remaining_elements);
             }
         }
     }
 }
 
-// ReLU activation function
+// Optimized ReLU using AVX
 void relu(float* x, int size) {
-    for (int i = 0; i < size; i++) {
-        x[i] = x[i] > 0 ? x[i] : 0;
+    __m256 zeros = _mm256_setzero_ps();
+    
+    // Process elements in groups of 8
+    int vector_size = 8;
+    int vector_count = size / vector_size;
+    
+    // Main vectorized loop
+    for (int i = 0; i < vector_count * vector_size; i += vector_size) {
+        __m256 values = _mm256_loadu_ps(&x[i]);
+        __m256 result = _mm256_max_ps(values, zeros);
+        _mm256_storeu_ps(&x[i], result);
+    }
+    
+    // Handle remaining elements
+    for (int i = vector_count * vector_size; i < size; i++) {
+        x[i] = max(0.0f, x[i]);
     }
 }
 
@@ -226,11 +315,11 @@ int main() {
         
         // Gradient of second layer
         matrix_transpose_multiply(layer1_output, error, fc2_weight_grad, 
-                                512, num_samples, 4, 0);
+                                512, num_samples, 4, 1);
         
         // Backpropagate error through second layer
         matrix_transpose_multiply(error, net->fc2_weight, error_hidden, 
-                                num_samples, 4, 512, 1);
+                                num_samples, 4, 512, 2);
         
         // Apply ReLU gradient
         for (int i = 0; i < num_samples * 512; i++) {
@@ -239,7 +328,7 @@ int main() {
         
         // Gradient of first layer
         matrix_transpose_multiply(X, error_hidden, fc1_weight_grad, 
-                                15, num_samples, 512, 0);
+                                15, num_samples, 512, 1);
         
         // Update weights (SGD step)
         for (int i = 0; i < 512 * 15; i++) {
