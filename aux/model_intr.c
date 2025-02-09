@@ -122,21 +122,7 @@ void matrix_transpose_multiply(float* A, float* B, float* C,
 
 // Optimized ReLU using AVX
 void relu(float* x, int size) {
-    __m256 zeros = _mm256_setzero_ps();
-    
-    // Process elements in groups of 8
-    int vector_size = 8;
-    int vector_count = size / vector_size;
-    
-    // Main vectorized loop
-    for (int i = 0; i < vector_count * vector_size; i += vector_size) {
-        __m256 values = _mm256_loadu_ps(&x[i]);
-        __m256 result = _mm256_max_ps(values, zeros);
-        _mm256_storeu_ps(&x[i], result);
-    }
-    
-    // Handle remaining elements
-    for (int i = vector_count * vector_size; i < size; i++) {
+    for (int i = 0; i < size; i++) {
         x[i] = max(0.0f, x[i]);
     }
 }
