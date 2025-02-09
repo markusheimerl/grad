@@ -150,7 +150,6 @@ void relu(float* x, int size) {
 typedef struct {
     float* fc1_weight; // 512 x 15
     float* fc2_weight; // 4 x 512
-    float* intermediate; // For storing intermediate results
 } Net;
 
 // Initialize the network
@@ -160,7 +159,6 @@ Net* init_net() {
     // Allocate and initialize weights
     net->fc1_weight = (float*)malloc(512 * 15 * sizeof(float));
     net->fc2_weight = (float*)malloc(4 * 512 * sizeof(float));
-    net->intermediate = (float*)malloc(512 * sizeof(float));
     
     // Initialize weights
     float scale1 = 1.0f / sqrt(15);
@@ -181,7 +179,6 @@ Net* init_net() {
 void free_net(Net* net) {
     free(net->fc1_weight);
     free(net->fc2_weight);
-    free(net->intermediate);
     free(net);
 }
 
