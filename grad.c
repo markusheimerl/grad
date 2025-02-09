@@ -26,7 +26,7 @@ int main() {
     Net* net = init_net(input_dim, hidden_dim, output_dim, batch_size);
     
     // Training parameters
-    const int num_epochs = 1000;
+    const int num_epochs = 10000;
     const float learning_rate = 0.001f;
     
     // Training loop

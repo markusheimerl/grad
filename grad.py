@@ -48,7 +48,7 @@ model = Net().to(device)
 optimizer = optim.SGD(model.parameters(), lr=0.001)
 
 # Training parameters
-num_epochs = 1000
+num_epochs = 10000
 
 # Training loop
 model.train()
