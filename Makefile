@@ -1,6 +1,6 @@
 CC = clang
 CFLAGS = -O3 -march=native -ffast-math
-LDFLAGS = -static -lopenblas -lm -flto 
+LDFLAGS = -static -lopenblas -lm -flto
 
 grad.out: grad.c
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) -o $@

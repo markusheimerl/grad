@@ -14,6 +14,17 @@ typedef struct {
     float* fc1_weight_grad; // hidden_dim x input_dim
     float* fc2_weight_grad; // output_dim x hidden_dim
     
+    // Adam parameters
+    float* fc1_m;  // First moment for fc1
+    float* fc1_v;  // Second moment for fc1
+    float* fc2_m;  // First moment for fc2
+    float* fc2_v;  // Second moment for fc2
+    float beta1;   // Exponential decay rate for first moment
+    float beta2;   // Exponential decay rate for second moment
+    float epsilon; // Small constant for numerical stability
+    int t;         // Time step
+    float weight_decay; // Weight decay parameter for AdamW
+    
     // Helper arrays for forward/backward pass
     float* layer1_output;   // batch_size x hidden_dim
     float* predictions;     // batch_size x output_dim
@@ -38,11 +49,24 @@ Net* init_net(int input_dim, int hidden_dim, int output_dim, int batch_size) {
     net->output_dim = output_dim;
     net->batch_size = batch_size;
     
+    // Initialize Adam parameters
+    net->beta1 = 0.9f;
+    net->beta2 = 0.999f;
+    net->epsilon = 1e-8f;
+    net->t = 0;
+    net->weight_decay = 0.01f;
+    
     // Allocate and initialize weights and gradients
     net->fc1_weight = (float*)malloc(hidden_dim * input_dim * sizeof(float));
     net->fc2_weight = (float*)malloc(output_dim * hidden_dim * sizeof(float));
     net->fc1_weight_grad = (float*)malloc(hidden_dim * input_dim * sizeof(float));
     net->fc2_weight_grad = (float*)malloc(output_dim * hidden_dim * sizeof(float));
+    
+    // Allocate Adam buffers
+    net->fc1_m = (float*)calloc(hidden_dim * input_dim, sizeof(float));
+    net->fc1_v = (float*)calloc(hidden_dim * input_dim, sizeof(float));
+    net->fc2_m = (float*)calloc(output_dim * hidden_dim, sizeof(float));
+    net->fc2_v = (float*)calloc(output_dim * hidden_dim, sizeof(float));
     
     // Allocate helper arrays
     net->layer1_output = (float*)malloc(batch_size * hidden_dim * sizeof(float));
@@ -72,6 +96,10 @@ void free_net(Net* net) {
     free(net->fc2_weight);
     free(net->fc1_weight_grad);
     free(net->fc2_weight_grad);
+    free(net->fc1_m);
+    free(net->fc1_v);
+    free(net->fc2_m);
+    free(net->fc2_v);
     free(net->layer1_output);
     free(net->predictions);
     free(net->error);
@@ -197,13 +225,34 @@ void backward_pass(Net* net, float* X) {
                 net->hidden_dim);
 }
 
-// Update weights
+// Update weights using AdamW
 void update_weights(Net* net, float learning_rate) {
+    net->t++;  // Increment time step
+    
+    float beta1_t = powf(net->beta1, net->t);
+    float beta2_t = powf(net->beta2, net->t);
+    float alpha_t = learning_rate * sqrtf(1.0f - beta2_t) / (1.0f - beta1_t);
+    
+    // Update fc1 weights
     for (int i = 0; i < net->hidden_dim * net->input_dim; i++) {
-        net->fc1_weight[i] -= learning_rate * net->fc1_weight_grad[i] / net->batch_size;
+        float grad = net->fc1_weight_grad[i] / net->batch_size;
+        
+        net->fc1_m[i] = net->beta1 * net->fc1_m[i] + (1.0f - net->beta1) * grad;
+        net->fc1_v[i] = net->beta2 * net->fc1_v[i] + (1.0f - net->beta2) * grad * grad;
+        
+        float update = alpha_t * net->fc1_m[i] / (sqrtf(net->fc1_v[i]) + net->epsilon);
+        net->fc1_weight[i] = net->fc1_weight[i] * (1.0f - learning_rate * net->weight_decay) - update;
     }
+    
+    // Update fc2 weights
     for (int i = 0; i < net->output_dim * net->hidden_dim; i++) {
-        net->fc2_weight[i] -= learning_rate * net->fc2_weight_grad[i] / net->batch_size;
+        float grad = net->fc2_weight_grad[i] / net->batch_size;
+        
+        net->fc2_m[i] = net->beta1 * net->fc2_m[i] + (1.0f - net->beta1) * grad;
+        net->fc2_v[i] = net->beta2 * net->fc2_v[i] + (1.0f - net->beta2) * grad * grad;
+        
+        float update = alpha_t * net->fc2_m[i] / (sqrtf(net->fc2_v[i]) + net->epsilon);
+        net->fc2_weight[i] = net->fc2_weight[i] * (1.0f - learning_rate * net->weight_decay) - update;
     }
 }
 
@@ -219,13 +268,18 @@ void save_model(Net* net, const char* filename) {
     fwrite(&net->input_dim, sizeof(int), 1, file);
     fwrite(&net->hidden_dim, sizeof(int), 1, file);
     fwrite(&net->output_dim, sizeof(int), 1, file);
-    
-    // Save batch size
     fwrite(&net->batch_size, sizeof(int), 1, file);
-
+    
     // Save weights
     fwrite(net->fc1_weight, sizeof(float), net->hidden_dim * net->input_dim, file);
     fwrite(net->fc2_weight, sizeof(float), net->output_dim * net->hidden_dim, file);
+    
+    // Save Adam state
+    fwrite(&net->t, sizeof(int), 1, file);
+    fwrite(net->fc1_m, sizeof(float), net->hidden_dim * net->input_dim, file);
+    fwrite(net->fc1_v, sizeof(float), net->hidden_dim * net->input_dim, file);
+    fwrite(net->fc2_m, sizeof(float), net->output_dim * net->hidden_dim, file);
+    fwrite(net->fc2_v, sizeof(float), net->output_dim * net->hidden_dim, file);
 
     fclose(file);
     printf("Model saved to %s\n", filename);
@@ -244,16 +298,21 @@ Net* load_model(const char* filename) {
     fread(&input_dim, sizeof(int), 1, file);
     fread(&hidden_dim, sizeof(int), 1, file);
     fread(&output_dim, sizeof(int), 1, file);
-    
-    // Load batch size
     fread(&batch_size, sizeof(int), 1, file);
-
-    // Initialize network with loaded dimensions and batch size
+    
+    // Initialize network
     Net* net = init_net(input_dim, hidden_dim, output_dim, batch_size);
     
     // Load weights
     fread(net->fc1_weight, sizeof(float), hidden_dim * input_dim, file);
     fread(net->fc2_weight, sizeof(float), output_dim * hidden_dim, file);
+    
+    // Load Adam state
+    fread(&net->t, sizeof(int), 1, file);
+    fread(net->fc1_m, sizeof(float), hidden_dim * input_dim, file);
+    fread(net->fc1_v, sizeof(float), hidden_dim * input_dim, file);
+    fread(net->fc2_m, sizeof(float), output_dim * hidden_dim, file);
+    fread(net->fc2_v, sizeof(float), output_dim * hidden_dim, file);
 
     fclose(file);
     printf("Model loaded from %s\n", filename);
