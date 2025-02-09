@@ -1,6 +1,11 @@
 #ifndef DATA_H
 #define DATA_H
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
 #define MAX_SYNTHETIC_OUTPUTS 4
 #define INPUT_RANGE_MIN -3.0f
 #define INPUT_RANGE_MAX 3.0f

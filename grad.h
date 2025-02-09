@@ -1,6 +1,12 @@
 #ifndef GRAD_H
 #define GRAD_H
 
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <cblas.h>
+
 typedef struct {
     // Weights and gradients
     float* fc1_weight;     // hidden_dim x input_dim
