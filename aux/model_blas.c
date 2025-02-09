@@ -334,10 +334,13 @@ void save_model(Net* net, const char* filename) {
     fwrite(&net->hidden_dim, sizeof(int), 1, file);
     fwrite(&net->output_dim, sizeof(int), 1, file);
     
+    // Save batch size
+    fwrite(&net->batch_size, sizeof(int), 1, file);
+
     // Save weights
     fwrite(net->fc1_weight, sizeof(float), net->hidden_dim * net->input_dim, file);
     fwrite(net->fc2_weight, sizeof(float), net->output_dim * net->hidden_dim, file);
-    
+
     fclose(file);
     printf("Model saved to %s\n", filename);
 }
@@ -376,8 +379,37 @@ void save_data_to_csv(float* X, float* y, int num_samples, int input_dim, int ou
     printf("Data saved to %s\n", filename);
 }
 
+Net* load_model(const char* filename) {
+    FILE* file = fopen(filename, "rb");
+    if (!file) {
+        printf("Error opening file for reading: %s\n", filename);
+        return NULL;
+    }
+    
+    // Read dimensions
+    int input_dim, hidden_dim, output_dim, batch_size;
+    fread(&input_dim, sizeof(int), 1, file);
+    fread(&hidden_dim, sizeof(int), 1, file);
+    fread(&output_dim, sizeof(int), 1, file);
+    
+    // Load batch size
+    fread(&batch_size, sizeof(int), 1, file);
+
+    // Initialize network with loaded dimensions and batch size
+    Net* net = init_net(input_dim, hidden_dim, output_dim, batch_size);
+    
+    // Load weights
+    fread(net->fc1_weight, sizeof(float), hidden_dim * input_dim, file);
+    fread(net->fc2_weight, sizeof(float), output_dim * hidden_dim, file);
+
+    fclose(file);
+    printf("Model loaded from %s\n", filename);
+    
+    return net;
+}
+
 int main() {
-    srand(42);
+    srand(time(NULL));
     openblas_set_num_threads(4);
 
     // Parameters
@@ -430,6 +462,19 @@ int main() {
     // Save model and data with timestamped filenames
     save_model(net, model_fname);
     save_data_to_csv(X, y, num_samples, input_dim, output_dim, data_fname);
+    
+    // Load the model back and verify
+    printf("\nVerifying saved model...\n");
+
+    // Load the model back
+    net = load_model(model_fname);
+    
+    // Forward pass with loaded model
+    forward_pass(net, X);
+    
+    // Calculate and print loss with loaded model
+    float verification_loss = calculate_loss(net, y);
+    printf("Loss with loaded model: %.8f\n", verification_loss);
     
     // Cleanup
     free(X);
