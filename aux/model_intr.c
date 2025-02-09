@@ -162,7 +162,7 @@ Net* init_net() {
     net->fc2_weight = (float*)malloc(4 * 512 * sizeof(float));
     net->intermediate = (float*)malloc(512 * sizeof(float));
     
-    // Initialize weights (you'll need to load the trained weights)
+    // Initialize weights
     float scale1 = 1.0f / sqrt(15);
     float scale2 = 1.0f / sqrt(512);
     
@@ -183,20 +183,6 @@ void free_net(Net* net) {
     free(net->fc2_weight);
     free(net->intermediate);
     free(net);
-}
-
-// Forward pass through the network
-void forward(Net* net, float* input, float* output, int batch_size) {
-    // First layer: input -> fc1
-    matrix_multiply(input, net->fc1_weight, net->intermediate, 
-                   batch_size, 15, 512);
-    
-    // Apply ReLU
-    relu(net->intermediate, batch_size * 512);
-    
-    // Second layer: fc1 -> fc2
-    matrix_multiply(net->intermediate, net->fc2_weight, output, 
-                   batch_size, 512, 4);
 }
 
 // Load CSV data
@@ -242,24 +228,6 @@ void load_csv(const char* filename, float** X, float** y, int* num_samples) {
     }
     
     fclose(file);
-}
-
-// Calculate R² score
-float r2_score(float* y_true, float* y_pred, int size) {
-    float mean = 0.0f;
-    for (int i = 0; i < size; i++) {
-        mean += y_true[i];
-    }
-    mean /= size;
-    
-    float ss_res = 0.0f;
-    float ss_tot = 0.0f;
-    for (int i = 0; i < size; i++) {
-        ss_res += (y_true[i] - y_pred[i]) * (y_true[i] - y_pred[i]);
-        ss_tot += (y_true[i] - mean) * (y_true[i] - mean);
-    }
-    
-    return 1.0f - (ss_res / ss_tot);
 }
 
 int main() {
@@ -340,76 +308,11 @@ int main() {
         
         // Print progress
         if ((epoch + 1) % 100 == 0) {
-            printf("Epoch [%d/%d], Loss: %.8f\n", 
-                   epoch + 1, num_epochs, loss);
+            printf("Epoch [%d/%d], Loss: %.8f\n", epoch + 1, num_epochs, loss);
         }
     }
     
-    // Evaluation
-    float* eval_predictions = (float*)malloc(num_samples * 4 * sizeof(float));
-    if (!eval_predictions) {
-        printf("Failed to allocate memory for predictions\n");
-        exit(1);
-    }
-
-    // Do forward pass
-    float* temp_layer1 = (float*)malloc(num_samples * 512 * sizeof(float));
-    if (!temp_layer1) {
-        printf("Failed to allocate memory for temp_layer1\n");
-        exit(1);
-    }
-    
-    matrix_multiply(X, net->fc1_weight, temp_layer1, num_samples, 15, 512);
-    relu(temp_layer1, num_samples * 512);
-    matrix_multiply(temp_layer1, net->fc2_weight, eval_predictions, num_samples, 512, 4);
-    
-    // Calculate and print R² scores
-    printf("\nR² scores:\n");
-    for (int i = 0; i < 4; i++) {
-        float* y_true_component = (float*)malloc(num_samples * sizeof(float));
-        float* y_pred_component = (float*)malloc(num_samples * sizeof(float));
-        
-        if (!y_true_component || !y_pred_component) {
-            printf("Failed to allocate memory for R² calculation\n");
-            exit(1);
-        }
-        
-        for (int j = 0; j < num_samples; j++) {
-            y_true_component[j] = y[j * 4 + i];
-            y_pred_component[j] = eval_predictions[j * 4 + i];
-        }
-        
-        float r2 = r2_score(y_true_component, y_pred_component, num_samples);
-        printf("Output y%d: %.8f\n", i, r2);
-        
-        printf("\nSample predictions for y%d (first 15 samples):\n", i);
-        printf("Sample\tPredicted\tActual\t\tDifference\n");
-        printf("------------------------------------------------\n");
-        
-        for (int j = 0; j < 15 && j < num_samples; j++) {
-            printf("%d\t%.3f\t\t%.3f\t\t%.3f\n", 
-                   j, 
-                   y_pred_component[j], 
-                   y_true_component[j], 
-                   y_pred_component[j] - y_true_component[j]);
-        }
-        
-        float mae = 0.0f;
-        for (int j = 0; j < num_samples; j++) {
-            mae += fabs(y_pred_component[j] - y_true_component[j]);
-        }
-        mae /= num_samples;
-        printf("Mean Absolute Error for y%d: %.3f\n\n", i, mae);
-        
-        free(y_true_component);
-        free(y_pred_component);
-    }
-    
-    // Clean up temporary arrays
-    free(temp_layer1);
-    free(eval_predictions);
-    
-    // Final cleanup
+    // Cleanup
     free(fc1_weight_grad);
     free(fc2_weight_grad);
     free(layer1_output);
