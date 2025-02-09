@@ -9,11 +9,6 @@ static inline int min(int a, int b) {
     return (a < b) ? a : b;
 }
 
-// Helper function to find maximum of two floats
-static inline float max(float a, float b) {
-    return (a > b) ? a : b;
-}
-
 // Helper function to safely load 8 floats, handling edge cases
 static inline __m256 safe_load_8_floats(const float* ptr, int valid_elements) {
     if (valid_elements >= 8) {
@@ -117,13 +112,6 @@ void matrix_transpose_multiply(float* A, float* B, float* C,
                 safe_store_8_floats(&C[i * k + j], sum, remaining_elements);
             }
         }
-    }
-}
-
-// Optimized ReLU using AVX
-void relu(float* x, int size) {
-    for (int i = 0; i < size; i++) {
-        x[i] = max(0.0f, x[i]);
     }
 }
 
@@ -231,7 +219,7 @@ int main() {
     float* layer1_output = (float*)malloc(num_samples * 512 * sizeof(float));
     float* predictions = (float*)malloc(num_samples * 4 * sizeof(float));
     float* error = (float*)malloc(num_samples * 4 * sizeof(float));
-    float* d_relu = (float*)malloc(num_samples * 512 * sizeof(float));
+    float* pre_activation = (float*)malloc(num_samples * 512 * sizeof(float));
     float* error_hidden = (float*)malloc(num_samples * 512 * sizeof(float));
     
     // Training loop
@@ -241,10 +229,12 @@ int main() {
         matrix_multiply(X, net->fc1_weight, layer1_output, num_samples, 15, 512);
         
         // Store pre-activation values for backward pass
-        memcpy(d_relu, layer1_output, num_samples * 512 * sizeof(float));
+        memcpy(pre_activation, layer1_output, num_samples * 512 * sizeof(float));
         
-        // Apply ReLU
-        relu(layer1_output, num_samples * 512);
+        // Forward pass with Swish
+        for (int i = 0; i < num_samples * 512; i++) {
+            layer1_output[i] = layer1_output[i] / (1.0f + expf(-layer1_output[i]));
+        }
         
         // Second layer
         matrix_multiply(layer1_output, net->fc2_weight, predictions, 
@@ -271,9 +261,10 @@ int main() {
         matrix_transpose_multiply(error, net->fc2_weight, error_hidden, 
                                 num_samples, 4, 512, 1);
         
-        // Apply ReLU gradient
+        // Swish derivative
         for (int i = 0; i < num_samples * 512; i++) {
-            error_hidden[i] *= (d_relu[i] > 0) ? 1.0f : 0.0f;
+            float sigmoid = 1.0f / (1.0f + expf(-pre_activation[i]));
+            error_hidden[i] *= sigmoid + pre_activation[i] * sigmoid * (1.0f - sigmoid);
         }
         
         // Gradient of first layer
@@ -298,7 +289,7 @@ int main() {
     free(layer1_output);
     free(predictions);
     free(error);
-    free(d_relu);
+    free(pre_activation);
     free(error_hidden);
     free(X);
     free(y);
