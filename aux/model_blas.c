@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
+#include <time.h>
 #include <cblas.h>
 
 // Neural network structure
@@ -320,6 +321,61 @@ void generate_synthetic_data(float** X, float** y, int num_samples, int input_di
     }
 }
 
+// Function to save model weights to binary file
+void save_model(Net* net, const char* filename) {
+    FILE* file = fopen(filename, "wb");
+    if (!file) {
+        printf("Error opening file for writing: %s\n", filename);
+        return;
+    }
+    
+    // Save dimensions
+    fwrite(&net->input_dim, sizeof(int), 1, file);
+    fwrite(&net->hidden_dim, sizeof(int), 1, file);
+    fwrite(&net->output_dim, sizeof(int), 1, file);
+    
+    // Save weights
+    fwrite(net->fc1_weight, sizeof(float), net->hidden_dim * net->input_dim, file);
+    fwrite(net->fc2_weight, sizeof(float), net->output_dim * net->hidden_dim, file);
+    
+    fclose(file);
+    printf("Model saved to %s\n", filename);
+}
+
+// Function to save data to CSV
+void save_data_to_csv(float* X, float* y, int num_samples, int input_dim, int output_dim, const char* filename) {
+    FILE* file = fopen(filename, "w");
+    if (!file) {
+        printf("Error opening file for writing: %s\n", filename);
+        return;
+    }
+    
+    // Write header
+    for (int i = 0; i < input_dim; i++) {
+        fprintf(file, "x%d,", i);
+    }
+    for (int i = 0; i < output_dim - 1; i++) {
+        fprintf(file, "y%d,", i);
+    }
+    fprintf(file, "y%d\n", output_dim - 1);
+    
+    // Write data
+    for (int i = 0; i < num_samples; i++) {
+        // Input features
+        for (int j = 0; j < input_dim; j++) {
+            fprintf(file, "%.17f,", X[i * input_dim + j]);
+        }
+        // Output values
+        for (int j = 0; j < output_dim - 1; j++) {
+            fprintf(file, "%.17f,", y[i * output_dim + j]);
+        }
+        fprintf(file, "%.17f\n", y[i * output_dim + output_dim - 1]);
+    }
+    
+    fclose(file);
+    printf("Data saved to %s\n", filename);
+}
+
 int main() {
     srand(42);
     openblas_set_num_threads(4);
@@ -362,6 +418,18 @@ int main() {
             printf("Epoch [%d/%d], Loss: %.8f\n", epoch + 1, num_epochs, loss);
         }
     }
+
+    // Get timestamp for filenames
+    char model_fname[64], data_fname[64];
+    time_t now = time(NULL);
+    strftime(model_fname, sizeof(model_fname), "%Y%m%d_%H%M%S_model.bin", 
+             localtime(&now));
+    strftime(data_fname, sizeof(data_fname), "%Y%m%d_%H%M%S_data.csv", 
+             localtime(&now));
+
+    // Save model and data with timestamped filenames
+    save_model(net, model_fname);
+    save_data_to_csv(X, y, num_samples, input_dim, output_dim, data_fname);
     
     // Cleanup
     free(X);
