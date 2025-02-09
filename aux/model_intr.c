@@ -73,16 +73,11 @@ void matrix_multiply(float* A, float* B, float* C, int m, int n, int k) {
 // Matrix multiplication with transpose options using AVX
 void matrix_transpose_multiply(float* A, float* B, float* C, 
                              int m, int n, int k, 
-                             int transpose_A_or_B) {
-    if (transpose_A_or_B == 0) {
-        matrix_multiply(A, B, C, m, n, k);
-        return;
-    }
-    
+                             int transpose_A_or_B) { 
     // Initialize output matrix to zero
     memset(C, 0, m * k * sizeof(float));
     
-    if (transpose_A_or_B == 1) {  // C = A^T * B
+    if (transpose_A_or_B == 0) {  // C = A^T * B
         for (int i = 0; i < m; i++) {
             for (int j = 0; j < k; j += 8) {
                 __m256 sum = _mm256_setzero_ps();
@@ -99,7 +94,7 @@ void matrix_transpose_multiply(float* A, float* B, float* C,
             }
         }
     }
-    else if (transpose_A_or_B == 2) {  // C = A * B^T
+    else if (transpose_A_or_B == 1) {  // C = A * B^T
         for (int i = 0; i < m; i++) {
             for (int j = 0; j < k; j += 8) {
                 __m256 sum = _mm256_setzero_ps();
@@ -284,11 +279,11 @@ int main() {
         
         // Gradient of second layer
         matrix_transpose_multiply(layer1_output, error, net->fc2_weight_grad, 
-                                512, num_samples, 4, 1);
+                                512, num_samples, 4, 0);
         
         // Backpropagate error through second layer
         matrix_transpose_multiply(error, net->fc2_weight, error_hidden, 
-                                num_samples, 4, 512, 2);
+                                num_samples, 4, 512, 1);
         
         // Apply ReLU gradient
         for (int i = 0; i < num_samples * 512; i++) {
@@ -297,7 +292,7 @@ int main() {
         
         // Gradient of first layer
         matrix_transpose_multiply(X, error_hidden, net->fc1_weight_grad, 
-                                15, num_samples, 512, 1);
+                                15, num_samples, 512, 0);
         
         // Update weights (SGD step)
         for (int i = 0; i < 512 * 15; i++) {
