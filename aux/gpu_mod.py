@@ -2,6 +2,8 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
+import glob
+import os
 
 # Check if CUDA is available
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -10,8 +12,8 @@ print(f'Using device: {device}')
 class Net(torch.nn.Module):
     def __init__(self):
         super(Net, self).__init__()
-        self.fc1_weight = torch.nn.Parameter(torch.randn(128, 15, device=device) / np.sqrt(15))
-        self.fc2_weight = torch.nn.Parameter(torch.randn(4, 128, device=device) / np.sqrt(128)) 
+        self.fc1_weight = torch.nn.Parameter(torch.randn(1024, 16, device=device) / np.sqrt(16))
+        self.fc2_weight = torch.nn.Parameter(torch.randn(4, 1024, device=device) / np.sqrt(1024)) 
 
     def forward(self, x):
         x = F.linear(x, self.fc1_weight, bias=None)
@@ -29,13 +31,13 @@ def load_csv(filename):
         
         for line in f:
             values = [float(x) for x in line.strip().split(',')]
-            X.append(values[:15])
-            y.append(values[15:])
+            X.append(values[:16])
+            y.append(values[16:])
     
     return np.array(X), np.array(y)
 
 # Load the data
-X, y = load_csv('20250208_163908_data.csv')
+X, y = load_csv(glob.glob('*_data.csv')[0])
 
 # Convert to PyTorch tensors and move to GPU
 X_train = torch.FloatTensor(X).to(device)
@@ -43,10 +45,10 @@ y_train = torch.FloatTensor(y).to(device)
 
 # Initialize model and move to GPU
 model = Net().to(device)
-optimizer = optim.AdamW(model.parameters(), lr=0.001)
+optimizer = optim.SGD(model.parameters(), lr=0.001)
 
 # Training parameters
-num_epochs = 20000
+num_epochs = 1000
 
 # Training loop
 model.train()
