@@ -109,7 +109,7 @@ void save_data_to_csv(float* X, float* y, int num_samples, int input_dim, int ou
 }
 
 // Load CSV data
-void load_csv(const char* filename, float** X, float** y, int* num_samples) {
+void load_csv(const char* filename, float** X, float** y, int* num_samples, int size_x, int size_y) {
     FILE* file = fopen(filename, "r");
     if (!file) {
         printf("Error opening file: %s\n", filename);
@@ -128,8 +128,8 @@ void load_csv(const char* filename, float** X, float** y, int* num_samples) {
     *num_samples = count;
     
     // Allocate memory
-    *X = (float*)malloc(count * 15 * sizeof(float));
-    *y = (float*)malloc(count * 4 * sizeof(float));
+    *X = (float*)malloc(count * size_x * sizeof(float));
+    *y = (float*)malloc(count * size_y * sizeof(float));
     
     // Reset file pointer and skip header again
     fseek(file, 0, SEEK_SET);
@@ -139,12 +139,12 @@ void load_csv(const char* filename, float** X, float** y, int* num_samples) {
     int idx = 0;
     while (fgets(buffer, sizeof(buffer), file)) {
         char* token = strtok(buffer, ",");
-        for (int i = 0; i < 15; i++) {
-            (*X)[idx * 15 + i] = atof(token);
+        for (int i = 0; i < size_x; i++) {
+            (*X)[idx * size_x + i] = atof(token);
             token = strtok(NULL, ",");
         }
-        for (int i = 0; i < 4; i++) {
-            (*y)[idx * 4 + i] = atof(token);
+        for (int i = 0; i < size_y; i++) {
+            (*y)[idx * size_y + i] = atof(token);
             token = strtok(NULL, ",");
         }
         idx++;
