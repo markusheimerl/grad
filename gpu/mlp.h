@@ -163,20 +163,22 @@ void free_net(Net* net) {
     free(net);
 }
 
-// CUDA kernel for ReLU activation
-__global__ void relu_forward_kernel(float* output, float* pre_activation, int size) {
+// CUDA kernel for Swish activation
+__global__ void swish_forward_kernel(float* output, float* pre_activation, int size) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < size) {
         float x = pre_activation[idx];
-        output[idx] = x > 0 ? x : 0;
+        output[idx] = x / (1.0f + expf(-x));
     }
 }
 
-// CUDA kernel for ReLU derivative
-__global__ void relu_backward_kernel(float* error_hidden, float* pre_activation, int size) {
+// CUDA kernel for Swish derivative
+__global__ void swish_backward_kernel(float* error_hidden, float* pre_activation, int size) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < size) {
-        error_hidden[idx] *= (pre_activation[idx] > 0 ? 1.0f : 0.0f);
+        float x = pre_activation[idx];
+        float sigmoid = 1.0f / (1.0f + expf(-x));
+        error_hidden[idx] *= sigmoid + x * sigmoid * (1.0f - sigmoid);
     }
 }
 
@@ -212,10 +214,10 @@ void forward_pass(Net* net, float* X) {
                          net->batch_size * net->hidden_dim * sizeof(float),
                          cudaMemcpyDeviceToDevice));
 
-    // Apply ReLU activation
+    // Apply Swish activation
     int block_size = 256;
     int num_blocks = (net->batch_size * net->hidden_dim + block_size - 1) / block_size;
-    relu_forward_kernel<<<num_blocks, block_size>>>(
+    swish_forward_kernel<<<num_blocks, block_size>>>(
         net->d_layer1_output,
         net->d_pre_activation,
         net->batch_size * net->hidden_dim
@@ -336,10 +338,10 @@ void backward_pass(Net* net, float* X) {
                             net->d_error_hidden, // C
                             net->hidden_dim));   // ldc
 
-    // Apply ReLU derivative
+    // Apply Swish derivative
     int block_size = 256;
     int num_blocks = (net->batch_size * net->hidden_dim + block_size - 1) / block_size;
-    relu_backward_kernel<<<num_blocks, block_size>>>(
+    swish_backward_kernel<<<num_blocks, block_size>>>(
         net->d_error_hidden,
         net->d_pre_activation,
         net->batch_size * net->hidden_dim
