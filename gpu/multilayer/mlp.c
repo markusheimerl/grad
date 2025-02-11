@@ -10,7 +10,6 @@ int main() {
 
     // Parameters
     const int input_dim = 16;
-    const int hidden_dim = 1024;
     const int output_dim = 4;
     const int num_samples = 1024;
     const int batch_size = num_samples; // Full batch training
@@ -20,7 +19,9 @@ int main() {
     generate_synthetic_data(&X, &y, num_samples, input_dim, output_dim);
     
     // Initialize network
-    Net* net = init_net(input_dim, hidden_dim, output_dim, batch_size);
+    int hidden_dims[] = {1024, 512, 256}; // Example with 3 hidden layers
+    int depth = 3;
+    Net* net = init_net(input_dim, hidden_dims, depth, output_dim, batch_size);
     
     // Training parameters
     const int num_epochs = 10000;
@@ -73,7 +74,7 @@ int main() {
     forward_pass(net, X);
     
     // Copy predictions from device to host
-    CHECK_CUDA(cudaMemcpy(h_predictions, net->d_predictions, 
+    CHECK_CUDA(cudaMemcpy(h_predictions, net->d_layer_outputs[net->depth + 1], 
                          num_samples * output_dim * sizeof(float),
                          cudaMemcpyDeviceToHost));
     
