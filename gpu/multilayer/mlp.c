@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
-#include "../data.h"
+#include "../../data.h"
 #include "mlp.h"
 
 int main() {
