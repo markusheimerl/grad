@@ -28,57 +28,140 @@
     } \
 } while(0)
 
-// Define a structure for each layer
 typedef struct {
-    float* d_weight;         // weight matrix
-    float* d_weight_grad;    // weight gradients
-    float* d_output;         // layer output
-    float* d_pre_activation; // pre-activation values
-    float* d_error;          // layer error
+    // Device pointers for weights and gradients
+    float* d_fc1_weight;     // hidden_dim x input_dim
+    float* d_fc2_weight;     // output_dim x hidden_dim
+    float* d_fc1_weight_grad; // hidden_dim x input_dim
+    float* d_fc2_weight_grad; // output_dim x hidden_dim
     
-    // Adam parameters
-    float* d_m;             // First moment
-    float* d_v;             // Second moment
+    // Host copies of weights
+    float* h_fc1_weight;
+    float* h_fc2_weight;
     
-    // Host copy of weights for saving/loading
-    float* h_weight;
+    // Device pointers for Adam parameters
+    float* d_fc1_m;  // First moment for fc1
+    float* d_fc1_v;  // Second moment for fc1
+    float* d_fc2_m;  // First moment for fc2
+    float* d_fc2_v;  // Second moment for fc2
+    float beta1;   // Exponential decay rate for first moment
+    float beta2;   // Exponential decay rate for second moment
+    float epsilon; // Small constant for numerical stability
+    int t;         // Time step
+    float weight_decay; // Weight decay parameter for AdamW
     
-    int input_dim;          // input dimension
-    int output_dim;         // output dimension
-} Layer;
-
-typedef struct {
-    Layer** layers;         // Array of layer pointers
-    int num_layers;         // Number of layers
-    
-    // Network parameters
-    float beta1;            // Adam beta1
-    float beta2;            // Adam beta2
-    float epsilon;          // Adam epsilon
-    int t;                  // Time step
-    float weight_decay;     // Weight decay parameter
-    
-    // Dimensions
-    int input_dim;          // Network input dimension
-    int output_dim;         // Network output dimension
-    int batch_size;         // Batch size
+    // Device pointers for helper arrays
+    float* d_layer1_output;   // batch_size x hidden_dim
+    float* d_predictions;     // batch_size x output_dim
+    float* d_error;          // batch_size x output_dim
+    float* d_pre_activation; // batch_size x hidden_dim
+    float* d_error_hidden;   // batch_size x hidden_dim
     
     // cuBLAS handle
     cublasHandle_t cublas_handle;
+    
+    // Dimensions
+    int input_dim;
+    int hidden_dim;
+    int output_dim;
+    int batch_size;
 } Net;
 
-// Function declarations
-Layer* init_layer(int input_dim, int output_dim, int batch_size);
-void free_layer(Layer* layer);
-Net* init_net(int* layer_dims, int num_layers, int batch_size);
-void free_net(Net* net);
-void forward_pass(Net* net, float* X);
-float calculate_loss(Net* net, float* y);
-void zero_gradients(Net* net);
-void backward_pass(Net* net, float* X);
-void update_weights(Net* net, float learning_rate);
-void save_model(Net* net, const char* filename);
-Net* load_model(const char* filename);
+// Initialize the network with configurable dimensions
+Net* init_net(int input_dim, int hidden_dim, int output_dim, int batch_size) {
+    Net* net = (Net*)malloc(sizeof(Net));
+    
+    // Store dimensions
+    net->input_dim = input_dim;
+    net->hidden_dim = hidden_dim;
+    net->output_dim = output_dim;
+    net->batch_size = batch_size;
+    
+    // Initialize Adam parameters
+    net->beta1 = 0.9f;
+    net->beta2 = 0.999f;
+    net->epsilon = 1e-8f;
+    net->t = 0;
+    net->weight_decay = 0.01f;
+    
+    // Initialize cuBLAS
+    CHECK_CUBLAS(cublasCreate(&net->cublas_handle));
+    
+    // Allocate host memory for weights
+    net->h_fc1_weight = (float*)malloc(hidden_dim * input_dim * sizeof(float));
+    net->h_fc2_weight = (float*)malloc(output_dim * hidden_dim * sizeof(float));
+    
+    // Initialize weights on host
+    float scale1 = 1.0f / sqrt(input_dim);
+    float scale2 = 1.0f / sqrt(hidden_dim);
+    
+    for (int i = 0; i < hidden_dim * input_dim; i++) {
+        net->h_fc1_weight[i] = ((float)rand() / (float)RAND_MAX * 2 - 1) * scale1;
+    }
+    
+    for (int i = 0; i < output_dim * hidden_dim; i++) {
+        net->h_fc2_weight[i] = ((float)rand() / (float)RAND_MAX * 2 - 1) * scale2;
+    }
+    
+    // Allocate device memory
+    CHECK_CUDA(cudaMalloc(&net->d_fc1_weight, hidden_dim * input_dim * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&net->d_fc2_weight, output_dim * hidden_dim * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&net->d_fc1_weight_grad, hidden_dim * input_dim * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&net->d_fc2_weight_grad, output_dim * hidden_dim * sizeof(float)));
+    
+    CHECK_CUDA(cudaMalloc(&net->d_fc1_m, hidden_dim * input_dim * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&net->d_fc1_v, hidden_dim * input_dim * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&net->d_fc2_m, output_dim * hidden_dim * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&net->d_fc2_v, output_dim * hidden_dim * sizeof(float)));
+    
+    CHECK_CUDA(cudaMalloc(&net->d_layer1_output, batch_size * hidden_dim * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&net->d_predictions, batch_size * output_dim * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&net->d_error, batch_size * output_dim * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&net->d_pre_activation, batch_size * hidden_dim * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&net->d_error_hidden, batch_size * hidden_dim * sizeof(float)));
+    
+    // Initialize device memory
+    CHECK_CUDA(cudaMemcpy(net->d_fc1_weight, net->h_fc1_weight, 
+                         hidden_dim * input_dim * sizeof(float), 
+                         cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(net->d_fc2_weight, net->h_fc2_weight, 
+                         output_dim * hidden_dim * sizeof(float), 
+                         cudaMemcpyHostToDevice));
+    
+    CHECK_CUDA(cudaMemset(net->d_fc1_m, 0, hidden_dim * input_dim * sizeof(float)));
+    CHECK_CUDA(cudaMemset(net->d_fc1_v, 0, hidden_dim * input_dim * sizeof(float)));
+    CHECK_CUDA(cudaMemset(net->d_fc2_m, 0, output_dim * hidden_dim * sizeof(float)));
+    CHECK_CUDA(cudaMemset(net->d_fc2_v, 0, output_dim * hidden_dim * sizeof(float)));
+    
+    return net;
+}
+
+// Free network memory
+void free_net(Net* net) {
+    // Free device memory
+    cudaFree(net->d_fc1_weight);
+    cudaFree(net->d_fc2_weight);
+    cudaFree(net->d_fc1_weight_grad);
+    cudaFree(net->d_fc2_weight_grad);
+    cudaFree(net->d_fc1_m);
+    cudaFree(net->d_fc1_v);
+    cudaFree(net->d_fc2_m);
+    cudaFree(net->d_fc2_v);
+    cudaFree(net->d_layer1_output);
+    cudaFree(net->d_predictions);
+    cudaFree(net->d_error);
+    cudaFree(net->d_pre_activation);
+    cudaFree(net->d_error_hidden);
+    
+    // Free host memory
+    free(net->h_fc1_weight);
+    free(net->h_fc2_weight);
+    
+    // Destroy cuBLAS handle
+    cublasDestroy(net->cublas_handle);
+    
+    free(net);
+}
 
 // CUDA kernel for Swish activation
 __global__ void swish_forward_kernel(float* output, float* pre_activation, int size) {
@@ -99,90 +182,9 @@ __global__ void swish_backward_kernel(float* error_hidden, float* pre_activation
     }
 }
 
-// Initialize a single layer
-Layer* init_layer(int input_dim, int output_dim, int batch_size) {
-    Layer* layer = (Layer*)malloc(sizeof(Layer));
-    
-    layer->input_dim = input_dim;
-    layer->output_dim = output_dim;
-    
-    // Initialize weights with Xavier initialization
-    float scale = 1.0f / sqrt(input_dim);
-    layer->h_weight = (float*)malloc(output_dim * input_dim * sizeof(float));
-    for (int i = 0; i < output_dim * input_dim; i++) {
-        layer->h_weight[i] = ((float)rand() / (float)RAND_MAX * 2 - 1) * scale;
-    }
-    
-    // Allocate device memory
-    CHECK_CUDA(cudaMalloc(&layer->d_weight, output_dim * input_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&layer->d_weight_grad, output_dim * input_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&layer->d_output, batch_size * output_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&layer->d_pre_activation, batch_size * output_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&layer->d_error, batch_size * output_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&layer->d_m, output_dim * input_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&layer->d_v, output_dim * input_dim * sizeof(float)));
-    
-    // Copy weights to device and initialize Adam parameters
-    CHECK_CUDA(cudaMemcpy(layer->d_weight, layer->h_weight, 
-                         output_dim * input_dim * sizeof(float), 
-                         cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemset(layer->d_m, 0, output_dim * input_dim * sizeof(float)));
-    CHECK_CUDA(cudaMemset(layer->d_v, 0, output_dim * input_dim * sizeof(float)));
-    
-    return layer;
-}
-
-// Initialize network with arbitrary number of layers
-Net* init_net(int* layer_dims, int num_layers, int batch_size) {
-    Net* net = (Net*)malloc(sizeof(Net));
-    
-    net->num_layers = num_layers - 1;  // number of weight matrices
-    net->layers = (Layer**)malloc(net->num_layers * sizeof(Layer*));
-    
-    net->input_dim = layer_dims[0];
-    net->output_dim = layer_dims[num_layers - 1];
-    net->batch_size = batch_size;
-    
-    // Initialize Adam parameters
-    net->beta1 = 0.9f;
-    net->beta2 = 0.999f;
-    net->epsilon = 1e-8f;
-    net->t = 0;
-    net->weight_decay = 0.01f;
-    
-    // Initialize cuBLAS
-    CHECK_CUBLAS(cublasCreate(&net->cublas_handle));
-    
-    // Initialize each layer
-    for (int i = 0; i < net->num_layers; i++) {
-        net->layers[i] = init_layer(layer_dims[i], layer_dims[i + 1], batch_size);
-    }
-    
-    return net;
-}
-
-void free_layer(Layer* layer) {
-    cudaFree(layer->d_weight);
-    cudaFree(layer->d_weight_grad);
-    cudaFree(layer->d_output);
-    cudaFree(layer->d_pre_activation);
-    cudaFree(layer->d_error);
-    cudaFree(layer->d_m);
-    cudaFree(layer->d_v);
-    free(layer->h_weight);
-    free(layer);
-}
-
-void free_net(Net* net) {
-    for (int i = 0; i < net->num_layers; i++) {
-        free_layer(net->layers[i]);
-    }
-    free(net->layers);
-    cublasDestroy(net->cublas_handle);
-    free(net);
-}
-
+// Forward pass
 void forward_pass(Net* net, float* X) {
+    // Copy input to device if not already there
     float* d_X;
     CHECK_CUDA(cudaMalloc(&d_X, net->batch_size * net->input_dim * sizeof(float)));
     CHECK_CUDA(cudaMemcpy(d_X, X, net->batch_size * net->input_dim * sizeof(float), 
@@ -190,48 +192,58 @@ void forward_pass(Net* net, float* X) {
 
     const float alpha = 1.0f;
     const float beta = 0.0f;
-    
-    float* current_input = d_X;
-    
-    for (int i = 0; i < net->num_layers; i++) {
-        Layer* layer = net->layers[i];
-        
-        CHECK_CUBLAS(cublasSgemm(net->cublas_handle,
-                                CUBLAS_OP_N,
-                                CUBLAS_OP_N,
-                                layer->output_dim,     // n
-                                net->batch_size,       // m
-                                layer->input_dim,      // k
-                                &alpha,
-                                layer->d_weight,       // A
-                                layer->output_dim,     // lda
-                                current_input,         // B
-                                layer->input_dim,      // ldb
-                                &beta,
-                                layer->d_output,       // C
-                                layer->output_dim));   // ldc
-        
-        CHECK_CUDA(cudaMemcpy(layer->d_pre_activation, layer->d_output,
-                             net->batch_size * layer->output_dim * sizeof(float),
-                             cudaMemcpyDeviceToDevice));
-        
-        if (i < net->num_layers - 1) {
-            int block_size = 256;
-            int num_blocks = (net->batch_size * layer->output_dim + block_size - 1) / block_size;
-            swish_forward_kernel<<<num_blocks, block_size>>>(
-                layer->d_output,
-                layer->d_pre_activation,
-                net->batch_size * layer->output_dim
-            );
-        }
-        
-        current_input = layer->d_output;
-    }
-    
+
+    // First layer
+    CHECK_CUBLAS(cublasSgemm(net->cublas_handle,
+                            CUBLAS_OP_N,
+                            CUBLAS_OP_N,
+                            net->hidden_dim,    // n
+                            net->batch_size,    // m
+                            net->input_dim,     // k
+                            &alpha,
+                            net->d_fc1_weight,  // A
+                            net->hidden_dim,    // lda
+                            d_X,                // B
+                            net->input_dim,     // ldb
+                            &beta,
+                            net->d_layer1_output, // C
+                            net->hidden_dim));    // ldc
+
+    // Store pre-activation values
+    CHECK_CUDA(cudaMemcpy(net->d_pre_activation, net->d_layer1_output,
+                         net->batch_size * net->hidden_dim * sizeof(float),
+                         cudaMemcpyDeviceToDevice));
+
+    // Apply Swish activation
+    int block_size = 256;
+    int num_blocks = (net->batch_size * net->hidden_dim + block_size - 1) / block_size;
+    swish_forward_kernel<<<num_blocks, block_size>>>(
+        net->d_layer1_output,
+        net->d_pre_activation,
+        net->batch_size * net->hidden_dim
+    );
+
+    // Second layer
+    CHECK_CUBLAS(cublasSgemm(net->cublas_handle,
+                            CUBLAS_OP_N,
+                            CUBLAS_OP_N,
+                            net->output_dim,     // n
+                            net->batch_size,     // m
+                            net->hidden_dim,     // k
+                            &alpha,
+                            net->d_fc2_weight,   // A
+                            net->output_dim,     // lda
+                            net->d_layer1_output,// B
+                            net->hidden_dim,     // ldb
+                            &beta,
+                            net->d_predictions,  // C
+                            net->output_dim));   // ldc
+
+    // Cleanup
     cudaFree(d_X);
 }
 
-// Custom kernel for calculating error
+// Custom kernel for calculating error and squared error
 __global__ void calc_error_kernel(float* error, float* predictions, float* y, int size) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < size) {
@@ -239,27 +251,29 @@ __global__ void calc_error_kernel(float* error, float* predictions, float* y, in
     }
 }
 
+// Calculate loss
 float calculate_loss(Net* net, float* y) {
-    Layer* output_layer = net->layers[net->num_layers - 1];
-    
     float* d_y;
     CHECK_CUDA(cudaMalloc(&d_y, net->batch_size * net->output_dim * sizeof(float)));
     CHECK_CUDA(cudaMemcpy(d_y, y, net->batch_size * net->output_dim * sizeof(float),
                          cudaMemcpyHostToDevice));
 
+    // Calculate error (predictions - y)
     int size = net->batch_size * net->output_dim;
     int block_size = 256;
     int num_blocks = (size + block_size - 1) / block_size;
 
+
     calc_error_kernel<<<num_blocks, block_size>>>(
-        output_layer->d_error,
-        output_layer->d_output,
+        net->d_error,
+        net->d_predictions,
         d_y,
         size
     );
 
+    // Calculate loss on CPU
     float* h_error = (float*)malloc(size * sizeof(float));
-    CHECK_CUDA(cudaMemcpy(h_error, output_layer->d_error, size * sizeof(float),
+    CHECK_CUDA(cudaMemcpy(h_error, net->d_error, size * sizeof(float),
                          cudaMemcpyDeviceToHost));
 
     float loss = 0.0f;
@@ -267,20 +281,22 @@ float calculate_loss(Net* net, float* y) {
         loss += h_error[i] * h_error[i];
     }
 
+    // Cleanup
     free(h_error);
     cudaFree(d_y);
 
     return loss / size;
 }
 
+// Zero gradients
 void zero_gradients(Net* net) {
-    for (int i = 0; i < net->num_layers; i++) {
-        Layer* layer = net->layers[i];
-        CHECK_CUDA(cudaMemset(layer->d_weight_grad, 0, 
-                             layer->output_dim * layer->input_dim * sizeof(float)));
-    }
+    CHECK_CUDA(cudaMemset(net->d_fc1_weight_grad, 0, 
+                         net->hidden_dim * net->input_dim * sizeof(float)));
+    CHECK_CUDA(cudaMemset(net->d_fc2_weight_grad, 0, 
+                         net->output_dim * net->hidden_dim * sizeof(float)));
 }
 
+// Backward pass
 void backward_pass(Net* net, float* X) {
     float* d_X;
     CHECK_CUDA(cudaMalloc(&d_X, net->batch_size * net->input_dim * sizeof(float)));
@@ -290,55 +306,62 @@ void backward_pass(Net* net, float* X) {
     const float alpha = 1.0f;
     const float beta = 0.0f;
 
-    for (int i = net->num_layers - 1; i >= 0; i--) {
-        Layer* layer = net->layers[i];
-        float* input = (i == 0) ? d_X : net->layers[i-1]->d_output;
+    // Gradient of second layer
+    CHECK_CUBLAS(cublasSgemm(net->cublas_handle,
+                            CUBLAS_OP_N,
+                            CUBLAS_OP_T,
+                            net->output_dim,     // n
+                            net->hidden_dim,     // m
+                            net->batch_size,     // k
+                            &alpha,
+                            net->d_error,        // A
+                            net->output_dim,     // lda
+                            net->d_layer1_output,// B
+                            net->hidden_dim,     // ldb
+                            &beta,
+                            net->d_fc2_weight_grad, // C
+                            net->output_dim));   // ldc
 
-        // Calculate weight gradients
-        CHECK_CUBLAS(cublasSgemm(net->cublas_handle,
-                                CUBLAS_OP_N,
-                                CUBLAS_OP_T,
-                                layer->output_dim,     // n
-                                layer->input_dim,      // m
-                                net->batch_size,       // k
-                                &alpha,
-                                layer->d_error,        // A
-                                layer->output_dim,     // lda
-                                input,                 // B
-                                layer->input_dim,      // ldb
-                                &beta,
-                                layer->d_weight_grad,  // C
-                                layer->output_dim));   // ldc
+    // Backpropagate error through second layer
+    CHECK_CUBLAS(cublasSgemm(net->cublas_handle,
+                            CUBLAS_OP_T,
+                            CUBLAS_OP_N,
+                            net->hidden_dim,     // n
+                            net->batch_size,     // m
+                            net->output_dim,     // k
+                            &alpha,
+                            net->d_fc2_weight,   // A
+                            net->output_dim,     // lda
+                            net->d_error,        // B
+                            net->output_dim,     // ldb
+                            &beta,
+                            net->d_error_hidden, // C
+                            net->hidden_dim));   // ldc
 
-        if (i > 0) {
-            Layer* prev_layer = net->layers[i-1];
-            
-            // Propagate error to previous layer
-            CHECK_CUBLAS(cublasSgemm(net->cublas_handle,
-                                    CUBLAS_OP_T,
-                                    CUBLAS_OP_N,
-                                    layer->input_dim,      // n
-                                    net->batch_size,       // m
-                                    layer->output_dim,     // k
-                                    &alpha,
-                                    layer->d_weight,       // A
-                                    layer->output_dim,     // lda
-                                    layer->d_error,        // B
-                                    layer->output_dim,     // ldb
-                                    &beta,
-                                    prev_layer->d_error,   // C
-                                    layer->input_dim));    // ldc
+    // Apply Swish derivative
+    int block_size = 256;
+    int num_blocks = (net->batch_size * net->hidden_dim + block_size - 1) / block_size;
+    swish_backward_kernel<<<num_blocks, block_size>>>(
+        net->d_error_hidden,
+        net->d_pre_activation,
+        net->batch_size * net->hidden_dim
+    );
 
-            // Apply activation derivative
-            int block_size = 256;
-            int num_blocks = (net->batch_size * prev_layer->output_dim + block_size - 1) / block_size;
-            swish_backward_kernel<<<num_blocks, block_size>>>(
-                prev_layer->d_error,
-                prev_layer->d_pre_activation,
-                net->batch_size * prev_layer->output_dim
-            );
-        }
-    }
+    // Gradient of first layer
+    CHECK_CUBLAS(cublasSgemm(net->cublas_handle,
+                            CUBLAS_OP_N,
+                            CUBLAS_OP_T,
+                            net->hidden_dim,     // n
+                            net->input_dim,      // m
+                            net->batch_size,     // k
+                            &alpha,
+                            net->d_error_hidden, // A
+                            net->hidden_dim,     // lda
+                            d_X,                 // B
+                            net->input_dim,      // ldb
+                            &beta,
+                            net->d_fc1_weight_grad, // C
+                            net->hidden_dim));   // ldc
 
     cudaFree(d_X);
 }
@@ -370,6 +393,7 @@ __global__ void adamw_update_kernel(
     }
 }
 
+// Update weights using AdamW
 void update_weights(Net* net, float learning_rate) {
     net->t++;
     
@@ -377,63 +401,74 @@ void update_weights(Net* net, float learning_rate) {
     float beta2_t = powf(net->beta2, net->t);
     float alpha_t = learning_rate * sqrtf(1.0f - beta2_t) / (1.0f - beta1_t);
     
-    for (int i = 0; i < net->num_layers; i++) {
-        Layer* layer = net->layers[i];
-        int size = layer->output_dim * layer->input_dim;
-        int block_size = 256;
-        int num_blocks = (size + block_size - 1) / block_size;
-        
-        adamw_update_kernel<<<num_blocks, block_size>>>(
-            layer->d_weight,
-            layer->d_weight_grad,
-            layer->d_m,
-            layer->d_v,
-            net->beta1,
-            net->beta2,
-            net->epsilon,
-            learning_rate,
-            net->weight_decay,
-            alpha_t,
-            size,
-            net->batch_size
-        );
-    }
+    int block_size = 256;
+    
+    // Update fc1 weights
+    int fc1_size = net->hidden_dim * net->input_dim;
+    int fc1_blocks = (fc1_size + block_size - 1) / block_size;
+    adamw_update_kernel<<<fc1_blocks, block_size>>>(
+        net->d_fc1_weight,
+        net->d_fc1_weight_grad,
+        net->d_fc1_m,
+        net->d_fc1_v,
+        net->beta1,
+        net->beta2,
+        net->epsilon,
+        learning_rate,
+        net->weight_decay,
+        alpha_t,
+        fc1_size,
+        net->batch_size
+    );
+    
+    // Update fc2 weights
+    int fc2_size = net->output_dim * net->hidden_dim;
+    int fc2_blocks = (fc2_size + block_size - 1) / block_size;
+    adamw_update_kernel<<<fc2_blocks, block_size>>>(
+        net->d_fc2_weight,
+        net->d_fc2_weight_grad,
+        net->d_fc2_m,
+        net->d_fc2_v,
+        net->beta1,
+        net->beta2,
+        net->epsilon,
+        learning_rate,
+        net->weight_decay,
+        alpha_t,
+        fc2_size,
+        net->batch_size
+    );
 }
 
+// Save model weights to binary file
 void save_model(Net* net, const char* filename) {
+    // Copy weights from device to host
+    CHECK_CUDA(cudaMemcpy(net->h_fc1_weight, net->d_fc1_weight,
+                         net->hidden_dim * net->input_dim * sizeof(float),
+                         cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(net->h_fc2_weight, net->d_fc2_weight,
+                         net->output_dim * net->hidden_dim * sizeof(float),
+                         cudaMemcpyDeviceToHost));
+
     FILE* file = fopen(filename, "wb");
     if (!file) {
         printf("Error opening file for writing: %s\n", filename);
         return;
     }
     
-    // Save network structure
-    fwrite(&net->num_layers, sizeof(int), 1, file);
     fwrite(&net->input_dim, sizeof(int), 1, file);
+    fwrite(&net->hidden_dim, sizeof(int), 1, file);
     fwrite(&net->output_dim, sizeof(int), 1, file);
     fwrite(&net->batch_size, sizeof(int), 1, file);
+    fwrite(net->h_fc1_weight, sizeof(float), net->hidden_dim * net->input_dim, file);
+    fwrite(net->h_fc2_weight, sizeof(float), net->output_dim * net->hidden_dim, file);
     fwrite(&net->t, sizeof(int), 1, file);
-    
-    // Save weights for each layer
-    for (int i = 0; i < net->num_layers; i++) {
-        Layer* layer = net->layers[i];
-        fwrite(&layer->input_dim, sizeof(int), 1, file);
-        fwrite(&layer->output_dim, sizeof(int), 1, file);
-        
-        // Copy weights from device to host
-        CHECK_CUDA(cudaMemcpy(layer->h_weight, layer->d_weight,
-                             layer->output_dim * layer->input_dim * sizeof(float),
-                             cudaMemcpyDeviceToHost));
-        
-        // Save weights
-        fwrite(layer->h_weight, sizeof(float), 
-               layer->output_dim * layer->input_dim, file);
-    }
     
     fclose(file);
     printf("Model saved to %s\n", filename);
 }
 
+// Load model weights from binary file
 Net* load_model(const char* filename) {
     FILE* file = fopen(filename, "rb");
     if (!file) {
@@ -441,41 +476,26 @@ Net* load_model(const char* filename) {
         return NULL;
     }
     
-    // Read network structure
-    int num_layers, input_dim, output_dim, batch_size, t;
-    fread(&num_layers, sizeof(int), 1, file);
+    int input_dim, hidden_dim, output_dim, batch_size;
     fread(&input_dim, sizeof(int), 1, file);
+    fread(&hidden_dim, sizeof(int), 1, file);
     fread(&output_dim, sizeof(int), 1, file);
     fread(&batch_size, sizeof(int), 1, file);
-    fread(&t, sizeof(int), 1, file);
     
-    // Create array of layer dimensions
-    int* layer_dims = (int*)malloc((num_layers + 1) * sizeof(int));
-    layer_dims[0] = input_dim;
+    Net* net = init_net(input_dim, hidden_dim, output_dim, batch_size);
     
-    // Initialize network
-    Net* net = init_net(layer_dims, num_layers + 1, batch_size);
-    net->t = t;
+    fread(net->h_fc1_weight, sizeof(float), hidden_dim * input_dim, file);
+    fread(net->h_fc2_weight, sizeof(float), output_dim * hidden_dim, file);
+    fread(&net->t, sizeof(int), 1, file);
     
-    // Load weights for each layer
-    for (int i = 0; i < num_layers; i++) {
-        Layer* layer = net->layers[i];
-        int layer_input_dim, layer_output_dim;
-        
-        fread(&layer_input_dim, sizeof(int), 1, file);
-        fread(&layer_output_dim, sizeof(int), 1, file);
-        
-        // Read weights
-        fread(layer->h_weight, sizeof(float), 
-              layer->output_dim * layer->input_dim, file);
-        
-        // Copy weights to device
-        CHECK_CUDA(cudaMemcpy(layer->d_weight, layer->h_weight,
-                             layer->output_dim * layer->input_dim * sizeof(float),
-                             cudaMemcpyHostToDevice));
-    }
+    // Copy weights to device
+    CHECK_CUDA(cudaMemcpy(net->d_fc1_weight, net->h_fc1_weight,
+                         hidden_dim * input_dim * sizeof(float),
+                         cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(net->d_fc2_weight, net->h_fc2_weight,
+                         output_dim * hidden_dim * sizeof(float),
+                         cudaMemcpyHostToDevice));
     
-    free(layer_dims);
     fclose(file);
     printf("Model loaded from %s\n", filename);
     
