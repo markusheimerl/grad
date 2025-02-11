@@ -57,6 +57,7 @@ int main() {
 
     // Save model and data with timestamped filenames
     save_model(net, model_fname);
+    free_net(net);
     save_data_to_csv(X, y, num_samples, input_dim, output_dim, data_fname);
     
     // Load the model back and verify
