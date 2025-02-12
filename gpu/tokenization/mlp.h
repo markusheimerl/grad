@@ -115,7 +115,7 @@ Net* init_net(int num_tokens, int model_dim, int mlp_dim, int batch_size) {
     net->beta2 = 0.999f;
     net->epsilon = 1e-8f;
     net->t = 0;
-    net->weight_decay = 0.01f;
+    net->weight_decay = 0.001f;
     
     // Initialize cuBLAS
     CHECK_CUBLAS(cublasCreate(&net->cublas_handle));
