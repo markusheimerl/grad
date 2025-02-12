@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
-#include "../../../data.h"
+#include "../../data.h"
 #include "mlp.h"
 
 int main() {
@@ -10,6 +10,7 @@ int main() {
 
     // Parameters
     const int input_dim = 16;
+    const int hidden_dim = 1024;
     const int output_dim = 4;
     const int num_samples = 1024;
     const int batch_size = num_samples; // Full batch training
@@ -19,13 +20,11 @@ int main() {
     generate_synthetic_data(&X, &y, num_samples, input_dim, output_dim);
     
     // Initialize network
-    int hidden_dim = 512;
-    int depth = 8;
-    Net* net = init_net(input_dim, hidden_dim, depth, output_dim, batch_size);
+    Net* net = init_net(input_dim, hidden_dim, output_dim, batch_size);
     
     // Training parameters
     const int num_epochs = 10000;
-    const float learning_rate = 1e-4f;
+    const float learning_rate = 0.001f;
     
     // Training loop
     for (int epoch = 0; epoch < num_epochs; epoch++) {
@@ -58,7 +57,6 @@ int main() {
 
     // Save model and data with timestamped filenames
     save_model(net, model_fname);
-    free_net(net);
     save_data_to_csv(X, y, num_samples, input_dim, output_dim, data_fname);
     
     // Load the model back and verify
@@ -74,7 +72,7 @@ int main() {
     forward_pass(net, X);
     
     // Copy predictions from device to host
-    CHECK_CUDA(cudaMemcpy(h_predictions, net->d_layer_outputs[net->depth + 1], 
+    CHECK_CUDA(cudaMemcpy(h_predictions, net->d_predictions, 
                          num_samples * output_dim * sizeof(float),
                          cudaMemcpyDeviceToHost));
     
