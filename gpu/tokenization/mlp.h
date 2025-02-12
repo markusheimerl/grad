@@ -29,85 +29,63 @@
 } while(0)
 
 typedef struct {
-    // Dimensions
-    int num_tokens;     // number of input/output tokens (16)
-    int model_dim;      // hidden dimension for tokens
-    int mlp_dim;        // expansion dimension for mixing MLPs
-    int batch_size;     // batch size
-
-    // Device pointers for weights
-    float* d_token_embed;     // [num_tokens, model_dim]
-    float* d_channel_fc1;     // [model_dim, mlp_dim]
-    float* d_channel_fc2;     // [mlp_dim, model_dim]
-    float* d_token_fc1;       // [num_tokens, mlp_dim]
-    float* d_token_fc2;       // [mlp_dim, num_tokens]
-    float* d_final_proj;      // [model_dim, num_tokens]
-
+    // Device pointers for weights and gradients
+    float* d_token_embed;      // [num_tokens, model_dim]
+    float* d_channel_fc;       // [model_dim, model_dim]
+    float* d_token_fc;         // [num_tokens, num_tokens]
+    float* d_final_proj;       // [model_dim, num_tokens]
+    float* d_token_embed_grad;
+    float* d_channel_fc_grad;
+    float* d_token_fc_grad;
+    float* d_final_proj_grad;
+    
     // Host copies of weights
     float* h_token_embed;
-    float* h_channel_fc1;
-    float* h_channel_fc2;
-    float* h_token_fc1;
-    float* h_token_fc2;
+    float* h_channel_fc;
+    float* h_token_fc;
     float* h_final_proj;
-
-    // Gradients
-    float* d_token_embed_grad;
-    float* d_channel_fc1_grad;
-    float* d_channel_fc2_grad;
-    float* d_token_fc1_grad;
-    float* d_token_fc2_grad;
-    float* d_final_proj_grad;
-
-    // Intermediate activations
-    float* d_embedded;        // After token embedding
-    float* d_channel_mid;     // After first channel mixing
-    float* d_after_channel;   // After channel mixing
-    float* d_token_mid;       // After first token mixing
-    float* d_after_token;     // After token mixing
-    float* d_predictions;     // Final output
-
-    // Pre-allocated memory for backward pass
-    float* d_grad_after_token;
-    float* d_grad_token_mid;
-    float* d_grad_after_channel;
-    float* d_grad_channel_mid;
-    float* d_grad_embedded;
-    float* d_X_device;        // Device copy of input
-    float* d_error;           // Error storage
-
-    // Adam optimizer parameters
+    
+    // Device pointers for Adam parameters
     float* d_token_embed_m;
     float* d_token_embed_v;
-    float* d_channel_fc1_m;
-    float* d_channel_fc1_v;
-    float* d_channel_fc2_m;
-    float* d_channel_fc2_v;
-    float* d_token_fc1_m;
-    float* d_token_fc1_v;
-    float* d_token_fc2_m;
-    float* d_token_fc2_v;
+    float* d_channel_fc_m;
+    float* d_channel_fc_v;
+    float* d_token_fc_m;
+    float* d_token_fc_v;
     float* d_final_proj_m;
     float* d_final_proj_v;
-
     float beta1;
     float beta2;
     float epsilon;
     int t;
     float weight_decay;
-
+    
+    // Device pointers for helper arrays
+    float* d_embedded;           // After token embedding
+    float* d_after_channel;      // After channel mixing
+    float* d_after_token;        // After token mixing
+    float* d_predictions;        // Final output
+    float* d_error;             // Error storage
+    float* d_grad_after_token;
+    float* d_grad_after_channel;
+    float* d_grad_embedded;
+    
     // cuBLAS handle
     cublasHandle_t cublas_handle;
+    
+    // Dimensions
+    int num_tokens;
+    int model_dim;
+    int batch_size;
 } Net;
 
 // Initialize the network
-Net* init_net(int num_tokens, int model_dim, int mlp_dim, int batch_size) {
+Net* init_net(int num_tokens, int model_dim, int batch_size) {
     Net* net = (Net*)malloc(sizeof(Net));
     
     // Store dimensions
     net->num_tokens = num_tokens;
     net->model_dim = model_dim;
-    net->mlp_dim = mlp_dim;
     net->batch_size = batch_size;
     
     // Initialize Adam parameters
@@ -115,179 +93,129 @@ Net* init_net(int num_tokens, int model_dim, int mlp_dim, int batch_size) {
     net->beta2 = 0.999f;
     net->epsilon = 1e-8f;
     net->t = 0;
-    net->weight_decay = 0.001f;
+    net->weight_decay = 0.01f;
     
     // Initialize cuBLAS
     CHECK_CUBLAS(cublasCreate(&net->cublas_handle));
     
     // Allocate host memory for weights
     net->h_token_embed = (float*)malloc(num_tokens * model_dim * sizeof(float));
-    net->h_channel_fc1 = (float*)malloc(model_dim * mlp_dim * sizeof(float));
-    net->h_channel_fc2 = (float*)malloc(mlp_dim * model_dim * sizeof(float));
-    net->h_token_fc1 = (float*)malloc(num_tokens * mlp_dim * sizeof(float));
-    net->h_token_fc2 = (float*)malloc(mlp_dim * num_tokens * sizeof(float));
+    net->h_channel_fc = (float*)malloc(model_dim * model_dim * sizeof(float));
+    net->h_token_fc = (float*)malloc(num_tokens * num_tokens * sizeof(float));
     net->h_final_proj = (float*)malloc(model_dim * num_tokens * sizeof(float));
     
     // Initialize weights with scaled random values
     float token_embed_scale = 1.0f / sqrt(num_tokens);
-    float channel_fc1_scale = 1.0f / sqrt(model_dim);
-    float channel_fc2_scale = 1.0f / sqrt(mlp_dim);
-    float token_fc1_scale = 1.0f / sqrt(num_tokens);
-    float token_fc2_scale = 1.0f / sqrt(mlp_dim);
+    float channel_fc_scale = 1.0f / sqrt(model_dim);
+    float token_fc_scale = 1.0f / sqrt(num_tokens);
     float final_proj_scale = 1.0f / sqrt(model_dim);
     
     for (int i = 0; i < num_tokens * model_dim; i++) {
-        net->h_token_embed[i] = ((float)rand() / (float)RAND_MAX * 2 - 1) * token_embed_scale;
+        net->h_token_embed[i] = ((float)rand() / RAND_MAX * 2 - 1) * token_embed_scale;
     }
-    for (int i = 0; i < model_dim * mlp_dim; i++) {
-        net->h_channel_fc1[i] = ((float)rand() / (float)RAND_MAX * 2 - 1) * channel_fc1_scale;
+    for (int i = 0; i < model_dim * model_dim; i++) {
+        net->h_channel_fc[i] = ((float)rand() / RAND_MAX * 2 - 1) * channel_fc_scale;
     }
-    for (int i = 0; i < mlp_dim * model_dim; i++) {
-        net->h_channel_fc2[i] = ((float)rand() / (float)RAND_MAX * 2 - 1) * channel_fc2_scale;
-    }
-    for (int i = 0; i < num_tokens * mlp_dim; i++) {
-        net->h_token_fc1[i] = ((float)rand() / (float)RAND_MAX * 2 - 1) * token_fc1_scale;
-    }
-    for (int i = 0; i < mlp_dim * num_tokens; i++) {
-        net->h_token_fc2[i] = ((float)rand() / (float)RAND_MAX * 2 - 1) * token_fc2_scale;
+    for (int i = 0; i < num_tokens * num_tokens; i++) {
+        net->h_token_fc[i] = ((float)rand() / RAND_MAX * 2 - 1) * token_fc_scale;
     }
     for (int i = 0; i < model_dim * num_tokens; i++) {
-        net->h_final_proj[i] = ((float)rand() / (float)RAND_MAX * 2 - 1) * final_proj_scale;
+        net->h_final_proj[i] = ((float)rand() / RAND_MAX * 2 - 1) * final_proj_scale;
     }
     
-    // Allocate device memory for weights and copy from host
-    CHECK_CUDA(cudaMalloc(&net->d_token_embed, num_tokens * model_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_channel_fc1, model_dim * mlp_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_channel_fc2, mlp_dim * model_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_token_fc1, num_tokens * mlp_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_token_fc2, mlp_dim * num_tokens * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_final_proj, model_dim * num_tokens * sizeof(float)));
+    // Allocate all device memory
+    size_t token_embed_size = num_tokens * model_dim * sizeof(float);
+    size_t channel_fc_size = model_dim * model_dim * sizeof(float);
+    size_t token_fc_size = num_tokens * num_tokens * sizeof(float);
+    size_t final_proj_size = model_dim * num_tokens * sizeof(float);
+    size_t batch_token_size = batch_size * num_tokens * sizeof(float);
+    size_t batch_model_size = batch_size * model_dim * sizeof(float);
     
-    // Allocate device memory for gradients
-    CHECK_CUDA(cudaMalloc(&net->d_token_embed_grad, num_tokens * model_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_channel_fc1_grad, model_dim * mlp_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_channel_fc2_grad, mlp_dim * model_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_token_fc1_grad, num_tokens * mlp_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_token_fc2_grad, mlp_dim * num_tokens * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_final_proj_grad, model_dim * num_tokens * sizeof(float)));
-
-    // Allocate device memory for intermediate activations
+    // Weights and gradients
+    CHECK_CUDA(cudaMalloc(&net->d_token_embed, token_embed_size));
+    CHECK_CUDA(cudaMalloc(&net->d_channel_fc, channel_fc_size));
+    CHECK_CUDA(cudaMalloc(&net->d_token_fc, token_fc_size));
+    CHECK_CUDA(cudaMalloc(&net->d_final_proj, final_proj_size));
+    CHECK_CUDA(cudaMalloc(&net->d_token_embed_grad, token_embed_size));
+    CHECK_CUDA(cudaMalloc(&net->d_channel_fc_grad, channel_fc_size));
+    CHECK_CUDA(cudaMalloc(&net->d_token_fc_grad, token_fc_size));
+    CHECK_CUDA(cudaMalloc(&net->d_final_proj_grad, final_proj_size));
+    
+    // Adam states
+    CHECK_CUDA(cudaMalloc(&net->d_token_embed_m, token_embed_size));
+    CHECK_CUDA(cudaMalloc(&net->d_token_embed_v, token_embed_size));
+    CHECK_CUDA(cudaMalloc(&net->d_channel_fc_m, channel_fc_size));
+    CHECK_CUDA(cudaMalloc(&net->d_channel_fc_v, channel_fc_size));
+    CHECK_CUDA(cudaMalloc(&net->d_token_fc_m, token_fc_size));
+    CHECK_CUDA(cudaMalloc(&net->d_token_fc_v, token_fc_size));
+    CHECK_CUDA(cudaMalloc(&net->d_final_proj_m, final_proj_size));
+    CHECK_CUDA(cudaMalloc(&net->d_final_proj_v, final_proj_size));
+    
+    // Helper arrays
     CHECK_CUDA(cudaMalloc(&net->d_embedded, batch_size * num_tokens * model_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_channel_mid, batch_size * num_tokens * mlp_dim * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&net->d_after_channel, batch_size * num_tokens * model_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_token_mid, batch_size * num_tokens * mlp_dim * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&net->d_after_token, batch_size * num_tokens * model_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_predictions, batch_size * num_tokens * sizeof(float)));
-
-    // Allocate memory for backward pass (pre-allocated)
+    CHECK_CUDA(cudaMalloc(&net->d_predictions, batch_token_size));
+    CHECK_CUDA(cudaMalloc(&net->d_error, batch_token_size));
     CHECK_CUDA(cudaMalloc(&net->d_grad_after_token, batch_size * num_tokens * model_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_grad_token_mid, batch_size * num_tokens * mlp_dim * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&net->d_grad_after_channel, batch_size * num_tokens * model_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_grad_channel_mid, batch_size * num_tokens * mlp_dim * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&net->d_grad_embedded, batch_size * num_tokens * model_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_X_device, batch_size * num_tokens * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_error, batch_size * num_tokens * sizeof(float)));
-
-    // Allocate device memory for Adam parameters
-    CHECK_CUDA(cudaMalloc(&net->d_token_embed_m, num_tokens * model_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_token_embed_v, num_tokens * model_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_channel_fc1_m, model_dim * mlp_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_channel_fc1_v, model_dim * mlp_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_channel_fc2_m, mlp_dim * model_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_channel_fc2_v, mlp_dim * model_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_token_fc1_m, num_tokens * mlp_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_token_fc1_v, num_tokens * mlp_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_token_fc2_m, mlp_dim * num_tokens * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_token_fc2_v, mlp_dim * num_tokens * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_final_proj_m, model_dim * num_tokens * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_final_proj_v, model_dim * num_tokens * sizeof(float)));
-
-    // Copy weights to device
-    CHECK_CUDA(cudaMemcpy(net->d_token_embed, net->h_token_embed, 
-                         num_tokens * model_dim * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(net->d_channel_fc1, net->h_channel_fc1,
-                         model_dim * mlp_dim * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(net->d_channel_fc2, net->h_channel_fc2,
-                         mlp_dim * model_dim * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(net->d_token_fc1, net->h_token_fc1,
-                         num_tokens * mlp_dim * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(net->d_token_fc2, net->h_token_fc2,
-                         mlp_dim * num_tokens * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(net->d_final_proj, net->h_final_proj,
-                         model_dim * num_tokens * sizeof(float), cudaMemcpyHostToDevice));
-
+    
+    // Initialize all device memory
+    CHECK_CUDA(cudaMemcpy(net->d_token_embed, net->h_token_embed, token_embed_size, cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(net->d_channel_fc, net->h_channel_fc, channel_fc_size, cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(net->d_token_fc, net->h_token_fc, token_fc_size, cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(net->d_final_proj, net->h_final_proj, final_proj_size, cudaMemcpyHostToDevice));
+    
     // Initialize Adam states to zero
-    cudaMemset(net->d_token_embed_m, 0, num_tokens * model_dim * sizeof(float));
-    cudaMemset(net->d_token_embed_v, 0, num_tokens * model_dim * sizeof(float));
-    cudaMemset(net->d_channel_fc1_m, 0, model_dim * mlp_dim * sizeof(float));
-    cudaMemset(net->d_channel_fc1_v, 0, model_dim * mlp_dim * sizeof(float));
-    cudaMemset(net->d_channel_fc2_m, 0, mlp_dim * model_dim * sizeof(float));
-    cudaMemset(net->d_channel_fc2_v, 0, mlp_dim * model_dim * sizeof(float));
-    cudaMemset(net->d_token_fc1_m, 0, num_tokens * mlp_dim * sizeof(float));
-    cudaMemset(net->d_token_fc1_v, 0, num_tokens * mlp_dim * sizeof(float));
-    cudaMemset(net->d_token_fc2_m, 0, mlp_dim * num_tokens * sizeof(float));
-    cudaMemset(net->d_token_fc2_v, 0, mlp_dim * num_tokens * sizeof(float));
-    cudaMemset(net->d_final_proj_m, 0, model_dim * num_tokens * sizeof(float));
-    cudaMemset(net->d_final_proj_v, 0, model_dim * num_tokens * sizeof(float));
+    cudaMemset(net->d_token_embed_m, 0, token_embed_size);
+    cudaMemset(net->d_token_embed_v, 0, token_embed_size);
+    cudaMemset(net->d_channel_fc_m, 0, channel_fc_size);
+    cudaMemset(net->d_channel_fc_v, 0, channel_fc_size);
+    cudaMemset(net->d_token_fc_m, 0, token_fc_size);
+    cudaMemset(net->d_token_fc_v, 0, token_fc_size);
+    cudaMemset(net->d_final_proj_m, 0, final_proj_size);
+    cudaMemset(net->d_final_proj_v, 0, final_proj_size);
     
     return net;
 }
 
 // Free network memory
 void free_net(Net* net) {
-    // Free device memory - weights
+    // Free device memory - weights and gradients
     cudaFree(net->d_token_embed);
-    cudaFree(net->d_channel_fc1);
-    cudaFree(net->d_channel_fc2);
-    cudaFree(net->d_token_fc1);
-    cudaFree(net->d_token_fc2);
+    cudaFree(net->d_channel_fc);
+    cudaFree(net->d_token_fc);
     cudaFree(net->d_final_proj);
-    
-    // Free device memory - gradients
     cudaFree(net->d_token_embed_grad);
-    cudaFree(net->d_channel_fc1_grad);
-    cudaFree(net->d_channel_fc2_grad);
-    cudaFree(net->d_token_fc1_grad);
-    cudaFree(net->d_token_fc2_grad);
+    cudaFree(net->d_channel_fc_grad);
+    cudaFree(net->d_token_fc_grad);
     cudaFree(net->d_final_proj_grad);
-    
-    // Free device memory - intermediate activations
-    cudaFree(net->d_embedded);
-    cudaFree(net->d_channel_mid);
-    cudaFree(net->d_after_channel);
-    cudaFree(net->d_token_mid);
-    cudaFree(net->d_after_token);
-    cudaFree(net->d_predictions);
-    
-    // Free device memory - backward pass pre-allocated
-    cudaFree(net->d_grad_after_token);
-    cudaFree(net->d_grad_token_mid);
-    cudaFree(net->d_grad_after_channel);
-    cudaFree(net->d_grad_channel_mid);
-    cudaFree(net->d_grad_embedded);
-    cudaFree(net->d_X_device);
-    cudaFree(net->d_error);
     
     // Free device memory - Adam states
     cudaFree(net->d_token_embed_m);
     cudaFree(net->d_token_embed_v);
-    cudaFree(net->d_channel_fc1_m);
-    cudaFree(net->d_channel_fc1_v);
-    cudaFree(net->d_channel_fc2_m);
-    cudaFree(net->d_channel_fc2_v);
-    cudaFree(net->d_token_fc1_m);
-    cudaFree(net->d_token_fc1_v);
-    cudaFree(net->d_token_fc2_m);
-    cudaFree(net->d_token_fc2_v);
+    cudaFree(net->d_channel_fc_m);
+    cudaFree(net->d_channel_fc_v);
+    cudaFree(net->d_token_fc_m);
+    cudaFree(net->d_token_fc_v);
     cudaFree(net->d_final_proj_m);
     cudaFree(net->d_final_proj_v);
     
+    // Free device memory - helper arrays
+    cudaFree(net->d_embedded);
+    cudaFree(net->d_after_channel);
+    cudaFree(net->d_after_token);
+    cudaFree(net->d_predictions);
+    cudaFree(net->d_error);
+    cudaFree(net->d_grad_after_token);
+    cudaFree(net->d_grad_after_channel);
+    cudaFree(net->d_grad_embedded);
+    
     // Free host memory
     free(net->h_token_embed);
-    free(net->h_channel_fc1);
-    free(net->h_channel_fc2);
-    free(net->h_token_fc1);
-    free(net->h_token_fc2);
+    free(net->h_channel_fc);
+    free(net->h_token_fc);
     free(net->h_final_proj);
     
     // Destroy cuBLAS handle
@@ -327,68 +255,98 @@ __global__ void calc_error_kernel(float* error, float* predictions, float* targe
 
 // Forward pass
 void forward_pass(Net* net, float* X) {
+    // Copy input to device
+    float* d_X;
+    CHECK_CUDA(cudaMalloc(&d_X, net->batch_size * net->num_tokens * sizeof(float)));
+    CHECK_CUDA(cudaMemcpy(d_X, X, net->batch_size * net->num_tokens * sizeof(float), 
+                         cudaMemcpyHostToDevice));
+
     const float alpha = 1.0f;
     const float beta = 0.0f;
-    
-    // Copy input to pre-allocated device memory
-    CHECK_CUDA(cudaMemcpy(net->d_X_device, X, 
-                         net->batch_size * net->num_tokens * sizeof(float),
-                         cudaMemcpyHostToDevice));
-    
-    // Token embedding
-    CHECK_CUBLAS(cublasSgemm(net->cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
-        net->model_dim, net->batch_size * net->num_tokens, net->num_tokens,
-        &alpha, net->d_token_embed, net->model_dim,
-        net->d_X_device, net->num_tokens,
-        &beta, net->d_embedded, net->model_dim));
 
-    // Channel mixing (first layer)
-    CHECK_CUBLAS(cublasSgemm(net->cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
-        net->mlp_dim, net->batch_size * net->num_tokens, net->model_dim,
-        &alpha, net->d_channel_fc1, net->mlp_dim,
-        net->d_embedded, net->model_dim,
-        &beta, net->d_channel_mid, net->mlp_dim));
+    // Token embedding: [num_tokens, model_dim] x [batch_size, num_tokens] -> [batch_size, model_dim]
+    CHECK_CUBLAS(cublasSgemm(net->cublas_handle,
+                            CUBLAS_OP_N,
+                            CUBLAS_OP_N,
+                            net->model_dim,      // n
+                            net->batch_size,     // m
+                            net->num_tokens,     // k
+                            &alpha,
+                            net->d_token_embed,  // A
+                            net->model_dim,      // lda
+                            d_X,                 // B
+                            net->num_tokens,     // ldb
+                            &beta,
+                            net->d_embedded,     // C
+                            net->model_dim));    // ldc
 
-    // Apply Swish
-    int size = net->batch_size * net->num_tokens * net->mlp_dim;
+    // Channel mixing: [model_dim, model_dim] x [batch_size, model_dim] -> [batch_size, model_dim]
+    CHECK_CUBLAS(cublasSgemm(net->cublas_handle,
+                            CUBLAS_OP_N,
+                            CUBLAS_OP_N,
+                            net->model_dim,      // n
+                            net->batch_size,     // m
+                            net->model_dim,      // k
+                            &alpha,
+                            net->d_channel_fc,   // A
+                            net->model_dim,      // lda
+                            net->d_embedded,     // B
+                            net->model_dim,      // ldb
+                            &beta,
+                            net->d_after_channel,// C
+                            net->model_dim));    // ldc
+
+    // Apply Swish activation
     int block_size = 256;
-    int num_blocks = (size + block_size - 1) / block_size;
+    int num_blocks = (net->batch_size * net->model_dim + block_size - 1) / block_size;
     swish_forward_kernel<<<num_blocks, block_size>>>(
-        net->d_channel_mid, net->d_channel_mid, size);
+        net->d_after_channel,
+        net->d_after_channel,
+        net->batch_size * net->model_dim
+    );
 
-    // Channel mixing (second layer)
-    CHECK_CUBLAS(cublasSgemm(net->cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
-        net->model_dim, net->batch_size * net->num_tokens, net->mlp_dim,
-        &alpha, net->d_channel_fc2, net->model_dim,
-        net->d_channel_mid, net->mlp_dim,
-        &beta, net->d_after_channel, net->model_dim));
+    // Token mixing: [num_tokens, num_tokens] x [batch_size, num_tokens] -> [batch_size, num_tokens]
+    CHECK_CUBLAS(cublasSgemm(net->cublas_handle,
+                            CUBLAS_OP_N,
+                            CUBLAS_OP_N,
+                            net->num_tokens,     // n
+                            net->batch_size,     // m
+                            net->num_tokens,     // k
+                            &alpha,
+                            net->d_token_fc,     // A
+                            net->num_tokens,     // lda
+                            net->d_after_channel,// B
+                            net->num_tokens,     // ldb
+                            &beta,
+                            net->d_after_token,  // C
+                            net->num_tokens));   // ldc
 
-    // Token mixing (first layer)
-    CHECK_CUBLAS(cublasSgemm(net->cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
-        net->mlp_dim, net->batch_size * net->num_tokens, net->num_tokens,
-        &alpha, net->d_token_fc1, net->mlp_dim,
-        net->d_after_channel, net->num_tokens,
-        &beta, net->d_token_mid, net->mlp_dim));
-
-    // Apply Swish
-    size = net->batch_size * net->num_tokens * net->mlp_dim;
-    num_blocks = (size + block_size - 1) / block_size;
+    // Apply Swish activation
+    num_blocks = (net->batch_size * net->num_tokens + block_size - 1) / block_size;
     swish_forward_kernel<<<num_blocks, block_size>>>(
-        net->d_token_mid, net->d_token_mid, size);
+        net->d_after_token,
+        net->d_after_token,
+        net->batch_size * net->num_tokens
+    );
 
-    // Token mixing (second layer)
-    CHECK_CUBLAS(cublasSgemm(net->cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
-        net->num_tokens, net->batch_size * net->num_tokens, net->mlp_dim,
-        &alpha, net->d_token_fc2, net->num_tokens,
-        net->d_token_mid, net->mlp_dim,
-        &beta, net->d_after_token, net->num_tokens));
+    // Final projection: [model_dim, num_tokens] x [batch_size, model_dim] -> [batch_size, num_tokens]
+    CHECK_CUBLAS(cublasSgemm(net->cublas_handle,
+                            CUBLAS_OP_N,
+                            CUBLAS_OP_N,
+                            net->num_tokens,     // n
+                            net->batch_size,     // m
+                            net->model_dim,      // k
+                            &alpha,
+                            net->d_final_proj,   // A
+                            net->num_tokens,     // lda
+                            net->d_after_token,  // B
+                            net->model_dim,      // ldb
+                            &beta,
+                            net->d_predictions,  // C
+                            net->num_tokens));   // ldc
 
-    // Final projection
-    CHECK_CUBLAS(cublasSgemm(net->cublas_handle, CUBLAS_OP_N, CUBLAS_OP_N,
-        net->num_tokens, net->batch_size, net->model_dim,
-        &alpha, net->d_final_proj, net->num_tokens,
-        net->d_after_token, net->model_dim,
-        &beta, net->d_predictions, net->num_tokens));
+    // Cleanup
+    cudaFree(d_X);
 }
 
 // Calculate loss
@@ -431,121 +389,158 @@ float calculate_loss(Net* net, float* y) {
 void zero_gradients(Net* net) {
     CHECK_CUDA(cudaMemset(net->d_token_embed_grad, 0, 
                          net->num_tokens * net->model_dim * sizeof(float)));
-    CHECK_CUDA(cudaMemset(net->d_channel_fc1_grad, 0,
-                         net->model_dim * net->mlp_dim * sizeof(float)));
-    CHECK_CUDA(cudaMemset(net->d_channel_fc2_grad, 0,
-                         net->mlp_dim * net->model_dim * sizeof(float)));
-    CHECK_CUDA(cudaMemset(net->d_token_fc1_grad, 0,
-                         net->num_tokens * net->mlp_dim * sizeof(float)));
-    CHECK_CUDA(cudaMemset(net->d_token_fc2_grad, 0,
-                         net->mlp_dim * net->num_tokens * sizeof(float)));
+    CHECK_CUDA(cudaMemset(net->d_channel_fc_grad, 0,
+                         net->model_dim * net->model_dim * sizeof(float)));
+    CHECK_CUDA(cudaMemset(net->d_token_fc_grad, 0,
+                         net->num_tokens * net->num_tokens * sizeof(float)));
     CHECK_CUDA(cudaMemset(net->d_final_proj_grad, 0,
                          net->model_dim * net->num_tokens * sizeof(float)));
 }
 
 // Backward pass
 void backward_pass(Net* net, float* X) {
-    const float alpha = 1.0f;
-    const float beta = 0.0f;
-    
-    // Copy input to device (using pre-allocated memory)
-    CHECK_CUDA(cudaMemcpy(net->d_X_device, X, 
-                         net->batch_size * net->num_tokens * sizeof(float),
+    // Copy input to device
+    float* d_X;
+    CHECK_CUDA(cudaMalloc(&d_X, net->batch_size * net->num_tokens * sizeof(float)));
+    CHECK_CUDA(cudaMemcpy(d_X, X, net->batch_size * net->num_tokens * sizeof(float),
                          cudaMemcpyHostToDevice));
 
-    // Backward through final projection
-    CHECK_CUBLAS(cublasSgemm(net->cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N,
-        net->model_dim, net->batch_size, net->num_tokens,
-        &alpha, net->d_final_proj, net->num_tokens,
-        net->d_error, net->num_tokens,
-        &beta, net->d_grad_after_token, net->model_dim));
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
 
-    // Gradient for final projection
-    CHECK_CUBLAS(cublasSgemm(net->cublas_handle, CUBLAS_OP_N, CUBLAS_OP_T,
-        net->model_dim, net->num_tokens, net->batch_size,
-        &alpha, net->d_grad_after_token, net->model_dim,
-        net->d_after_token, net->model_dim,
-        &beta, net->d_final_proj_grad, net->model_dim));
+    // Gradient of final projection layer
+    CHECK_CUBLAS(cublasSgemm(net->cublas_handle,
+                            CUBLAS_OP_N,
+                            CUBLAS_OP_T,
+                            net->num_tokens,     // n
+                            net->model_dim,      // m
+                            net->batch_size,     // k
+                            &alpha,
+                            net->d_error,        // A
+                            net->num_tokens,     // lda
+                            net->d_after_token,  // B
+                            net->model_dim,      // ldb
+                            &beta,
+                            net->d_final_proj_grad, // C
+                            net->num_tokens));   // ldc
 
-    // Backward through token mixing (second layer)
-    CHECK_CUBLAS(cublasSgemm(net->cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N,
-        net->mlp_dim, net->batch_size * net->num_tokens, net->num_tokens,
-        &alpha, net->d_token_fc2, net->num_tokens,
-        net->d_grad_after_token, net->num_tokens,
-        &beta, net->d_grad_token_mid, net->mlp_dim));
+    // Backpropagate error through final projection
+    CHECK_CUBLAS(cublasSgemm(net->cublas_handle,
+                            CUBLAS_OP_T,
+                            CUBLAS_OP_N,
+                            net->model_dim,      // n
+                            net->batch_size,     // m
+                            net->num_tokens,     // k
+                            &alpha,
+                            net->d_final_proj,   // A
+                            net->num_tokens,     // lda
+                            net->d_error,        // B
+                            net->num_tokens,     // ldb
+                            &beta,
+                            net->d_grad_after_token, // C
+                            net->model_dim));    // ldc
 
-    // Gradient for token_fc2
-    CHECK_CUBLAS(cublasSgemm(net->cublas_handle, CUBLAS_OP_N, CUBLAS_OP_T,
-        net->mlp_dim, net->num_tokens, net->batch_size * net->num_tokens,
-        &alpha, net->d_token_mid, net->mlp_dim,
-        net->d_grad_after_token, net->num_tokens,
-        &beta, net->d_token_fc2_grad, net->mlp_dim));
-
-    // Backward through Swish in token mixing
-    int size = net->batch_size * net->num_tokens * net->mlp_dim;
+    // Apply Swish derivative for token mixing
     int block_size = 256;
-    int num_blocks = (size + block_size - 1) / block_size;
+    int num_blocks = (net->batch_size * net->num_tokens + block_size - 1) / block_size;
     swish_backward_kernel<<<num_blocks, block_size>>>(
-        net->d_grad_token_mid,
-        net->d_token_mid,
-        net->d_grad_token_mid,
-        size);
+        net->d_grad_after_token,
+        net->d_after_token,
+        net->d_grad_after_token,
+        net->batch_size * net->num_tokens
+    );
 
-    // Backward through token mixing (first layer)
-    CHECK_CUBLAS(cublasSgemm(net->cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N,
-        net->num_tokens, net->batch_size * net->num_tokens, net->mlp_dim,
-        &alpha, net->d_token_fc1, net->mlp_dim,
-        net->d_grad_token_mid, net->mlp_dim,
-        &beta, net->d_grad_after_channel, net->num_tokens));
+    // Gradient of token mixing layer
+    CHECK_CUBLAS(cublasSgemm(net->cublas_handle,
+                            CUBLAS_OP_N,
+                            CUBLAS_OP_T,
+                            net->num_tokens,     // n
+                            net->num_tokens,     // m
+                            net->batch_size,     // k
+                            &alpha,
+                            net->d_grad_after_token, // A
+                            net->num_tokens,     // lda
+                            net->d_after_channel,// B
+                            net->num_tokens,     // ldb
+                            &beta,
+                            net->d_token_fc_grad,// C
+                            net->num_tokens));   // ldc
 
-    // Gradient for token_fc1
-    CHECK_CUBLAS(cublasSgemm(net->cublas_handle, CUBLAS_OP_N, CUBLAS_OP_T,
-        net->num_tokens, net->mlp_dim, net->batch_size * net->num_tokens,
-        &alpha, net->d_after_channel, net->num_tokens,
-        net->d_grad_token_mid, net->mlp_dim,
-        &beta, net->d_token_fc1_grad, net->num_tokens));
+    // Backpropagate error through token mixing
+    CHECK_CUBLAS(cublasSgemm(net->cublas_handle,
+                            CUBLAS_OP_T,
+                            CUBLAS_OP_N,
+                            net->model_dim,      // n
+                            net->batch_size,     // m
+                            net->num_tokens,     // k
+                            &alpha,
+                            net->d_token_fc,     // A
+                            net->num_tokens,     // lda
+                            net->d_grad_after_token, // B
+                            net->num_tokens,     // ldb
+                            &beta,
+                            net->d_grad_after_channel, // C
+                            net->model_dim));    // ldc
 
-    // Backward through channel mixing (second layer)
-    CHECK_CUBLAS(cublasSgemm(net->cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N,
-        net->mlp_dim, net->batch_size * net->num_tokens, net->model_dim,
-        &alpha, net->d_channel_fc2, net->model_dim,
-        net->d_grad_after_channel, net->model_dim,
-        &beta, net->d_grad_channel_mid, net->mlp_dim));
-
-    // Gradient for channel_fc2
-    CHECK_CUBLAS(cublasSgemm(net->cublas_handle, CUBLAS_OP_N, CUBLAS_OP_T,
-        net->mlp_dim, net->model_dim, net->batch_size * net->num_tokens,
-        &alpha, net->d_channel_mid, net->mlp_dim,
-        net->d_grad_after_channel, net->model_dim,
-        &beta, net->d_channel_fc2_grad, net->mlp_dim));
-
-    // Backward through Swish in channel mixing
+    // Apply Swish derivative for channel mixing
+    num_blocks = (net->batch_size * net->model_dim + block_size - 1) / block_size;
     swish_backward_kernel<<<num_blocks, block_size>>>(
-        net->d_grad_channel_mid,
-        net->d_channel_mid,
-        net->d_grad_channel_mid,
-        size);
+        net->d_grad_after_channel,
+        net->d_after_channel,
+        net->d_grad_after_channel,
+        net->batch_size * net->model_dim
+    );
 
-    // Backward through channel mixing (first layer)
-    CHECK_CUBLAS(cublasSgemm(net->cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N,
-        net->model_dim, net->batch_size * net->num_tokens, net->mlp_dim,
-        &alpha, net->d_channel_fc1, net->mlp_dim,
-        net->d_grad_channel_mid, net->mlp_dim,
-        &beta, net->d_grad_embedded, net->model_dim));
+    // Gradient of channel mixing layer
+    CHECK_CUBLAS(cublasSgemm(net->cublas_handle,
+                            CUBLAS_OP_N,
+                            CUBLAS_OP_T,
+                            net->model_dim,      // n
+                            net->model_dim,      // m
+                            net->batch_size,     // k
+                            &alpha,
+                            net->d_grad_after_channel, // A
+                            net->model_dim,      // lda
+                            net->d_embedded,     // B
+                            net->model_dim,      // ldb
+                            &beta,
+                            net->d_channel_fc_grad, // C
+                            net->model_dim));    // ldc
 
-    // Gradient for channel_fc1
-    CHECK_CUBLAS(cublasSgemm(net->cublas_handle, CUBLAS_OP_N, CUBLAS_OP_T,
-        net->model_dim, net->mlp_dim, net->batch_size * net->num_tokens,
-        &alpha, net->d_embedded, net->model_dim,
-        net->d_grad_channel_mid, net->mlp_dim,
-        &beta, net->d_channel_fc1_grad, net->model_dim));
+    // Backpropagate error through channel mixing
+    CHECK_CUBLAS(cublasSgemm(net->cublas_handle,
+                            CUBLAS_OP_T,
+                            CUBLAS_OP_N,
+                            net->model_dim,      // n
+                            net->batch_size,     // m
+                            net->model_dim,      // k
+                            &alpha,
+                            net->d_channel_fc,   // A
+                            net->model_dim,      // lda
+                            net->d_grad_after_channel, // B
+                            net->model_dim,      // ldb
+                            &beta,
+                            net->d_grad_embedded,// C
+                            net->model_dim));    // ldc
 
-    // Gradient for token embedding
-    CHECK_CUBLAS(cublasSgemm(net->cublas_handle, CUBLAS_OP_N, CUBLAS_OP_T,
-        net->num_tokens, net->model_dim, net->batch_size * net->num_tokens,
-        &alpha, net->d_X_device, net->num_tokens,
-        net->d_grad_embedded, net->model_dim,
-        &beta, net->d_token_embed_grad, net->num_tokens));
+    // Gradient of token embedding
+    CHECK_CUBLAS(cublasSgemm(net->cublas_handle,
+                            CUBLAS_OP_N,
+                            CUBLAS_OP_T,
+                            net->num_tokens,     // n
+                            net->model_dim,      // m
+                            net->batch_size,     // k
+                            &alpha,
+                            d_X,                 // A
+                            net->num_tokens,     // lda
+                            net->d_grad_embedded,// B
+                            net->model_dim,      // ldb
+                            &beta,
+                            net->d_token_embed_grad, // C
+                            net->num_tokens));   // ldc
+
+    // Cleanup
+    cudaFree(d_X);
 }
 
 // CUDA kernel for AdamW update
@@ -587,110 +582,54 @@ void update_weights(Net* net, float learning_rate) {
     
     // Update token embedding weights
     int token_embed_size = net->num_tokens * net->model_dim;
-    int token_embed_blocks = (token_embed_size + block_size - 1) / block_size;
-    adamw_update_kernel<<<token_embed_blocks, block_size>>>(
+    int blocks = (token_embed_size + block_size - 1) / block_size;
+    adamw_update_kernel<<<blocks, block_size>>>(
         net->d_token_embed,
         net->d_token_embed_grad,
         net->d_token_embed_m,
         net->d_token_embed_v,
-        net->beta1,
-        net->beta2,
-        net->epsilon,
-        learning_rate,
-        net->weight_decay,
-        alpha_t,
-        token_embed_size,
-        net->batch_size
+        net->beta1, net->beta2, net->epsilon,
+        learning_rate, net->weight_decay, alpha_t,
+        token_embed_size, net->batch_size
     );
     
-    // Update channel mixing weights (fc1)
-    int channel_fc1_size = net->model_dim * net->mlp_dim;
-    int channel_fc1_blocks = (channel_fc1_size + block_size - 1) / block_size;
-    adamw_update_kernel<<<channel_fc1_blocks, block_size>>>(
-        net->d_channel_fc1,
-        net->d_channel_fc1_grad,
-        net->d_channel_fc1_m,
-        net->d_channel_fc1_v,
-        net->beta1,
-        net->beta2,
-        net->epsilon,
-        learning_rate,
-        net->weight_decay,
-        alpha_t,
-        channel_fc1_size,
-        net->batch_size
+    // Update channel mixing weights
+    int channel_fc_size = net->model_dim * net->model_dim;
+    blocks = (channel_fc_size + block_size - 1) / block_size;
+    adamw_update_kernel<<<blocks, block_size>>>(
+        net->d_channel_fc,
+        net->d_channel_fc_grad,
+        net->d_channel_fc_m,
+        net->d_channel_fc_v,
+        net->beta1, net->beta2, net->epsilon,
+        learning_rate, net->weight_decay, alpha_t,
+        channel_fc_size, net->batch_size
     );
     
-    // Update channel mixing weights (fc2)
-    int channel_fc2_size = net->mlp_dim * net->model_dim;
-    int channel_fc2_blocks = (channel_fc2_size + block_size - 1) / block_size;
-    adamw_update_kernel<<<channel_fc2_blocks, block_size>>>(
-        net->d_channel_fc2,
-        net->d_channel_fc2_grad,
-        net->d_channel_fc2_m,
-        net->d_channel_fc2_v,
-        net->beta1,
-        net->beta2,
-        net->epsilon,
-        learning_rate,
-        net->weight_decay,
-        alpha_t,
-        channel_fc2_size,
-        net->batch_size
-    );
-    
-    // Update token mixing weights (fc1)
-    int token_fc1_size = net->num_tokens * net->mlp_dim;
-    int token_fc1_blocks = (token_fc1_size + block_size - 1) / block_size;
-    adamw_update_kernel<<<token_fc1_blocks, block_size>>>(
-        net->d_token_fc1,
-        net->d_token_fc1_grad,
-        net->d_token_fc1_m,
-        net->d_token_fc1_v,
-        net->beta1,
-        net->beta2,
-        net->epsilon,
-        learning_rate,
-        net->weight_decay,
-        alpha_t,
-        token_fc1_size,
-        net->batch_size
-    );
-    
-    // Update token mixing weights (fc2)
-    int token_fc2_size = net->mlp_dim * net->num_tokens;
-    int token_fc2_blocks = (token_fc2_size + block_size - 1) / block_size;
-    adamw_update_kernel<<<token_fc2_blocks, block_size>>>(
-        net->d_token_fc2,
-        net->d_token_fc2_grad,
-        net->d_token_fc2_m,
-        net->d_token_fc2_v,
-        net->beta1,
-        net->beta2,
-        net->epsilon,
-        learning_rate,
-        net->weight_decay,
-        alpha_t,
-        token_fc2_size,
-        net->batch_size
+    // Update token mixing weights
+    int token_fc_size = net->num_tokens * net->num_tokens;
+    blocks = (token_fc_size + block_size - 1) / block_size;
+    adamw_update_kernel<<<blocks, block_size>>>(
+        net->d_token_fc,
+        net->d_token_fc_grad,
+        net->d_token_fc_m,
+        net->d_token_fc_v,
+        net->beta1, net->beta2, net->epsilon,
+        learning_rate, net->weight_decay, alpha_t,
+        token_fc_size, net->batch_size
     );
     
     // Update final projection weights
     int final_proj_size = net->model_dim * net->num_tokens;
-    int final_proj_blocks = (final_proj_size + block_size - 1) / block_size;
-    adamw_update_kernel<<<final_proj_blocks, block_size>>>(
+    blocks = (final_proj_size + block_size - 1) / block_size;
+    adamw_update_kernel<<<blocks, block_size>>>(
         net->d_final_proj,
         net->d_final_proj_grad,
         net->d_final_proj_m,
         net->d_final_proj_v,
-        net->beta1,
-        net->beta2,
-        net->epsilon,
-        learning_rate,
-        net->weight_decay,
-        alpha_t,
-        final_proj_size,
-        net->batch_size
+        net->beta1, net->beta2, net->epsilon,
+        learning_rate, net->weight_decay, alpha_t,
+        final_proj_size, net->batch_size
     );
 }
 
@@ -700,17 +639,11 @@ void save_model(Net* net, const char* filename) {
     CHECK_CUDA(cudaMemcpy(net->h_token_embed, net->d_token_embed,
                          net->num_tokens * net->model_dim * sizeof(float),
                          cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaMemcpy(net->h_channel_fc1, net->d_channel_fc1,
-                         net->model_dim * net->mlp_dim * sizeof(float),
+    CHECK_CUDA(cudaMemcpy(net->h_channel_fc, net->d_channel_fc,
+                         net->model_dim * net->model_dim * sizeof(float),
                          cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaMemcpy(net->h_channel_fc2, net->d_channel_fc2,
-                         net->mlp_dim * net->model_dim * sizeof(float),
-                         cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaMemcpy(net->h_token_fc1, net->d_token_fc1,
-                         net->num_tokens * net->mlp_dim * sizeof(float),
-                         cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaMemcpy(net->h_token_fc2, net->d_token_fc2,
-                         net->mlp_dim * net->num_tokens * sizeof(float),
+    CHECK_CUDA(cudaMemcpy(net->h_token_fc, net->d_token_fc,
+                         net->num_tokens * net->num_tokens * sizeof(float),
                          cudaMemcpyDeviceToHost));
     CHECK_CUDA(cudaMemcpy(net->h_final_proj, net->d_final_proj,
                          net->model_dim * net->num_tokens * sizeof(float),
@@ -722,91 +655,15 @@ void save_model(Net* net, const char* filename) {
         return;
     }
     
-    // Write model architecture
     fwrite(&net->num_tokens, sizeof(int), 1, file);
     fwrite(&net->model_dim, sizeof(int), 1, file);
-    fwrite(&net->mlp_dim, sizeof(int), 1, file);
     fwrite(&net->batch_size, sizeof(int), 1, file);
-    
-    // Write optimizer state
-    fwrite(&net->t, sizeof(int), 1, file);
-    fwrite(&net->beta1, sizeof(float), 1, file);
-    fwrite(&net->beta2, sizeof(float), 1, file);
-    fwrite(&net->epsilon, sizeof(float), 1, file);
-    fwrite(&net->weight_decay, sizeof(float), 1, file);
-    
-    // Write model weights
     fwrite(net->h_token_embed, sizeof(float), net->num_tokens * net->model_dim, file);
-    fwrite(net->h_channel_fc1, sizeof(float), net->model_dim * net->mlp_dim, file);
-    fwrite(net->h_channel_fc2, sizeof(float), net->mlp_dim * net->model_dim, file);
-    fwrite(net->h_token_fc1, sizeof(float), net->num_tokens * net->mlp_dim, file);
-    fwrite(net->h_token_fc2, sizeof(float), net->mlp_dim * net->num_tokens, file);
+    fwrite(net->h_channel_fc, sizeof(float), net->model_dim * net->model_dim, file);
+    fwrite(net->h_token_fc, sizeof(float), net->num_tokens * net->num_tokens, file);
     fwrite(net->h_final_proj, sizeof(float), net->model_dim * net->num_tokens, file);
+    fwrite(&net->t, sizeof(int), 1, file);
     
-    // Allocate temporary buffer for Adam states
-    float* h_buffer = (float*)malloc(net->model_dim * net->mlp_dim * sizeof(float));  // Largest size needed
-
-    // Save Adam states for token_embed
-    CHECK_CUDA(cudaMemcpy(h_buffer, net->d_token_embed_m,
-                         net->num_tokens * net->model_dim * sizeof(float),
-                         cudaMemcpyDeviceToHost));
-    fwrite(h_buffer, sizeof(float), net->num_tokens * net->model_dim, file);
-    CHECK_CUDA(cudaMemcpy(h_buffer, net->d_token_embed_v,
-                         net->num_tokens * net->model_dim * sizeof(float),
-                         cudaMemcpyDeviceToHost));
-    fwrite(h_buffer, sizeof(float), net->num_tokens * net->model_dim, file);
-
-    // Save Adam states for channel_fc1
-    CHECK_CUDA(cudaMemcpy(h_buffer, net->d_channel_fc1_m,
-                         net->model_dim * net->mlp_dim * sizeof(float),
-                         cudaMemcpyDeviceToHost));
-    fwrite(h_buffer, sizeof(float), net->model_dim * net->mlp_dim, file);
-    CHECK_CUDA(cudaMemcpy(h_buffer, net->d_channel_fc1_v,
-                         net->model_dim * net->mlp_dim * sizeof(float),
-                         cudaMemcpyDeviceToHost));
-    fwrite(h_buffer, sizeof(float), net->model_dim * net->mlp_dim, file);
-
-    // Save Adam states for channel_fc2
-    CHECK_CUDA(cudaMemcpy(h_buffer, net->d_channel_fc2_m,
-                         net->mlp_dim * net->model_dim * sizeof(float),
-                         cudaMemcpyDeviceToHost));
-    fwrite(h_buffer, sizeof(float), net->mlp_dim * net->model_dim, file);
-    CHECK_CUDA(cudaMemcpy(h_buffer, net->d_channel_fc2_v,
-                         net->mlp_dim * net->model_dim * sizeof(float),
-                         cudaMemcpyDeviceToHost));
-    fwrite(h_buffer, sizeof(float), net->mlp_dim * net->model_dim, file);
-
-    // Save Adam states for token_fc1
-    CHECK_CUDA(cudaMemcpy(h_buffer, net->d_token_fc1_m,
-                         net->num_tokens * net->mlp_dim * sizeof(float),
-                         cudaMemcpyDeviceToHost));
-    fwrite(h_buffer, sizeof(float), net->num_tokens * net->mlp_dim, file);
-    CHECK_CUDA(cudaMemcpy(h_buffer, net->d_token_fc1_v,
-                         net->num_tokens * net->mlp_dim * sizeof(float),
-                         cudaMemcpyDeviceToHost));
-    fwrite(h_buffer, sizeof(float), net->num_tokens * net->mlp_dim, file);
-
-    // Save Adam states for token_fc2
-    CHECK_CUDA(cudaMemcpy(h_buffer, net->d_token_fc2_m,
-                         net->mlp_dim * net->num_tokens * sizeof(float),
-                         cudaMemcpyDeviceToHost));
-    fwrite(h_buffer, sizeof(float), net->mlp_dim * net->num_tokens, file);
-    CHECK_CUDA(cudaMemcpy(h_buffer, net->d_token_fc2_v,
-                         net->mlp_dim * net->num_tokens * sizeof(float),
-                         cudaMemcpyDeviceToHost));
-    fwrite(h_buffer, sizeof(float), net->mlp_dim * net->num_tokens, file);
-
-    // Save Adam states for final_proj
-    CHECK_CUDA(cudaMemcpy(h_buffer, net->d_final_proj_m,
-                         net->model_dim * net->num_tokens * sizeof(float),
-                         cudaMemcpyDeviceToHost));
-    fwrite(h_buffer, sizeof(float), net->model_dim * net->num_tokens, file);
-    CHECK_CUDA(cudaMemcpy(h_buffer, net->d_final_proj_v,
-                         net->model_dim * net->num_tokens * sizeof(float),
-                         cudaMemcpyDeviceToHost));
-    fwrite(h_buffer, sizeof(float), net->model_dim * net->num_tokens, file);
-    
-    free(h_buffer);
     fclose(file);
     printf("Model saved to %s\n", filename);
 }
@@ -819,115 +676,33 @@ Net* load_model(const char* filename) {
         return NULL;
     }
     
-    // Read model architecture
-    int num_tokens, model_dim, mlp_dim, batch_size;
+    int num_tokens, model_dim, batch_size;
     fread(&num_tokens, sizeof(int), 1, file);
     fread(&model_dim, sizeof(int), 1, file);
-    fread(&mlp_dim, sizeof(int), 1, file);
     fread(&batch_size, sizeof(int), 1, file);
     
-    // Initialize network with loaded dimensions
-    Net* net = init_net(num_tokens, model_dim, mlp_dim, batch_size);
+    Net* net = init_net(num_tokens, model_dim, batch_size);
     
-    // Read optimizer state
-    fread(&net->t, sizeof(int), 1, file);
-    fread(&net->beta1, sizeof(float), 1, file);
-    fread(&net->beta2, sizeof(float), 1, file);
-    fread(&net->epsilon, sizeof(float), 1, file);
-    fread(&net->weight_decay, sizeof(float), 1, file);
-    
-    // Read weights
     fread(net->h_token_embed, sizeof(float), num_tokens * model_dim, file);
-    fread(net->h_channel_fc1, sizeof(float), model_dim * mlp_dim, file);
-    fread(net->h_channel_fc2, sizeof(float), mlp_dim * model_dim, file);
-    fread(net->h_token_fc1, sizeof(float), num_tokens * mlp_dim, file);
-    fread(net->h_token_fc2, sizeof(float), mlp_dim * num_tokens, file);
+    fread(net->h_channel_fc, sizeof(float), model_dim * model_dim, file);
+    fread(net->h_token_fc, sizeof(float), num_tokens * num_tokens, file);
     fread(net->h_final_proj, sizeof(float), model_dim * num_tokens, file);
-    
-    // Allocate temporary buffer for Adam states
-    float* h_buffer = (float*)malloc(model_dim * mlp_dim * sizeof(float));  // Largest size needed
-
-    // Load Adam states for token_embed
-    fread(h_buffer, sizeof(float), num_tokens * model_dim, file);
-    CHECK_CUDA(cudaMemcpy(net->d_token_embed_m, h_buffer,
-                         num_tokens * model_dim * sizeof(float),
-                         cudaMemcpyHostToDevice));
-    fread(h_buffer, sizeof(float), num_tokens * model_dim, file);
-    CHECK_CUDA(cudaMemcpy(net->d_token_embed_v, h_buffer,
-                         num_tokens * model_dim * sizeof(float),
-                         cudaMemcpyHostToDevice));
-
-    // Load Adam states for channel_fc1
-    fread(h_buffer, sizeof(float), model_dim * mlp_dim, file);
-    CHECK_CUDA(cudaMemcpy(net->d_channel_fc1_m, h_buffer,
-                         model_dim * mlp_dim * sizeof(float),
-                         cudaMemcpyHostToDevice));
-    fread(h_buffer, sizeof(float), model_dim * mlp_dim, file);
-    CHECK_CUDA(cudaMemcpy(net->d_channel_fc1_v, h_buffer,
-                         model_dim * mlp_dim * sizeof(float),
-                         cudaMemcpyHostToDevice));
-
-    // Load Adam states for channel_fc2
-    fread(h_buffer, sizeof(float), mlp_dim * model_dim, file);
-    CHECK_CUDA(cudaMemcpy(net->d_channel_fc2_m, h_buffer,
-                         mlp_dim * model_dim * sizeof(float),
-                         cudaMemcpyHostToDevice));
-    fread(h_buffer, sizeof(float), mlp_dim * model_dim, file);
-    CHECK_CUDA(cudaMemcpy(net->d_channel_fc2_v, h_buffer,
-                         mlp_dim * model_dim * sizeof(float),
-                         cudaMemcpyHostToDevice));
-
-    // Load Adam states for token_fc1
-    fread(h_buffer, sizeof(float), num_tokens * mlp_dim, file);
-    CHECK_CUDA(cudaMemcpy(net->d_token_fc1_m, h_buffer,
-                         num_tokens * mlp_dim * sizeof(float),
-                         cudaMemcpyHostToDevice));
-    fread(h_buffer, sizeof(float), num_tokens * mlp_dim, file);
-    CHECK_CUDA(cudaMemcpy(net->d_token_fc1_v, h_buffer,
-                         num_tokens * mlp_dim * sizeof(float),
-                         cudaMemcpyHostToDevice));
-
-    // Load Adam states for token_fc2
-    fread(h_buffer, sizeof(float), mlp_dim * num_tokens, file);
-    CHECK_CUDA(cudaMemcpy(net->d_token_fc2_m, h_buffer,
-                         mlp_dim * num_tokens * sizeof(float),
-                         cudaMemcpyHostToDevice));
-    fread(h_buffer, sizeof(float), mlp_dim * num_tokens, file);
-    CHECK_CUDA(cudaMemcpy(net->d_token_fc2_v, h_buffer,
-                         mlp_dim * num_tokens * sizeof(float),
-                         cudaMemcpyHostToDevice));
-
-    // Load Adam states for final_proj
-    fread(h_buffer, sizeof(float), model_dim * num_tokens, file);
-    CHECK_CUDA(cudaMemcpy(net->d_final_proj_m, h_buffer,
-                         model_dim * num_tokens * sizeof(float),
-                         cudaMemcpyHostToDevice));
-    fread(h_buffer, sizeof(float), model_dim * num_tokens, file);
-    CHECK_CUDA(cudaMemcpy(net->d_final_proj_v, h_buffer,
-                         model_dim * num_tokens * sizeof(float),
-                         cudaMemcpyHostToDevice));
+    fread(&net->t, sizeof(int), 1, file);
     
     // Copy weights to device
     CHECK_CUDA(cudaMemcpy(net->d_token_embed, net->h_token_embed,
                          num_tokens * model_dim * sizeof(float),
                          cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(net->d_channel_fc1, net->h_channel_fc1,
-                         model_dim * mlp_dim * sizeof(float),
+    CHECK_CUDA(cudaMemcpy(net->d_channel_fc, net->h_channel_fc,
+                         model_dim * model_dim * sizeof(float),
                          cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(net->d_channel_fc2, net->h_channel_fc2,
-                         mlp_dim * model_dim * sizeof(float),
-                         cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(net->d_token_fc1, net->h_token_fc1,
-                         num_tokens * mlp_dim * sizeof(float),
-                         cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(net->d_token_fc2, net->h_token_fc2,
-                         mlp_dim * num_tokens * sizeof(float),
+    CHECK_CUDA(cudaMemcpy(net->d_token_fc, net->h_token_fc,
+                         num_tokens * num_tokens * sizeof(float),
                          cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(net->d_final_proj, net->h_final_proj,
                          model_dim * num_tokens * sizeof(float),
                          cudaMemcpyHostToDevice));
     
-    free(h_buffer);
     fclose(file);
     printf("Model loaded from %s\n", filename);
     

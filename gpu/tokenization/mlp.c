@@ -11,7 +11,6 @@ int main() {
     // Parameters
     const int num_tokens = 16;        // Previously input_dim/output_dim (each value is treated as a token)
     const int model_dim = 128;        // Dimension each token gets embedded to (like hidden_dim, but typically smaller)
-    const int mlp_dim = 256;         // Expansion dimension for the mixing MLPs (typically 2-4x model_dim)
     const int num_samples = 1024;     // Number of training samples
     const int batch_size = num_samples; // Full batch training
 
@@ -20,7 +19,7 @@ int main() {
     generate_synthetic_data(&X, &y, num_samples, num_tokens, num_tokens);
 
     // Initialize network with new architecture
-    Net* net = init_net(num_tokens, model_dim, mlp_dim, batch_size);
+    Net* net = init_net(num_tokens, model_dim, batch_size);
 
     // Training parameters
     const int num_epochs = 10000;
