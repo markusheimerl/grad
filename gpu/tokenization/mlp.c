@@ -11,7 +11,7 @@ int main() {
     // Parameters
     const int input_dim = 16;
     const int hidden_dim = 1024;
-    const int output_dim = 4;
+    const int output_dim = 16;
     const int num_samples = 1024;
     const int batch_size = num_samples; // Full batch training
     
