@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
-#include "../../data.h"
+#include "../../../data.h"
 #include "mlp.h"
 
 int main() {
@@ -22,10 +22,11 @@ int main() {
     int hidden_dims[] = {1024, 512, 256}; // Example with 3 hidden layers
     int depth = 3;
     Net* net = init_net(input_dim, hidden_dims, depth, output_dim, batch_size);
+    net->weight_decay = 0.001f;
     
     // Training parameters
     const int num_epochs = 10000;
-    const float learning_rate = 0.001f;
+    const float learning_rate = 1e-4f;
     
     // Training loop
     for (int epoch = 0; epoch < num_epochs; epoch++) {
