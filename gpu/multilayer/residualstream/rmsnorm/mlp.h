@@ -216,7 +216,66 @@ __global__ void add_residual_connection(float* output, float* residual, int size
     }
 }
 
-// Forward pass with residual connections
+// CUDA kernel for RMS normalization
+__global__ void rms_norm_kernel(float* output, const float* input, int features, int batch_size) {
+    int batch_idx = blockIdx.x;
+    
+    if (batch_idx < batch_size) {
+        // Calculate RMS for this sample
+        float sum_squared = 0.0f;
+        for (int i = 0; i < features; i++) {
+            float val = input[batch_idx * features + i];
+            sum_squared += val * val;
+        }
+        float rms = sqrtf(sum_squared / features + 1e-6f);
+        
+        // Normalize
+        for (int i = threadIdx.x; i < features; i += blockDim.x) {
+            output[batch_idx * features + i] = input[batch_idx * features + i] / rms;
+        }
+    }
+}
+
+// CUDA kernel for RMS normalization backward pass
+__global__ void rms_norm_backward_kernel(
+    float* input_grad,
+    const float* output_grad,
+    const float* input,
+    int features,
+    int batch_size
+) {
+    int batch_idx = blockIdx.x;
+    
+    if (batch_idx < batch_size) {
+        // Recalculate RMS
+        float sum_squared = 0.0f;
+        for (int i = 0; i < features; i++) {
+            float val = input[batch_idx * features + i];
+            sum_squared += val * val;
+        }
+        float rms = sqrtf(sum_squared / features + 1e-6f);
+        float rms_squared = rms * rms;
+        
+        // Calculate intermediate values
+        float sum_grad_times_input = 0.0f;
+        for (int i = 0; i < features; i++) {
+            sum_grad_times_input += output_grad[batch_idx * features + i] * 
+                                  input[batch_idx * features + i];
+        }
+        
+        // Calculate gradients
+        for (int i = threadIdx.x; i < features; i += blockDim.x) {
+            int idx = batch_idx * features + i;
+            float x_i = input[idx];
+            float grad_i = output_grad[idx];
+            
+            input_grad[idx] = (grad_i * rms - x_i * sum_grad_times_input / features) / 
+                             rms_squared;
+        }
+    }
+}
+
+// Forward pass with residual connections and pre-norm RMS normalization
 void forward_pass(Net* net, float* X) {
     // Copy input to first layer output
     CHECK_CUDA(cudaMemcpy(net->d_layer_outputs[0], X,
@@ -231,7 +290,23 @@ void forward_pass(Net* net, float* X) {
         int in_dim = net->layer_dims[i];
         int out_dim = net->layer_dims[i + 1];
 
-        // Matrix multiplication
+        float* current_input;
+        
+        // Apply RMS pre-normalization for hidden layers
+        if (i < net->depth) {
+            // Normalize the input before the linear transformation
+            rms_norm_kernel<<<net->batch_size, 256>>>(
+                net->d_pre_activations[i],  // Store normalized values here
+                net->d_layer_outputs[i],    // Input to normalize
+                in_dim,
+                net->batch_size
+            );
+            current_input = net->d_pre_activations[i];
+        } else {
+            current_input = net->d_layer_outputs[i];
+        }
+
+        // Matrix multiplication with normalized input
         CHECK_CUBLAS(cublasSgemm(net->cublas_handle,
                                 CUBLAS_OP_N,
                                 CUBLAS_OP_N,
@@ -241,7 +316,7 @@ void forward_pass(Net* net, float* X) {
                                 &alpha,
                                 net->d_weights[i], // A
                                 out_dim,           // lda
-                                net->d_layer_outputs[i], // B
+                                current_input,     // B (normalized input)
                                 in_dim,            // ldb
                                 &beta,
                                 net->d_layer_outputs[i + 1], // C
@@ -257,6 +332,8 @@ void forward_pass(Net* net, float* X) {
 
             int block_size = 256;
             int num_blocks = (net->batch_size * out_dim + block_size - 1) / block_size;
+            
+            // Apply Swish activation
             swish_forward_kernel<<<num_blocks, block_size>>>(
                 net->d_layer_outputs[i + 1],
                 net->d_pre_activations[i],
@@ -337,7 +414,9 @@ void backward_pass(Net* net, float* X) {
         int out_dim = net->layer_dims[i + 1];
         int in_dim = net->layer_dims[i];
 
-        // Calculate weight gradients
+        // Calculate weight gradients using normalized inputs
+        float* input_for_grad = (i < net->depth) ? net->d_pre_activations[i] : net->d_layer_outputs[i];
+        
         CHECK_CUBLAS(cublasSgemm(net->cublas_handle,
                                 CUBLAS_OP_N,
                                 CUBLAS_OP_T,
@@ -347,7 +426,7 @@ void backward_pass(Net* net, float* X) {
                                 &alpha,
                                 net->d_errors[i],  // A
                                 out_dim,           // lda
-                                net->d_layer_outputs[i], // B
+                                input_for_grad,    // B (normalized input)
                                 in_dim,            // ldb
                                 &beta,
                                 net->d_weight_grads[i], // C
@@ -355,6 +434,7 @@ void backward_pass(Net* net, float* X) {
 
         // Propagate error backward (except for input layer)
         if(i > 0) {
+            // First propagate through the linear layer
             CHECK_CUBLAS(cublasSgemm(net->cublas_handle,
                                     CUBLAS_OP_T,
                                     CUBLAS_OP_N,
@@ -369,6 +449,15 @@ void backward_pass(Net* net, float* X) {
                                     &beta,
                                     net->d_errors[i-1],// C
                                     in_dim));          // ldc
+
+            // Then propagate through RMS normalization
+            rms_norm_backward_kernel<<<net->batch_size, 256>>>(
+                net->d_errors[i-1],
+                net->d_errors[i-1],
+                net->d_layer_outputs[i-1],
+                in_dim,
+                net->batch_size
+            );
 
             // Apply Swish derivative
             int block_size = 256;
