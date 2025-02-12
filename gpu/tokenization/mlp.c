@@ -9,21 +9,22 @@ int main() {
     srand(time(NULL));
 
     // Parameters
-    const int num_tokens = 16;        // Previously input_dim/output_dim (each value is treated as a token)
-    const int model_dim = 128;        // Dimension each token gets embedded to (like hidden_dim, but typically smaller)
-    const int num_samples = 1024;     // Number of training samples
+    const int input_dim = 16;
+    const int hidden_dim = 1024;
+    const int output_dim = 4;
+    const int num_samples = 1024;
     const int batch_size = num_samples; // Full batch training
-
+    
     // Generate synthetic data
     float *X, *y;
-    generate_synthetic_data(&X, &y, num_samples, num_tokens, num_tokens);
-
-    // Initialize network with new architecture
-    Net* net = init_net(num_tokens, model_dim, batch_size);
-
+    generate_synthetic_data(&X, &y, num_samples, input_dim, output_dim);
+    
+    // Initialize network
+    Net* net = init_net(input_dim, hidden_dim, output_dim, batch_size);
+    
     // Training parameters
     const int num_epochs = 10000;
-    const float learning_rate = 1e-4f;
+    const float learning_rate = 0.001f;
     
     // Training loop
     for (int epoch = 0; epoch < num_epochs; epoch++) {
@@ -56,8 +57,7 @@ int main() {
 
     // Save model and data with timestamped filenames
     save_model(net, model_fname);
-    free_net(net);
-    save_data_to_csv(X, y, num_samples, num_tokens, num_tokens, data_fname);
+    save_data_to_csv(X, y, num_samples, input_dim, output_dim, data_fname);
     
     // Load the model back and verify
     printf("\nVerifying saved model...\n");
@@ -66,14 +66,14 @@ int main() {
     net = load_model(model_fname);
     
     // Allocate host memory for predictions
-    float* h_predictions = (float*)malloc(num_samples * num_tokens * sizeof(float));
+    float* h_predictions = (float*)malloc(num_samples * output_dim * sizeof(float));
 
     // Forward pass with loaded model
     forward_pass(net, X);
     
     // Copy predictions from device to host
     CHECK_CUDA(cudaMemcpy(h_predictions, net->d_predictions, 
-                         num_samples * num_tokens * sizeof(float),
+                         num_samples * output_dim * sizeof(float),
                          cudaMemcpyDeviceToHost));
     
     // Calculate and print loss with loaded model
@@ -84,18 +84,18 @@ int main() {
 
     // Calculate R² scores
     printf("\nR² scores:\n");
-    for (int i = 0; i < num_tokens; i++) {
+    for (int i = 0; i < output_dim; i++) {
         float y_mean = 0.0f;
         for (int j = 0; j < num_samples; j++) {
-            y_mean += y[j * num_tokens + i];
+            y_mean += y[j * output_dim + i];
         }
         y_mean /= num_samples;
 
         float ss_res = 0.0f;
         float ss_tot = 0.0f;
         for (int j = 0; j < num_samples; j++) {
-            float diff_res = y[j * num_tokens + i] - h_predictions[j * num_tokens + i];
-            float diff_tot = y[j * num_tokens + i] - y_mean;
+            float diff_res = y[j * output_dim + i] - h_predictions[j * output_dim + i];
+            float diff_tot = y[j * output_dim + i] - y_mean;
             ss_res += diff_res * diff_res;
             ss_tot += diff_tot * diff_tot;
         }
@@ -108,11 +108,11 @@ int main() {
     printf("Output\t\tPredicted\tActual\t\tDifference\n");
     printf("------------------------------------------------------------\n");
 
-    for (int i = 0; i < num_tokens; i++) {
+    for (int i = 0; i < output_dim; i++) {
         printf("\ny%d:\n", i);
         for (int j = 0; j < 15; j++) {
-            float pred = h_predictions[j * num_tokens + i];
-            float actual = y[j * num_tokens + i];
+            float pred = h_predictions[j * output_dim + i];
+            float actual = y[j * output_dim + i];
             float diff = pred - actual;
             printf("Sample %d:\t%8.3f\t%8.3f\t%8.3f\n", j, pred, actual, diff);
         }
@@ -120,7 +120,7 @@ int main() {
         // Calculate MAE for this output
         float mae = 0.0f;
         for (int j = 0; j < num_samples; j++) {
-            mae += fabs(h_predictions[j * num_tokens + i] - y[j * num_tokens + i]);
+            mae += fabs(h_predictions[j * output_dim + i] - y[j * output_dim + i]);
         }
         mae /= num_samples;
         printf("Mean Absolute Error for y%d: %.3f\n", i, mae);
