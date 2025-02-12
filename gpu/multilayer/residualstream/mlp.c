@@ -22,7 +22,6 @@ int main() {
     int hidden_dims[] = {1024, 512, 256}; // Example with 3 hidden layers
     int depth = 3;
     Net* net = init_net(input_dim, hidden_dims, depth, output_dim, batch_size);
-    net->weight_decay = 0.001f;
     
     // Training parameters
     const int num_epochs = 10000;
