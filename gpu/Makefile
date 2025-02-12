@@ -1,5 +1,5 @@
 CC = clang
-CFLAGS = -O3 -march=native -ffast-math
+CFLAGS = -O3 -march=native -ffast-math -Wall -Wextra
 LDFLAGS = -lm -flto
 CUDAFLAGS = --cuda-gpu-arch=sm_86 \
     -x cuda \
