@@ -19,9 +19,9 @@ int main() {
     generate_synthetic_data(&X, &y, num_samples, input_dim, output_dim);
     
     // Initialize network
-    int hidden_dims[] = {1024, 512, 256}; // Example with 3 hidden layers
-    int depth = 3;
-    Net* net = init_net(input_dim, hidden_dims, depth, output_dim, batch_size);
+    int hidden_dim = 512;
+    int depth = 8;
+    Net* net = init_net(input_dim, hidden_dim, depth, output_dim, batch_size);
     
     // Training parameters
     const int num_epochs = 10000;

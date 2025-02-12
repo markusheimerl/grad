@@ -62,7 +62,7 @@ typedef struct {
 } Net;
 
 // Initialize the network with configurable dimensions
-Net* init_net(int input_dim, int* hidden_dims, int depth, int output_dim, int batch_size) {
+Net* init_net(int input_dim, int hidden_dim, int depth, int output_dim, int batch_size) {
     Net* net = (Net*)malloc(sizeof(Net));
     
     // Store dimensions
@@ -75,7 +75,7 @@ Net* init_net(int input_dim, int* hidden_dims, int depth, int output_dim, int ba
     net->layer_dims = (int*)malloc((depth + 2) * sizeof(int));
     net->layer_dims[0] = input_dim;
     for(int i = 0; i < depth; i++) {
-        net->layer_dims[i + 1] = hidden_dims[i];
+        net->layer_dims[i + 1] = hidden_dim;
     }
     net->layer_dims[depth + 1] = output_dim;
     
@@ -89,7 +89,7 @@ Net* init_net(int input_dim, int* hidden_dims, int depth, int output_dim, int ba
     // Initialize cuBLAS
     CHECK_CUBLAS(cublasCreate(&net->cublas_handle));
 
-        // Allocate arrays of pointers
+    // Allocate arrays of pointers
     net->d_weights = (float**)malloc((depth + 1) * sizeof(float*));
     net->d_weight_grads = (float**)malloc((depth + 1) * sizeof(float*));
     net->h_weights = (float**)malloc((depth + 1) * sizeof(float*));
@@ -208,7 +208,15 @@ __global__ void swish_backward_kernel(float* error_hidden, float* pre_activation
     }
 }
 
-// Forward pass
+// CUDA kernel for residual connection
+__global__ void add_residual_connection(float* output, float* residual, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        output[idx] += residual[idx];
+    }
+}
+
+// Forward pass with residual connections
 void forward_pass(Net* net, float* X) {
     // Copy input to first layer output
     CHECK_CUDA(cudaMemcpy(net->d_layer_outputs[0], X,
@@ -239,7 +247,7 @@ void forward_pass(Net* net, float* X) {
                                 net->d_layer_outputs[i + 1], // C
                                 out_dim));         // ldc
 
-        // Apply Swish activation for hidden layers (not output layer)
+        // Apply Swish activation and residual connection for hidden layers
         if(i < net->depth) {
             // Store pre-activation values
             CHECK_CUDA(cudaMemcpy(net->d_pre_activations[i],
@@ -254,6 +262,15 @@ void forward_pass(Net* net, float* X) {
                 net->d_pre_activations[i],
                 net->batch_size * out_dim
             );
+
+            // Add residual connection if dimensions match
+            if (in_dim == out_dim) {
+                add_residual_connection<<<num_blocks, block_size>>>(
+                    net->d_layer_outputs[i + 1],
+                    net->d_layer_outputs[i],
+                    net->batch_size * out_dim
+                );
+            }
         }
     }
 }
@@ -361,6 +378,15 @@ void backward_pass(Net* net, float* X) {
                 net->d_pre_activations[i-1],
                 net->batch_size * in_dim
             );
+
+            // Add residual gradient if dimensions match
+            if (in_dim == out_dim) {
+                add_residual_connection<<<num_blocks, block_size>>>(
+                    net->d_errors[i-1],
+                    net->d_errors[i],
+                    net->batch_size * in_dim
+                );
+            }
         }
     }
 }
@@ -440,10 +466,8 @@ void save_model(Net* net, const char* filename) {
     fwrite(&net->output_dim, sizeof(int), 1, file);
     fwrite(&net->batch_size, sizeof(int), 1, file);
     
-    // Save hidden layer dimensions
-    for(int i = 1; i <= net->depth; i++) {
-        fwrite(&net->layer_dims[i], sizeof(int), 1, file);
-    }
+    int hidden_dim = net->layer_dims[1];
+    fwrite(&hidden_dim, sizeof(int), 1, file);
     
     // Copy weights from device to host and save
     for(int i = 0; i <= net->depth; i++) {
@@ -473,20 +497,15 @@ Net* load_model(const char* filename) {
     }
     
     // Load network architecture
-    int input_dim, depth, output_dim, batch_size;
+    int input_dim, depth, output_dim, batch_size, hidden_dim;
     fread(&input_dim, sizeof(int), 1, file);
     fread(&depth, sizeof(int), 1, file);
     fread(&output_dim, sizeof(int), 1, file);
     fread(&batch_size, sizeof(int), 1, file);
-    
-    // Load hidden layer dimensions
-    int* hidden_dims = (int*)malloc(depth * sizeof(int));
-    for(int i = 0; i < depth; i++) {
-        fread(&hidden_dims[i], sizeof(int), 1, file);
-    }
+    fread(&hidden_dim, sizeof(int), 1, file);
     
     // Initialize network
-    Net* net = init_net(input_dim, hidden_dims, depth, output_dim, batch_size);
+    Net* net = init_net(input_dim, hidden_dim, depth, output_dim, batch_size);
     
     // Load weights
     for(int i = 0; i <= depth; i++) {
@@ -504,7 +523,6 @@ Net* load_model(const char* filename) {
     // Load optimizer state
     fread(&net->t, sizeof(int), 1, file);
     
-    free(hidden_dims);
     fclose(file);
     printf("Model loaded from %s\n", filename);
     
