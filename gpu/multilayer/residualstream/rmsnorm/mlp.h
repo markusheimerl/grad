@@ -216,57 +216,7 @@ __global__ void add_residual_connection(float* output, float* residual, int size
     }
 }
 
-// CUDA kernel for RMS normalization
-__global__ void rms_norm_kernel(float* output, float* input, int batch_size, int dim, float eps) {
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= batch_size) return;
-
-    // Calculate RMS for this sample
-    float sum_squared = 0.0f;
-    for (int i = 0; i < dim; i++) {
-        float val = input[tid * dim + i];
-        sum_squared += val * val;
-    }
-    float rms = sqrtf(sum_squared / dim + eps);
-
-    // Normalize the values
-    for (int i = 0; i < dim; i++) {
-        output[tid * dim + i] = input[tid * dim + i] / rms;
-    }
-}
-
-// CUDA kernel for RMS normalization backward pass
-__global__ void rms_norm_backward_kernel(float* grad_output, float* grad_input, 
-                                       float* original_input, int batch_size, int dim, float eps) {
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= batch_size) return;
-
-    // Calculate RMS for this sample
-    float sum_squared = 0.0f;
-    for (int i = 0; i < dim; i++) {
-        float val = original_input[tid * dim + i];
-        sum_squared += val * val;
-    }
-    float rms = sqrtf(sum_squared / dim + eps);
-    float rms_cubed = rms * rms * rms;
-
-    // Calculate sum of (x_i * grad_i) for this sample
-    float sum_grad_times_input = 0.0f;
-    for (int i = 0; i < dim; i++) {
-        sum_grad_times_input += original_input[tid * dim + i] * grad_output[tid * dim + i];
-    }
-
-    // Calculate gradient
-    for (int i = 0; i < dim; i++) {
-        int idx = tid * dim + i;
-        float x_i = original_input[idx];
-        float grad_i = grad_output[idx];
-        
-        grad_input[idx] = (grad_i * rms - x_i * sum_grad_times_input / dim) / rms_cubed;
-    }
-}
-
-// Forward pass with residual connections and RMS normalization
+// Forward pass with residual connections
 void forward_pass(Net* net, float* X) {
     // Copy input to first layer output
     CHECK_CUDA(cudaMemcpy(net->d_layer_outputs[0], X,
@@ -297,7 +247,7 @@ void forward_pass(Net* net, float* X) {
                                 net->d_layer_outputs[i + 1], // C
                                 out_dim));         // ldc
 
-        // Apply activation, normalization and residual connection for hidden layers
+        // Apply Swish activation and residual connection for hidden layers
         if(i < net->depth) {
             // Store pre-activation values
             CHECK_CUDA(cudaMemcpy(net->d_pre_activations[i],
@@ -306,29 +256,15 @@ void forward_pass(Net* net, float* X) {
                                  cudaMemcpyDeviceToDevice));
 
             int block_size = 256;
-            int num_blocks;
-
-            // Apply Swish activation
-            num_blocks = (net->batch_size * out_dim + block_size - 1) / block_size;
+            int num_blocks = (net->batch_size * out_dim + block_size - 1) / block_size;
             swish_forward_kernel<<<num_blocks, block_size>>>(
                 net->d_layer_outputs[i + 1],
                 net->d_pre_activations[i],
                 net->batch_size * out_dim
             );
 
-            // Apply RMS normalization
-            num_blocks = (net->batch_size + block_size - 1) / block_size;
-            rms_norm_kernel<<<num_blocks, block_size>>>(
-                net->d_layer_outputs[i + 1],
-                net->d_layer_outputs[i + 1],
-                net->batch_size,
-                out_dim,
-                1e-6f  // epsilon value
-            );
-
             // Add residual connection if dimensions match
             if (in_dim == out_dim) {
-                num_blocks = (net->batch_size * out_dim + block_size - 1) / block_size;
                 add_residual_connection<<<num_blocks, block_size>>>(
                     net->d_layer_outputs[i + 1],
                     net->d_layer_outputs[i],
@@ -434,37 +370,23 @@ void backward_pass(Net* net, float* X) {
                                     net->d_errors[i-1],// C
                                     in_dim));          // ldc
 
+            // Apply Swish derivative
             int block_size = 256;
-            int num_blocks;
+            int num_blocks = (net->batch_size * in_dim + block_size - 1) / block_size;
+            swish_backward_kernel<<<num_blocks, block_size>>>(
+                net->d_errors[i-1],
+                net->d_pre_activations[i-1],
+                net->batch_size * in_dim
+            );
 
             // Add residual gradient if dimensions match
             if (in_dim == out_dim) {
-                num_blocks = (net->batch_size * in_dim + block_size - 1) / block_size;
                 add_residual_connection<<<num_blocks, block_size>>>(
                     net->d_errors[i-1],
                     net->d_errors[i],
                     net->batch_size * in_dim
                 );
             }
-
-            // Apply RMS norm gradient
-            num_blocks = (net->batch_size + block_size - 1) / block_size;
-            rms_norm_backward_kernel<<<num_blocks, block_size>>>(
-                net->d_errors[i-1],
-                net->d_errors[i-1],
-                net->d_layer_outputs[i],
-                net->batch_size,
-                in_dim,
-                1e-6f
-            );
-
-            // Apply Swish derivative
-            num_blocks = (net->batch_size * in_dim + block_size - 1) / block_size;
-            swish_backward_kernel<<<num_blocks, block_size>>>(
-                net->d_errors[i-1],
-                net->d_pre_activations[i-1],
-                net->batch_size * in_dim
-            );
         }
     }
 }
