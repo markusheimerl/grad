@@ -56,7 +56,9 @@ typedef struct {
     float* d_error;          // batch_size x output_dim
     float* d_pre_activation; // batch_size x hidden_dim
     float* d_error_hidden;   // batch_size x hidden_dim
-    
+    float* d_X;              // batch_size x input_dim
+    float* d_y;             // batch_size x output_dim
+
     // cuBLAS handle
     cublasHandle_t cublas_handle;
     
@@ -119,6 +121,8 @@ Net* init_net(int input_dim, int hidden_dim, int output_dim, int batch_size) {
     CHECK_CUDA(cudaMalloc(&net->d_error, batch_size * output_dim * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&net->d_pre_activation, batch_size * hidden_dim * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&net->d_error_hidden, batch_size * hidden_dim * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&net->d_X, batch_size * input_dim * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&net->d_y, batch_size * output_dim * sizeof(float)));
     
     // Initialize device memory
     CHECK_CUDA(cudaMemcpy(net->d_fc1_weight, net->h_fc1_weight, 
@@ -152,6 +156,8 @@ void free_net(Net* net) {
     cudaFree(net->d_error);
     cudaFree(net->d_pre_activation);
     cudaFree(net->d_error_hidden);
+    cudaFree(net->d_X);
+    cudaFree(net->d_y);
     
     // Free host memory
     free(net->h_fc1_weight);
@@ -184,10 +190,7 @@ __global__ void swish_backward_kernel(float* error_hidden, float* pre_activation
 
 // Forward pass
 void forward_pass(Net* net, float* X) {
-    // Copy input to device if not already there
-    float* d_X;
-    CHECK_CUDA(cudaMalloc(&d_X, net->batch_size * net->input_dim * sizeof(float)));
-    CHECK_CUDA(cudaMemcpy(d_X, X, net->batch_size * net->input_dim * sizeof(float), 
+    CHECK_CUDA(cudaMemcpy(net->d_X, X, net->batch_size * net->input_dim * sizeof(float), 
                          cudaMemcpyHostToDevice));
 
     const float alpha = 1.0f;
@@ -203,7 +206,7 @@ void forward_pass(Net* net, float* X) {
                             &alpha,
                             net->d_fc1_weight,  // A
                             net->hidden_dim,    // lda
-                            d_X,                // B
+                            net->d_X,           // B
                             net->input_dim,     // ldb
                             &beta,
                             net->d_layer1_output, // C
@@ -238,9 +241,6 @@ void forward_pass(Net* net, float* X) {
                             &beta,
                             net->d_predictions,  // C
                             net->output_dim));   // ldc
-
-    // Cleanup
-    cudaFree(d_X);
 }
 
 // Custom kernel for calculating error and squared error
@@ -253,9 +253,7 @@ __global__ void calc_error_kernel(float* error, float* predictions, float* y, in
 
 // Calculate loss
 float calculate_loss(Net* net, float* y) {
-    float* d_y;
-    CHECK_CUDA(cudaMalloc(&d_y, net->batch_size * net->output_dim * sizeof(float)));
-    CHECK_CUDA(cudaMemcpy(d_y, y, net->batch_size * net->output_dim * sizeof(float),
+    CHECK_CUDA(cudaMemcpy(net->d_y, y, net->batch_size * net->output_dim * sizeof(float),
                          cudaMemcpyHostToDevice));
 
     // Calculate error (predictions - y)
@@ -267,7 +265,7 @@ float calculate_loss(Net* net, float* y) {
     calc_error_kernel<<<num_blocks, block_size>>>(
         net->d_error,
         net->d_predictions,
-        d_y,
+        net->d_y,
         size
     );
 
@@ -283,7 +281,6 @@ float calculate_loss(Net* net, float* y) {
 
     // Cleanup
     free(h_error);
-    cudaFree(d_y);
 
     return loss / size;
 }
@@ -298,9 +295,7 @@ void zero_gradients(Net* net) {
 
 // Backward pass
 void backward_pass(Net* net, float* X) {
-    float* d_X;
-    CHECK_CUDA(cudaMalloc(&d_X, net->batch_size * net->input_dim * sizeof(float)));
-    CHECK_CUDA(cudaMemcpy(d_X, X, net->batch_size * net->input_dim * sizeof(float),
+    CHECK_CUDA(cudaMemcpy(net->d_X, X, net->batch_size * net->input_dim * sizeof(float),
                          cudaMemcpyHostToDevice));
 
     const float alpha = 1.0f;
@@ -357,13 +352,11 @@ void backward_pass(Net* net, float* X) {
                             &alpha,
                             net->d_error_hidden, // A
                             net->hidden_dim,     // lda
-                            d_X,                 // B
+                            net->d_X,            // B
                             net->input_dim,      // ldb
                             &beta,
                             net->d_fc1_weight_grad, // C
                             net->hidden_dim));   // ldc
-
-    cudaFree(d_X);
 }
 
 // CUDA kernel for AdamW update
