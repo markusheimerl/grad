@@ -35,9 +35,10 @@ typedef struct {
     float* d_fc1_weight_grad; // hidden_dim x input_dim
     float* d_fc2_weight_grad; // output_dim x hidden_dim
     
-    // Host copies of weights
+    // Host copies of weights and error
     float* h_fc1_weight;
     float* h_fc2_weight;
+    float* h_error;
     
     // Device pointers for Adam parameters
     float* d_fc1_m;  // First moment for fc1
@@ -89,9 +90,10 @@ Net* init_net(int input_dim, int hidden_dim, int output_dim, int batch_size) {
     // Initialize cuBLAS
     CHECK_CUBLAS(cublasCreate(&net->cublas_handle));
     
-    // Allocate host memory for weights
+    // Allocate host memory for weights and error
     net->h_fc1_weight = (float*)malloc(hidden_dim * input_dim * sizeof(float));
     net->h_fc2_weight = (float*)malloc(output_dim * hidden_dim * sizeof(float));
+    net->h_error = (float*)malloc(batch_size * output_dim * sizeof(float));
     
     // Initialize weights on host
     float scale1 = 1.0f / sqrt(input_dim);
@@ -162,6 +164,7 @@ void free_net(Net* net) {
     // Free host memory
     free(net->h_fc1_weight);
     free(net->h_fc2_weight);
+    free(net->h_error);
     
     // Destroy cuBLAS handle
     cublasDestroy(net->cublas_handle);
@@ -270,17 +273,13 @@ float calculate_loss(Net* net, float* y) {
     );
 
     // Calculate loss on CPU
-    float* h_error = (float*)malloc(size * sizeof(float));
-    CHECK_CUDA(cudaMemcpy(h_error, net->d_error, size * sizeof(float),
+    CHECK_CUDA(cudaMemcpy(net->h_error, net->d_error, size * sizeof(float),
                          cudaMemcpyDeviceToHost));
 
     float loss = 0.0f;
     for (int i = 0; i < size; i++) {
-        loss += h_error[i] * h_error[i];
+        loss += net->h_error[i] * net->h_error[i];
     }
-
-    // Cleanup
-    free(h_error);
 
     return loss / size;
 }
