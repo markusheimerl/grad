@@ -11,7 +11,7 @@ int main() {
     openblas_set_num_threads(4);
 
     // Parameters for raw input and embeddings.
-    const int raw_input_dim = 16;  // Number of raw (continuous) features.
+    const int raw_input_dim = 8;  // Number of raw (continuous) features.
     const int num_bins = 10;       // Discretize each feature into 10 bins.
     const int embedding_dim = 8;   // Each embedding vector is 8-dimensional.
     // Effective input dimension of the network:
@@ -19,7 +19,7 @@ int main() {
 
     // MLP parameters.
     const int hidden_dim = 1024;
-    const int output_dim = 4;
+    const int output_dim = 8;
     const int num_samples = 1024;
     const int batch_size = num_samples;  // Full-batch training.
 
