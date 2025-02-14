@@ -8,20 +8,25 @@
 int main() {
     srand(time(NULL));
     openblas_set_num_threads(4);
-
+    
     // Parameters
-    const int input_dim = 16;
-    const int hidden_dim = 1024;
-    const int output_dim = 4;
-    const int num_samples = 1024;
-    const int batch_size = num_samples; // Full batch training
+    const int seq_len = 16;  // Same as before
+    const int batch_size = 1024;
     
     // Generate synthetic data
     float *X, *y;
-    generate_synthetic_data(&X, &y, num_samples, input_dim, output_dim);
+    generate_synthetic_data(&X, &y, batch_size, seq_len, seq_len);
     
     // Initialize network
-    Net* net = init_net(input_dim, hidden_dim, output_dim, batch_size);
+    Net* net = init_net(seq_len, batch_size);
+    
+    // Allocate bins for input and target
+    int* X_bins = (int*)malloc(batch_size * seq_len * sizeof(int));
+    int* y_bins = (int*)malloc(batch_size * seq_len * sizeof(int));
+    
+    // Convert data to bins
+    continuous_to_bins(net, X, X_bins, batch_size * seq_len);
+    continuous_to_bins(net, y, y_bins, batch_size * seq_len);
     
     // Training parameters
     const int num_epochs = 10000;
@@ -30,24 +35,38 @@ int main() {
     // Training loop
     for (int epoch = 0; epoch < num_epochs; epoch++) {
         // Forward pass
-        forward_pass(net, X);
+        forward_pass(net, X_bins);
         
         // Calculate loss
-        float loss = calculate_loss(net, y);
+        float loss = calculate_loss(net, y_bins);
         
         // Backward pass
-        zero_gradients(net);
-        backward_pass(net, X);
+        backward_pass(net, X_bins, y_bins);
         
         // Update weights
         update_weights(net, learning_rate);
         
         // Print progress
-        if ((epoch + 1) % 100 == 0) {
-            printf("Epoch [%d/%d], Loss: %.8f\n", epoch + 1, num_epochs, loss);
+        if ((epoch + 1) % 1 == 0) {
+            // Convert current predictions to continuous values
+            float* predictions = (float*)malloc(batch_size * seq_len * sizeof(float));
+            predict_continuous(net, net->logits, predictions, batch_size * seq_len);
+            
+            // Calculate MSE for interpretability
+            float mse = 0.0f;
+            for (int i = 0; i < batch_size * seq_len; i++) {
+                float diff = predictions[i] - y[i];
+                mse += diff * diff;
+            }
+            mse /= (batch_size * seq_len);
+            
+            printf("Epoch [%d/%d], CE Loss: %.8f, MSE: %.8f\n", 
+                   epoch + 1, num_epochs, loss, mse);
+                   
+            free(predictions);
         }
     }
-
+    
     // Get timestamp for filenames
     char model_fname[64], data_fname[64];
     time_t now = time(NULL);
@@ -55,74 +74,86 @@ int main() {
              localtime(&now));
     strftime(data_fname, sizeof(data_fname), "%Y%m%d_%H%M%S_data.csv", 
              localtime(&now));
-
-    // Save model and data with timestamped filenames
-    save_model(net, model_fname);
-    save_data_to_csv(X, y, num_samples, input_dim, output_dim, data_fname);
     
-    // Load the model back and verify
+    // Save model and data
+    save_model(net, model_fname);
+    save_data_to_csv(X, y, batch_size, seq_len, seq_len, data_fname);
+    
+    // Verification and evaluation
     printf("\nVerifying saved model...\n");
-
-    // Load the model back
-    net = load_model(model_fname);
+    Net* loaded_net = load_model(model_fname);
     
     // Forward pass with loaded model
-    forward_pass(net, X);
+    forward_pass(loaded_net, X_bins);
+    float verification_loss = calculate_loss(loaded_net, y_bins);
     
-    // Calculate and print loss with loaded model
-    float verification_loss = calculate_loss(net, y);
-    printf("Loss with loaded model: %.8f\n", verification_loss);
-
-    printf("\nEvaluating model performance...\n");
-
-    // Calculate R² scores
+    // Convert predictions to continuous values
+    float* final_predictions = (float*)malloc(batch_size * seq_len * sizeof(float));
+    predict_continuous(loaded_net, loaded_net->logits, final_predictions, batch_size * seq_len);
+    
+    // Calculate final MSE
+    float final_mse = 0.0f;
+    for (int i = 0; i < batch_size * seq_len; i++) {
+        float diff = final_predictions[i] - y[i];
+        final_mse += diff * diff;
+    }
+    final_mse /= (batch_size * seq_len);
+    
+    printf("Loaded model - CE Loss: %.8f, MSE: %.8f\n", verification_loss, final_mse);
+    
+    // Calculate R² scores for each output dimension
     printf("\nR² scores:\n");
-    for (int i = 0; i < output_dim; i++) {
+    for (int d = 0; d < seq_len; d++) {
         float y_mean = 0.0f;
-        for (int j = 0; j < num_samples; j++) {
-            y_mean += y[j * output_dim + i];
+        for (int b = 0; b < batch_size; b++) {
+            y_mean += y[b * seq_len + d];
         }
-        y_mean /= num_samples;
-
+        y_mean /= batch_size;
+        
         float ss_res = 0.0f;
         float ss_tot = 0.0f;
-        for (int j = 0; j < num_samples; j++) {
-            float diff_res = y[j * output_dim + i] - net->predictions[j * output_dim + i];
-            float diff_tot = y[j * output_dim + i] - y_mean;
+        for (int b = 0; b < batch_size; b++) {
+            float diff_res = y[b * seq_len + d] - final_predictions[b * seq_len + d];
+            float diff_tot = y[b * seq_len + d] - y_mean;
             ss_res += diff_res * diff_res;
             ss_tot += diff_tot * diff_tot;
         }
+        
         float r2 = 1.0f - (ss_res / ss_tot);
-        printf("R² score for output y%d: %.8f\n", i, r2);
+        printf("R² score for output y%d: %.8f\n", d, r2);
     }
-
+    
     // Print sample predictions
     printf("\nSample Predictions (first 15 samples):\n");
     printf("Output\t\tPredicted\tActual\t\tDifference\n");
     printf("------------------------------------------------------------\n");
-
-    for (int i = 0; i < output_dim; i++) {
-        printf("\ny%d:\n", i);
-        for (int j = 0; j < 15; j++) {
-            float pred = net->predictions[j * output_dim + i];
-            float actual = y[j * output_dim + i];
+    
+    for (int d = 0; d < seq_len; d++) {
+        printf("\ny%d:\n", d);
+        for (int b = 0; b < 15; b++) {
+            float pred = final_predictions[b * seq_len + d];
+            float actual = y[b * seq_len + d];
             float diff = pred - actual;
-            printf("Sample %d:\t%8.3f\t%8.3f\t%8.3f\n", j, pred, actual, diff);
+            printf("Sample %d:\t%8.3f\t%8.3f\t%8.3f\n", b, pred, actual, diff);
         }
         
-        // Calculate MAE for this output
+        // Calculate MAE for this dimension
         float mae = 0.0f;
-        for (int j = 0; j < num_samples; j++) {
-            mae += fabs(net->predictions[j * output_dim + i] - y[j * output_dim + i]);
+        for (int b = 0; b < batch_size; b++) {
+            mae += fabsf(final_predictions[b * seq_len + d] - y[b * seq_len + d]);
         }
-        mae /= num_samples;
-        printf("Mean Absolute Error for y%d: %.3f\n", i, mae);
+        mae /= batch_size;
+        printf("Mean Absolute Error for y%d: %.3f\n", d, mae);
     }
     
     // Cleanup
     free(X);
     free(y);
+    free(X_bins);
+    free(y_bins);
+    free(final_predictions);
     free_net(net);
+    free_net(loaded_net);
     
     return 0;
 }
