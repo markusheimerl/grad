@@ -12,9 +12,9 @@ int main() {
     // PARAMETERS.
     const int input_dim = 4;            // Number of raw input features.
     const int num_samples = 1024;       // Number of samples.
-    const int output_dim = 4;           // Number of continuous outputs.
+    const int output_dim = input_dim;           // Number of continuous outputs.
     const int num_bins = 64;
-    const int embedding_dim = 8;        // Embedding vector dimension.
+    const int embedding_dim = num_bins;        // Embedding vector dimension.
 
     // MLP parameters.
     const int hidden_dim = 1024;
