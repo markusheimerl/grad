@@ -4,7 +4,7 @@
 #include <math.h>
 #include "mlp.h"
 /* Assumes data.h provides generate_synthetic_data and save_data_to_csv. */
-#include "../../data.h"
+#include "../../../data.h"
 
 int main(void)
 {
@@ -29,8 +29,6 @@ int main(void)
     float *input_max = (float*)malloc(input_dim * sizeof(float));
     compute_min_max(X, num_samples, input_dim, input_min, input_max);
 
-    /* For regression we use the continuous target y directly. */
-
     /* Choose number of layers. */
     int num_layers = 2;  // Change to desired number.
 
@@ -45,7 +43,7 @@ int main(void)
 
     /* TRAINING PARAMETERS */
     const int num_epochs = 3000;
-    const float learning_rate = 0.0008f;
+    const float learning_rate = 0.001f;
 
     /* TRAINING LOOP */
     for (int epoch = 0; epoch < num_epochs; epoch++) {
