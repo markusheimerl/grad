@@ -1,3 +1,4 @@
+/* mlp.h */
 #ifndef MLP_H
 #define MLP_H
 
@@ -80,6 +81,26 @@ typedef struct {
     /* Final predictions and computed error (for backprop). */
     float *predictions;  // [batch_size x (input_dim*embedding_dim)].
     float *error;        // Same shape as predictions.
+    
+    /* --- Temporary buffers preallocated once (used during training so that no memory allocation occurs) --- */
+    /* For forward–pass self–attention (per sample temporary for attn_out) */
+    float *tmp_attn_out;          // [input_dim * embedding_dim]
+    /* For backward pass over the entire batch. */
+    float *backward_dX;           // [batch_size * input_dim * embedding_dim]
+    float *tmp_d_r_add;           // [batch_size * input_dim * embedding_dim]
+    float *tmp_d_hidden;          // [batch_size * input_dim * (4*embedding_dim)]
+    float *tmp_d_preact;          // [batch_size * input_dim * (4*embedding_dim)]
+    float *tmp_d_r_ff;            // [batch_size * input_dim * embedding_dim]
+    float *tmp_d_r;               // [batch_size * input_dim * embedding_dim]
+    float *tmp_d_attn_out;        // [batch_size * input_dim * embedding_dim]
+    /* For per-sample self–attention backward temporary buffers */
+    float *tmp_attn_sample_dV;    // [input_dim * embedding_dim]
+    float *tmp_attn_sample_dA;    // [input_dim * input_dim]
+    float *tmp_attn_sample_dQ;    // [input_dim * embedding_dim]
+    float *tmp_attn_sample_dK;    // [input_dim * embedding_dim]
+    float *tmp_attn_sample_temp;  // [input_dim * embedding_dim]
+    /* For calculate_loss temporary (size: num_bins) */
+    float *tmp_probs;             // [num_bins]
 } Net;
 
 /* ---------------- Utility Functions ---------------- */
@@ -148,7 +169,8 @@ static inline void compute_min_max(const float *data, int num_samples, int num_f
 
 /* Initializes the network with the given parameters.
    The embedding table is allocated with shape [input_dim x num_bins x embedding_dim],
-   and each transformer layer (attention and feed–forward) is initialized. */
+   and each transformer layer (attention and feed–forward) is initialized.
+   Also, all temporary buffers used during training are preallocated here. */
 static inline Net* init_net(int input_dim, int num_bins, int embedding_dim, int output_dim, int batch_size, int num_layers)
 {
     Net *net = (Net*)malloc(sizeof(Net));
@@ -267,6 +289,28 @@ static inline Net* init_net(int input_dim, int num_bins, int embedding_dim, int 
     net->predictions = (float*)malloc(act_size * sizeof(float));
     net->error = (float*)malloc(act_size * sizeof(float));
     
+    /* Preallocate all temporary buffers (so that no malloc/free occurs during training). */
+    int tokens = input_dim;
+    int d_dim = embedding_dim;
+    int total_tokens = batch_size * tokens;
+    int ff_hidden = 4 * d_dim;
+    net->tmp_attn_out         = (float*)malloc(tokens * d_dim * sizeof(float));
+    net->backward_dX          = (float*)malloc(total_tokens * d_dim * sizeof(float));
+    net->tmp_d_r_add          = (float*)malloc(total_tokens * d_dim * sizeof(float));
+    net->tmp_d_hidden         = (float*)malloc(total_tokens * ff_hidden * sizeof(float));
+    net->tmp_d_preact         = (float*)malloc(total_tokens * ff_hidden * sizeof(float));
+    net->tmp_d_r_ff           = (float*)malloc(total_tokens * d_dim * sizeof(float));
+    net->tmp_d_r              = (float*)malloc(total_tokens * d_dim * sizeof(float));
+    net->tmp_d_attn_out       = (float*)malloc(total_tokens * d_dim * sizeof(float));
+    net->tmp_attn_sample_dV   = (float*)malloc(tokens * d_dim * sizeof(float));
+    net->tmp_attn_sample_dA   = (float*)malloc(tokens * tokens * sizeof(float));
+    net->tmp_attn_sample_dQ   = (float*)malloc(tokens * d_dim * sizeof(float));
+    net->tmp_attn_sample_dK   = (float*)malloc(tokens * d_dim * sizeof(float));
+    net->tmp_attn_sample_temp = (float*)malloc(tokens * d_dim * sizeof(float));
+    net->tmp_probs            = (float*)malloc(num_bins * sizeof(float));
+    
+    /* (You may want to check all these allocations for success in production code.) */
+    
     return net;
 }
 
@@ -323,6 +367,23 @@ static inline void free_net(Net *net)
         free(net->ff_hidden_layers);
         free(net->predictions);
         free(net->error);
+        
+        /* Free temporary buffers. */
+        free(net->tmp_attn_out);
+        free(net->backward_dX);
+        free(net->tmp_d_r_add);
+        free(net->tmp_d_hidden);
+        free(net->tmp_d_preact);
+        free(net->tmp_d_r_ff);
+        free(net->tmp_d_r);
+        free(net->tmp_d_attn_out);
+        free(net->tmp_attn_sample_dV);
+        free(net->tmp_attn_sample_dA);
+        free(net->tmp_attn_sample_dQ);
+        free(net->tmp_attn_sample_dK);
+        free(net->tmp_attn_sample_temp);
+        free(net->tmp_probs);
+        
         free(net);
     }
 }
@@ -396,12 +457,8 @@ static inline void forward_pass(Net *net)
             for (int i = 0; i < tokens; i++) {
                 softmax_inplace(scores + i * tokens, tokens);
             }
-            /* Compute attention output: attn_out = scores * V. */
-            float *attn_out = (float*)malloc(tokens * d_dim * sizeof(float));
-            if (!attn_out) {
-                fprintf(stderr, "Failed to allocate memory for attention output.\n");
-                exit(EXIT_FAILURE);
-            }
+            /* Use preallocated temporary buffer for attention output. */
+            float *attn_out = net->tmp_attn_out; /* size: tokens x d_dim */
             cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                         tokens, d_dim, tokens,
                         1.0f, scores, tokens,
@@ -413,7 +470,6 @@ static inline void forward_pass(Net *net)
             for (int i = 0; i < tokens * d_dim; i++) {
                 r[i] = X_sample[i] + attn_out[i];
             }
-            free(attn_out);
         }
         
         /* Feed–Forward Block.
@@ -450,11 +506,8 @@ static inline float calculate_loss(Net *net, int *target_labels)
     int batch = net->batch_size;
     int classes = net->num_bins;  // Each token’s output length.
     int total = net->output_dim;  // Equals input_dim.
-    float *probs = (float*)malloc(classes * sizeof(float));
-    if (!probs) {
-        fprintf(stderr, "Failed to allocate memory for probabilities.\n");
-        exit(EXIT_FAILURE);
-    }
+    /* Use temporary buffer previously allocated (size: classes) */
+    float *probs = net->tmp_probs;
     for (int i = 0; i < batch; i++) {
         for (int d = 0; d < total; d++) {
             int offset = i * (classes * total) + d * classes;
@@ -467,7 +520,6 @@ static inline float calculate_loss(Net *net, int *target_labels)
             }
         }
     }
-    free(probs);
     return loss / (batch * total);
 }
 
@@ -501,13 +553,8 @@ static inline void backward_pass(Net *net)
 
     zero_gradients(net);
 
-    /* dX holds the gradient with respect to the output of the current (or final) layer.
-       We start from net->error. */
-    float *dX = (float*)malloc(total_tokens * d_dim * sizeof(float));
-    if (!dX) {
-        fprintf(stderr, "Failed to allocate memory for dX.\n");
-        exit(EXIT_FAILURE);
-    }
+    /* Use preallocated buffer for dX */
+    float *dX = net->backward_dX;
     memcpy(dX, net->error, total_tokens * d_dim * sizeof(float));
 
     /* Loop backward over layers. */
@@ -517,18 +564,17 @@ static inline void backward_pass(Net *net)
         float *r = net->ff_residual_layers[l];        // r = X + attn_out.
 
         /* --- Backprop through Feed–Forward Block --- */
-        /* f was computed as: out = r + f, where f = (ReLU(r*W_ff1))*W_ff2.
-           (a) The residual connection gives d_r_add = dX. */
-        float *d_r_add = (float*)malloc(total_tokens * d_dim * sizeof(float));
+        /* (a) The residual connection gives d_r_add = dX. */
+        float *d_r_add = net->tmp_d_r_add;
         memcpy(d_r_add, dX, total_tokens * d_dim * sizeof(float));
         /* (b) Propagate dX through feed–forward branch. */
-        float *d_hidden = (float*)malloc(total_tokens * ff_hidden * sizeof(float));
+        float *d_hidden = net->tmp_d_hidden;
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     total_tokens, ff_hidden, d_dim,
                     1.0f, dX, d_dim,
                     layer->W_ff2, d_dim,
                     0.0f, d_hidden, ff_hidden);
-        float *d_preact = (float*)malloc(total_tokens * ff_hidden * sizeof(float));
+        float *d_preact = net->tmp_d_preact;
         float *ff_preact = net->ff_preact_layers[l];
         for (int i = 0; i < total_tokens * ff_hidden; i++) {
             d_preact[i] = (ff_preact[i] > 0.0f) ? d_hidden[i] : 0.0f;
@@ -539,7 +585,7 @@ static inline void backward_pass(Net *net)
                     1.0f, r, d_dim,
                     d_preact, ff_hidden,
                     1.0f, layer->W_ff1_grad, ff_hidden);
-        float *d_r_ff = (float*)malloc(total_tokens * d_dim * sizeof(float));
+        float *d_r_ff = net->tmp_d_r_ff;
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     total_tokens, d_dim, ff_hidden,
                     1.0f, d_preact, ff_hidden,
@@ -552,19 +598,15 @@ static inline void backward_pass(Net *net)
                     dX, d_dim,
                     1.0f, layer->W_ff2_grad, d_dim);
         /* Sum gradients from residual and feed–forward branch. */
-        float *d_r = (float*)malloc(total_tokens * d_dim * sizeof(float));
+        float *d_r = net->tmp_d_r;
         for (int i = 0; i < total_tokens * d_dim; i++) {
             d_r[i] = d_r_add[i] + d_r_ff[i];
         }
-        free(d_r_add);
-        free(d_r_ff);
-        free(d_hidden);
-        free(d_preact);
 
         /* --- Backprop through Self–Attention Block --- */
         /* d_attn_out holds the gradient coming from the residual branch onward.
            (Since r = X + attn_out, we pass d_r to the attention branch.) */
-        float *d_attn_out = (float*)malloc(total_tokens * d_dim * sizeof(float));
+        float *d_attn_out = net->tmp_d_attn_out;
         memcpy(d_attn_out, d_r, total_tokens * d_dim * sizeof(float));
         for (int s = 0; s < net->batch_size; s++) {
             float *scores = net->attn_scores_layers[l] + s * tokens * tokens;
@@ -573,16 +615,15 @@ static inline void backward_pass(Net *net)
             float *Q = net->attn_Q_layers[l] + s * tokens * d_dim;
             float *K = net->attn_K_layers[l] + s * tokens * d_dim;
 
-            /* Compute dV = scores^T * d_attn_out_sample. */
-            float *dV = (float*)malloc(tokens * d_dim * sizeof(float));
+            /* Use preallocated buffers for per-sample temporaries */
+            float *dV = net->tmp_attn_sample_dV;
             cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
                         tokens, d_dim, tokens,
                         1.0f, scores, tokens,
                         d_attn_out_sample, d_dim,
                         0.0f, dV, d_dim);
 
-            /* Compute intermediate dA = d_attn_out_sample * V^T. */
-            float *dA = (float*)malloc(tokens * tokens * sizeof(float));
+            float *dA = net->tmp_attn_sample_dA;
             cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                         tokens, tokens, d_dim,
                         1.0f, d_attn_out_sample, d_dim,
@@ -598,15 +639,13 @@ static inline void backward_pass(Net *net)
                     dA[i * tokens + j] = scores[i * tokens + j] * (dA[i * tokens + j] - sum_d);
                 }
             }
-            /* Compute dQ = (dA * K) * inv_sqrt. */
-            float *dQ = (float*)malloc(tokens * d_dim * sizeof(float));
+            float *dQ = net->tmp_attn_sample_dQ;
             cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                         tokens, d_dim, tokens,
                         inv_sqrt, dA, tokens,
                         K, d_dim,
                         0.0f, dQ, d_dim);
-            /* Compute dK = (dA^T * Q) * inv_sqrt. */
-            float *dK = (float*)malloc(tokens * d_dim * sizeof(float));
+            float *dK = net->tmp_attn_sample_dK;
             cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
                         tokens, d_dim, tokens,
                         inv_sqrt, dA, tokens,
@@ -632,7 +671,9 @@ static inline void backward_pass(Net *net)
                         1.0f, layer->W_V_grad, d_dim);
             /* Compute contribution to dX from the attention branch.
                This is done by multiplying dQ, dK, dV with their corresponding weight matrices and summing. */
-            float *temp = (float*)malloc(tokens * d_dim * sizeof(float));
+            float *temp = net->tmp_attn_sample_temp;
+            /* Here we reinitialize temp to 0 first. */
+            memset(temp, 0, tokens * d_dim * sizeof(float));
             cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                         tokens, d_dim, d_dim,
                         1.0f, dQ, d_dim,
@@ -651,16 +692,9 @@ static inline void backward_pass(Net *net)
             for (int i = 0; i < tokens * d_dim; i++) {
                 dX[s * tokens * d_dim + i] += temp[i];
             }
-            free(temp);
-            free(dA);
-            free(dQ);
-            free(dK);
-            free(dV);
         }
-        free(d_attn_out);
-        free(d_r);
     }
-    free(dX);
+    /* No need to free temporary buffers because they persist until free_net is called. */
 }
 
 /* Updates network weights via AdamW.
