@@ -337,50 +337,54 @@ static inline void forward_pass(Net* net, float* X) {
     int ff_hidden = net->ff_hidden_dim;
 
     // --- Token Mixing MLP ---
-    // Process each sample independently.
-    // X has shape [batch_size x (tokens*d_dim)].
-    // We will loop over samples and over channels.
+    // Process each sample independently
     for (int s = 0; s < net->batch_size; s++) {
-        // For each sample, pointer to its embedded input and to ff_residual.
         float* X_sample = X + s * tokens * d_dim;
         float* out_sample = net->ff_residual + s * tokens * d_dim;
-        // For each channel j, we mix tokens.
-        for (int j = 0; j < d_dim; j++) {
-            // Extract column vector v (length = tokens) from X_sample.
-            float v[tokens];
-            for (int i = 0; i < tokens; i++) {
-                v[i] = X_sample[i * d_dim + j];
-            }
-            // Compute hidden = v * W_token1.
-            float hidden[token_hidden];
-            for (int h = 0; h < token_hidden; h++) {
-                float sum = 0.0f;
-                for (int k = 0; k < tokens; k++) {
-                    sum += v[k] * net->W_token1[k * token_hidden + h];
-                }
-                // Apply swish activation.
-                hidden[h] = swishf(sum);
-            }
-            // Compute token_mlp_output = hidden * W_token2.
-            float token_out[tokens];
-            for (int i = 0; i < tokens; i++) {
-                float sum = 0.0f;
-                for (int h = 0; h < token_hidden; h++) {
-                    sum += hidden[h] * net->W_token2[h * tokens + i];
-                }
-                token_out[i] = sum;
-            }
-            // Apply residual connection: out = v + token_out.
-            for (int i = 0; i < tokens; i++) {
-                // Write result back to ff_residual at channel j.
-                out_sample[i * d_dim + j] = v[i] + token_out[i];
+        
+        // Transpose the sample matrix to get shape [d_dim x tokens]
+        float* X_transposed = (float*)malloc(tokens * d_dim * sizeof(float));
+        for (int i = 0; i < tokens; i++) {
+            for (int j = 0; j < d_dim; j++) {
+                X_transposed[j * tokens + i] = X_sample[i * d_dim + j];
             }
         }
+
+        // Hidden = X_transposed * W_token1 (shape: [d_dim x token_hidden])
+        float* hidden = (float*)malloc(d_dim * token_hidden * sizeof(float));
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                    d_dim, token_hidden, tokens,
+                    1.0f, X_transposed, tokens,
+                    net->W_token1, token_hidden,
+                    0.0f, hidden, token_hidden);
+
+        // Apply swish activation
+        for (int i = 0; i < d_dim * token_hidden; i++) {
+            hidden[i] = swishf(hidden[i]);
+        }
+
+        // Token_out = hidden * W_token2 (shape: [d_dim x tokens])
+        float* token_out = (float*)malloc(d_dim * tokens * sizeof(float));
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                    d_dim, tokens, token_hidden,
+                    1.0f, hidden, token_hidden,
+                    net->W_token2, tokens,
+                    0.0f, token_out, tokens);
+
+        // Transpose back and add residual connection
+        for (int i = 0; i < tokens; i++) {
+            for (int j = 0; j < d_dim; j++) {
+                out_sample[i * d_dim + j] = X_sample[i * d_dim + j] + token_out[j * tokens + i];
+            }
+        }
+
+        free(X_transposed);
+        free(hidden);
+        free(token_out);
     }
 
     // --- Feed-Forward Network (Channel Mixing) ---
-    // Process all tokens at once.
-    // Compute hidden = swish(ff_residual * W_ff1) with shape [total_tokens x ff_hidden].
+    // Compute hidden = swish(ff_residual * W_ff1)
     float* hidden = (float*)malloc(total_tokens * ff_hidden * sizeof(float));
     float* pre_act = (float*)malloc(total_tokens * ff_hidden * sizeof(float));
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
@@ -388,24 +392,26 @@ static inline void forward_pass(Net* net, float* X) {
                 1.0f, net->ff_residual, d_dim,
                 net->W_ff1, ff_hidden,
                 0.0f, pre_act, ff_hidden);
-    // Apply swish activation in place.
+    
+    // Apply swish activation
     for (int i = 0; i < total_tokens * ff_hidden; i++) {
         hidden[i] = swishf(pre_act[i]);
     }
 
-    // Compute f = hidden * W_ff2, shape [total_tokens x d_dim].
+    // Compute f = hidden * W_ff2
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                 total_tokens, d_dim, ff_hidden,
                 1.0f, hidden, ff_hidden,
                 net->W_ff2, d_dim,
                 0.0f, net->predictions, d_dim);
-    free(hidden);
-    free(pre_act);
 
-    // Final residual connection: add ff_residual.
+    // Final residual connection
     for (int i = 0; i < total_tokens * d_dim; i++) {
         net->predictions[i] += net->ff_residual[i];
     }
+
+    free(hidden);
+    free(pre_act);
 }
 
 /*
@@ -466,27 +472,25 @@ static inline void backward_pass(Net* net, float* X) {
     int total_tokens = batch * tokens;
     int ff_hidden = net->ff_hidden_dim;
     int token_hidden = net->token_hidden_dim;
-    float inv_sqrt = 1.0f / sqrtf((float)d_dim);
 
     zero_gradients(net);
 
     // --- Backward Pass for Feed-Forward (Channel Mixing) Block ---
-    // Allocate buffers for the entire batch.
     float* hidden = (float*)malloc(total_tokens * ff_hidden * sizeof(float));
     float* pre_act = (float*)malloc(total_tokens * ff_hidden * sizeof(float));
     
-    // Forward computation (again) to get pre-activation values.
+    // Forward computation (again) to get pre-activation values
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                 total_tokens, ff_hidden, d_dim,
                 1.0f, net->ff_residual, d_dim,
                 net->W_ff1, ff_hidden,
                 0.0f, pre_act, ff_hidden);
-    // Apply swish to get hidden activations.
+    
     for (int i = 0; i < total_tokens * ff_hidden; i++) {
         hidden[i] = swishf(pre_act[i]);
     }
     
-    // Compute d_hidden = error * W_ff2^T.
+    // Compute d_hidden = error * W_ff2^T
     float* d_hidden = (float*)malloc(total_tokens * ff_hidden * sizeof(float));
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                 total_tokens, ff_hidden, d_dim,
@@ -494,26 +498,25 @@ static inline void backward_pass(Net* net, float* X) {
                 net->W_ff2, d_dim,
                 0.0f, d_hidden, ff_hidden);
     
-    // Apply swish derivative.
     for (int i = 0; i < total_tokens * ff_hidden; i++) {
         d_hidden[i] *= swish_deriv(pre_act[i]);
     }
     
-    // Compute W_ff2 gradients: W_ff2_grad += hidden^T * error.
+    // W_ff2 gradients
     cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
                 ff_hidden, d_dim, total_tokens,
                 1.0f, hidden, ff_hidden,
                 net->error, d_dim,
                 1.0f, net->W_ff2_grad, d_dim);
     
-    // Compute W_ff1 gradients: W_ff1_grad += ff_residual^T * d_hidden.
+    // W_ff1 gradients
     cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
                 d_dim, ff_hidden, total_tokens,
                 1.0f, net->ff_residual, d_dim,
                 d_hidden, ff_hidden,
                 1.0f, net->W_ff1_grad, ff_hidden);
     
-    // Compute d_ff_input = d_hidden * W_ff1^T.
+    // Compute d_ff_input
     float* d_ff_input = (float*)malloc(total_tokens * d_dim * sizeof(float));
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                 total_tokens, d_dim, ff_hidden,
@@ -521,7 +524,7 @@ static inline void backward_pass(Net* net, float* X) {
                 net->W_ff1, ff_hidden,
                 0.0f, d_ff_input, d_dim);
     
-    // Update error to include feed–forward backward contribution.
+    // Update error
     for (int i = 0; i < total_tokens * d_dim; i++) {
         net->error[i] += d_ff_input[i];
     }
@@ -531,87 +534,72 @@ static inline void backward_pass(Net* net, float* X) {
     free(d_hidden);
     free(d_ff_input);
 
-    // --- Backward Pass for Token–Mixing Block ---
-    // For each sample and for each channel separately,
-    // we backpropagate through the token–mixing MLP.
+    // --- Backward Pass for Token-Mixing Block ---
+    // Process each sample independently
     for (int s = 0; s < batch; s++) {
-        // X_sample: the embedded input for sample s, shape [tokens x d_dim].
         float* X_sample = X + s * tokens * d_dim;
-        // Let upstream gradient d_token: derivative from later layers with respect to ff_residual.
         float* d_token = net->error + s * tokens * d_dim;
-        // For each channel j:
-        for (int j = 0; j < d_dim; j++) {
-            // Extract input vector v (length = tokens).
-            float v[tokens];
-            for (int i = 0; i < tokens; i++) {
-                v[i] = X_sample[i * d_dim + j];
-            }
-            // Recompute token–mixing forward: pre = v * W_token1, hidden = swish(pre), out = hidden * W_token2.
-            float pre[token_hidden];
-            for (int h = 0; h < token_hidden; h++) {
-                float sum = 0.0f;
-                for (int k = 0; k < tokens; k++) {
-                    sum += v[k] * net->W_token1[k * token_hidden + h];
-                }
-                pre[h] = sum;
-            }
-            float hidden[token_hidden];
-            for (int h = 0; h < token_hidden; h++) {
-                hidden[h] = swishf(pre[h]);
-            }
-            float token_out[tokens];
-            for (int i = 0; i < tokens; i++) {
-                float sum = 0.0f;
-                for (int h = 0; h < token_hidden; h++) {
-                    sum += hidden[h] * net->W_token2[h * tokens + i];
-                }
-                token_out[i] = sum;
-            }
-            // The forward output was: out = v + token_out.
-            // Now, for each token i, let upstream gradient be d = d_token[i * d_dim + j].
-            // Backprop through residual: d_total = d.
-            // Then, d goes through the addition branch which produced token_out.
-            for (int i = 0; i < tokens; i++) {
-                float d_total = d_token[i * d_dim + j]; // gradient from later layers.
-                // Backprop through second linear layer:
-                // dW_token2_grad: accumulate outer product of hidden and d_total.
-                for (int h = 0; h < token_hidden; h++) {
-                    net->W_token2_grad[h * tokens + i] += hidden[h] * d_total;
-                }
-                // Backprop into hidden: d_hidden = d_total * (W_token2^T).
-                float d_hidden_val = 0.0f;
-                for (int h = 0; h < token_hidden; h++) {
-                    d_hidden_val += d_total * net->W_token2[h * tokens + i];
-                }
-                // Backprop through swish: d_pre = d_hidden * swish_deriv(pre).
-                float d_pre = d_hidden_val * swish_deriv(pre[i < token_hidden ? i : token_hidden - 1]); // we need to iterate correctly over h.
-                // However note: pre is length token_hidden and d_hidden should be computed for each h.
-                // So instead, do a loop over h:
-                float dW_token1_update[tokens]; 
-                for (int k = 0; k < tokens; k++) { dW_token1_update[k] = 0.0f; }
-                for (int h = 0; h < token_hidden; h++) {
-                    // For each h, compute d_hidden for that h.
-                    float d_hidden_h = 0.0f;
-                    // Sum over i (the output index) for the contribution.
-                    // Compute contribution from output i coming from this h:
-                    // d_hidden_h += d_total * W_token2[h * tokens + i].
-                    d_hidden_h = d_total * net->W_token2[h * tokens + i];
-                    // Then backprop through swish:
-                    float d_pre_h = d_hidden_h * swish_deriv(pre[h]);
-                    // Accumulate gradient for W_token1: for each input index k.
-                    for (int k = 0; k < tokens; k++) {
-                        net->W_token1_grad[k * token_hidden + h] += v[k] * d_pre_h;
-                    }
-                    // Also accumulate gradient for v from token–mixing branch.
-                    dW_token1_update[i] += d_pre_h * net->W_token1[i * token_hidden + h];
-                }
-                // There is also the residual branch: derivative is 1 for v.
-                // (We do not propagate gradient into the embedding table in this code.)
-                // (d_v_total = d_total + contribution from token–mixing branch.)
+        
+        // Transpose input and gradient for this sample
+        float* X_trans = (float*)malloc(d_dim * tokens * sizeof(float));
+        float* d_token_trans = (float*)malloc(d_dim * tokens * sizeof(float));
+        for (int i = 0; i < tokens; i++) {
+            for (int j = 0; j < d_dim; j++) {
+                X_trans[j * tokens + i] = X_sample[i * d_dim + j];
+                d_token_trans[j * tokens + i] = d_token[i * d_dim + j];
             }
         }
+
+        // Forward pass (again) to get intermediates
+        float* pre_token = (float*)malloc(d_dim * token_hidden * sizeof(float));
+        float* hidden_token = (float*)malloc(d_dim * token_hidden * sizeof(float));
+        
+        // Compute pre-activation
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                    d_dim, token_hidden, tokens,
+                    1.0f, X_trans, tokens,
+                    net->W_token1, token_hidden,
+                    0.0f, pre_token, token_hidden);
+
+        // Apply swish
+        for (int i = 0; i < d_dim * token_hidden; i++) {
+            hidden_token[i] = swishf(pre_token[i]);
+        }
+
+        // Backward computations
+        // d_hidden_token = d_token_trans * W_token2^T
+        float* d_hidden_token = (float*)malloc(d_dim * token_hidden * sizeof(float));
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                    d_dim, token_hidden, tokens,
+                    1.0f, d_token_trans, tokens,
+                    net->W_token2, tokens,
+                    0.0f, d_hidden_token, token_hidden);
+
+        // Apply swish derivative
+        for (int i = 0; i < d_dim * token_hidden; i++) {
+            d_hidden_token[i] *= swish_deriv(pre_token[i]);
+        }
+
+        // W_token2 gradients
+        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                    token_hidden, tokens, d_dim,
+                    1.0f, hidden_token, token_hidden,
+                    d_token_trans, tokens,
+                    1.0f, net->W_token2_grad, tokens);
+
+        // W_token1 gradients
+        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                    tokens, token_hidden, d_dim,
+                    1.0f, X_trans, tokens,
+                    d_hidden_token, token_hidden,
+                    1.0f, net->W_token1_grad, token_hidden);
+
+        free(X_trans);
+        free(d_token_trans);
+        free(pre_token);
+        free(hidden_token);
+        free(d_hidden_token);
     }
-    // (If needed, one could accumulate the gradient to the embedded input; here we assume the embedding table is fixed.)
 }
 
 /*
