@@ -20,7 +20,7 @@ int main() {
     
     // MLP parameters.
     const int hidden_dim = 1024;
-    const int output_dim = 8;
+    const int output_dim = 1;
     const int num_samples = 1024;
     const int batch_size = num_samples;  // Full-batch training.
     
