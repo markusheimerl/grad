@@ -8,14 +8,6 @@
 #include <cublas_v2.h>
 #include <cuda_runtime.h>
 
-// Define input range constants if not defined elsewhere.
-#ifndef INPUT_RANGE_MIN
-  #define INPUT_RANGE_MIN 0.0f
-#endif
-#ifndef INPUT_RANGE_MAX
-  #define INPUT_RANGE_MAX 1.0f
-#endif
-
 // CUDA Error checking macro.
 #define CHECK_CUDA(call) do { \
     cudaError_t err = call; \
