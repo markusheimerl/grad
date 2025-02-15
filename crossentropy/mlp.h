@@ -7,72 +7,66 @@
 #include <math.h>
 #include <cblas.h>
 
-/* 
-   If not already provided by data.h, define default input range values
-   for raw features. These are used when embedding continuous inputs.
-*/
-#ifndef INPUT_RANGE_MIN
-#define INPUT_RANGE_MIN 0.0f
-#endif
-
-#ifndef INPUT_RANGE_MAX
-#define INPUT_RANGE_MAX 1.0f
-#endif
-
 /*
-  This header defines a multilayer perceptron (MLP) that uses an embedding lookup.
-  Each raw continuous input feature is binned into one of a fixed number of bins and then
-  mapped to an embedding vector. The concatenated embeddings serve as the effective input to
-  the MLP. The final layer produces logits (one per class) for classification using
-  cross‑entropy loss; softmax is applied on the logits during loss computation.
+  This header defines a multilayer perceptron (MLP) with an embedding lookup.
+  Each raw input feature (of type float) is first binned into one of a fixed number
+  of bins (using per‑feature min/max values) and then mapped into an embedding vector.
+  The concatenated embeddings serve as the effective input to a two‑layer MLP.
+  The final layer outputs logits (one per class, where number of classes = num_bins)
+  which are used with softmax and cross‑entropy loss for classification.
 */
+
 typedef struct {
-    // Embedding parameters.
-    int raw_input_dim;      // Number of raw continuous input features.
-    int num_bins;           // Number of bins per feature for embedding lookup.
-    int embedding_dim;      // Dimension of the embedding vector for each feature.
-    float* embedding_table; // Embedding table (size: raw_input_dim * num_bins * embedding_dim).
+    // Raw input parameters.
+    int input_dim;     // Number of raw input features.
+    int num_bins;      // Number of bins to quantize each feature (used for both embedding lookup and output classes).
+    int embedding_dim; // Dimension of each embedding vector.
 
-    // MLP weights and gradients.
-    // Effective input dimension equals raw_input_dim * embedding_dim.
-    float* fc1_weight;      // Weight matrix for first (hidden) layer: [hidden_dim x input_dim]
-    float* fc2_weight;      // Weight matrix for second (output) layer: [output_dim x hidden_dim]
-    float* fc1_weight_grad; // Gradient for fc1_weight.
-    float* fc2_weight_grad; // Gradient for fc2_weight.
+    // Embedding table: size = input_dim * num_bins * embedding_dim.
+    float* embedding_table;
 
-    // Adam optimizer parameters for fc1 and fc2.
-    float* fc1_m;  // First moment estimate for fc1.
-    float* fc1_v;  // Second moment estimate for fc1.
-    float* fc2_m;  // First moment estimate for fc2.
-    float* fc2_v;  // Second moment estimate for fc2.
-    float beta1;   // Exponential decay rate for first moment.
-    float beta2;   // Exponential decay rate for second moment.
-    float epsilon; // Small constant for numerical stability.
-    int   t;       // Time step counter.
-    float weight_decay; // Weight decay coefficient for AdamW.
+    // MLP weights and their gradients.
+    // The effective input to the MLP is a concatenation of all embeddings,
+    // whose dimension is embedded_input_dim = input_dim * embedding_dim.
+    float* fc1_weight;       // Hidden layer weights: [hidden_dim x embedded_input_dim]
+    float* fc2_weight;       // Output layer weights: [num_bins x hidden_dim]
+    float* fc1_weight_grad;  // Gradients for fc1_weight.
+    float* fc2_weight_grad;  // Gradients for fc2_weight.
+
+    // Adam optimizer state for fc1 and fc2.
+    float* fc1_m;   // First moment estimate for fc1.
+    float* fc1_v;   // Second moment estimate for fc1.
+    float* fc2_m;   // First moment estimate for fc2.
+    float* fc2_v;   // Second moment estimate for fc2.
+    float beta1;    // Decay rate for first moment.
+    float beta2;    // Decay rate for second moment.
+    float epsilon;  // Small constant for numerical stability.
+    int   t;        // Time step counter.
+    float weight_decay; // Weight decay factor for AdamW.
 
     // Helper arrays for forward/backward passes.
-    float* layer1_output;  // Output of hidden layer (size: batch_size x hidden_dim).
-    float* predictions;    // Logits (size: batch_size x output_dim).
-    float* error;          // Gradient (error) at output (size: batch_size x output_dim).
-    float* pre_activation; // Pre-activation values of hidden layer (size: batch_size x hidden_dim).
-    float* error_hidden;   // Backpropagated error into hidden layer (size: batch_size x hidden_dim).
+    float* hidden_output;  // Hidden layer activations (after Swish), shape: [batch_size x hidden_dim]
+    float* predictions;    // Output logits; shape: [batch_size x num_bins]
+    float* error;          // Output error (gradient from softmax/CE loss); shape: [batch_size x num_bins]
+    float* pre_activation; // Hidden layer pre-activation values; shape: [batch_size x hidden_dim]
+    float* error_hidden;   // Backpropagated error for hidden layer; shape: [batch_size x hidden_dim]
 
     // Dimensions.
-    int input_dim;   // Effective input dimension = raw_input_dim * embedding_dim.
-    int hidden_dim;
-    int output_dim;  // Equals number of target classes.
-    int batch_size;
+    int embedded_input_dim; // Effective input dimension = input_dim * embedding_dim.
+    int hidden_dim;         // Number of neurons in the hidden layer.
+    int batch_size;         // Number of samples per training batch.
 } Net;
 
-/* 
-   softmax: Computes the softmax of a logits array.
-   Arguments:
-     logits: input array (length num_classes)
-     probs: output array (length num_classes)
-     num_classes: number of classes.
+/* ---------------- Utility Function Implementations ---------------- */
+
+/*
+  softmax: Computes the softmax of an array of logits.
+  Arguments:
+    logits: input array of length num_classes.
+    probs: output array of length num_classes.
+    num_classes: number of classes.
 */
-static void softmax(const float* logits, float* probs, int num_classes) {
+static inline void softmax(const float* logits, float* probs, int num_classes) {
     float max_logit = logits[0];
     for (int j = 1; j < num_classes; j++) {
         if (logits[j] > max_logit)
@@ -89,88 +83,128 @@ static void softmax(const float* logits, float* probs, int num_classes) {
 }
 
 /*
-   init_net: Initializes the network and allocates memory for weights, gradients,
-   Adam state, embedding table and helper arrays.
-   Parameters:
-     raw_input_dim: number of raw features.
-     num_bins: number of bins per feature.
-     embedding_dim: dimension of each embedding vector.
-     hidden_dim: number of neurons in the hidden layer.
-     target_bins: number of target classes.
-     batch_size: training batch size.
+  bin_value: Returns the bin index (in [0, num_bins-1]) for a given continuous value.
+  The value is first clamped into [min_value, max_value] then normalized.
 */
-Net* init_net(int raw_input_dim, int num_bins, int embedding_dim,
-              int hidden_dim, int target_bins, int batch_size) {
+static inline int bin_value(float value, float min_value, float max_value, int num_bins) {
+    float clamped = value;
+    if (clamped < min_value) clamped = min_value;
+    if (clamped > max_value) clamped = max_value;
+    float normalized = (clamped - min_value) / (max_value - min_value);
+    int bin = (int)(normalized * num_bins);
+    if (bin < 0)
+        bin = 0;
+    else if (bin >= num_bins)
+        bin = num_bins - 1;
+    return bin;
+}
+
+/*
+  unbin_value: Returns a continuous value corresponding to the center of the given bin.
+*/
+static inline float unbin_value(int bin, float min_value, float max_value, int num_bins) {
+    float bin_width = (max_value - min_value) / num_bins;
+    return min_value + (bin + 0.5f) * bin_width;
+}
+
+/*
+  compute_min_max: For an array “data” of shape [num_samples x num_features],
+  computes per‑feature minimum and maximum. min_arr and max_arr must be pre‑allocated arrays (length num_features).
+*/
+static inline void compute_min_max(const float* data, int num_samples, int num_features, float* min_arr, float* max_arr) {
+    for (int j = 0; j < num_features; j++) {
+        min_arr[j] = data[j]; // first sample value for feature j.
+        max_arr[j] = data[j];
+    }
+    for (int i = 1; i < num_samples; i++) {
+        for (int j = 0; j < num_features; j++) {
+            float val = data[i * num_features + j];
+            if (val < min_arr[j])
+                min_arr[j] = val;
+            if (val > max_arr[j])
+                max_arr[j] = val;
+        }
+    }
+}
+
+/* ---------------- MLP and Embedding Functions ---------------- */
+
+/*
+  init_net: Initializes the network with embedding lookup and two-layer MLP.
+  Parameters:
+    input_dim: number of raw input features.
+    num_bins: number of bins used for both embedding lookup and output classes.
+    embedding_dim: dimension of each embedding vector.
+    hidden_dim: number of neurons in the hidden layer.
+    batch_size: number of samples per training batch.
+  
+  Note: The effective (embedded) input dimension is computed as (input_dim * embedding_dim).
+*/
+static inline Net* init_net(int input_dim, int num_bins, int embedding_dim,
+                            int hidden_dim, int batch_size) {
     Net* net = (Net*)malloc(sizeof(Net));
     if (!net) {
         fprintf(stderr, "Failed to allocate network.\n");
         exit(EXIT_FAILURE);
     }
 
-    // Embedding and effective input dimension.
-    net->raw_input_dim = raw_input_dim;
+    net->input_dim = input_dim;
     net->num_bins = num_bins;
     net->embedding_dim = embedding_dim;
-    net->input_dim = raw_input_dim * embedding_dim;
+    net->embedded_input_dim = input_dim * embedding_dim;
 
-    // MLP dimensions.
     net->hidden_dim = hidden_dim;
-    net->output_dim = target_bins; // For classification.
+    // For classification, the number of output classes equals num_bins.
+    // (So there is a single num_bins used for both embedding and output.)
+    
     net->batch_size = batch_size;
-
-    // Adam hyperparameters.
+    
     net->beta1 = 0.9f;
     net->beta2 = 0.999f;
     net->epsilon = 1e-8f;
     net->t = 0;
     net->weight_decay = 0.01f;
-
-    // Allocate weights and gradients.
-    net->fc1_weight = (float*)malloc(net->hidden_dim * net->input_dim * sizeof(float));
-    net->fc2_weight = (float*)malloc(net->output_dim * net->hidden_dim * sizeof(float));
-    net->fc1_weight_grad = (float*)malloc(net->hidden_dim * net->input_dim * sizeof(float));
-    net->fc2_weight_grad = (float*)malloc(net->output_dim * net->hidden_dim * sizeof(float));
-
-    // Allocate and zero Adam buffers.
-    net->fc1_m = (float*)calloc(net->hidden_dim * net->input_dim, sizeof(float));
-    net->fc1_v = (float*)calloc(net->hidden_dim * net->input_dim, sizeof(float));
-    net->fc2_m = (float*)calloc(net->output_dim * net->hidden_dim, sizeof(float));
-    net->fc2_v = (float*)calloc(net->output_dim * net->hidden_dim, sizeof(float));
-
-    // Allocate helper arrays.
-    net->layer1_output = (float*)malloc(batch_size * net->hidden_dim * sizeof(float));
-    net->predictions = (float*)malloc(batch_size * net->output_dim * sizeof(float));
-    net->error = (float*)malloc(batch_size * net->output_dim * sizeof(float));
-    net->pre_activation = (float*)malloc(batch_size * net->hidden_dim * sizeof(float));
-    net->error_hidden = (float*)malloc(batch_size * net->hidden_dim * sizeof(float));
-
-    // Initialize fc1 weights.
-    float scale1 = 1.0f / sqrtf((float)net->input_dim);
-    for (int i = 0; i < net->hidden_dim * net->input_dim; i++) {
+    
+    net->fc1_weight = (float*)malloc(hidden_dim * net->embedded_input_dim * sizeof(float));
+    net->fc2_weight = (float*)malloc(num_bins * hidden_dim * sizeof(float));
+    net->fc1_weight_grad = (float*)malloc(hidden_dim * net->embedded_input_dim * sizeof(float));
+    net->fc2_weight_grad = (float*)malloc(num_bins * hidden_dim * sizeof(float));
+    
+    net->fc1_m = (float*)calloc(hidden_dim * net->embedded_input_dim, sizeof(float));
+    net->fc1_v = (float*)calloc(hidden_dim * net->embedded_input_dim, sizeof(float));
+    net->fc2_m = (float*)calloc(num_bins * hidden_dim, sizeof(float));
+    net->fc2_v = (float*)calloc(num_bins * hidden_dim, sizeof(float));
+    
+    net->hidden_output = (float*)malloc(batch_size * hidden_dim * sizeof(float));
+    net->predictions = (float*)malloc(batch_size * num_bins * sizeof(float));
+    net->error = (float*)malloc(batch_size * num_bins * sizeof(float));
+    net->pre_activation = (float*)malloc(batch_size * hidden_dim * sizeof(float));
+    net->error_hidden = (float*)malloc(batch_size * hidden_dim * sizeof(float));
+    
+    float scale1 = 1.0f / sqrtf((float)net->embedded_input_dim);
+    for (int i = 0; i < hidden_dim * net->embedded_input_dim; i++) {
         net->fc1_weight[i] = ((((float)rand() / (float)RAND_MAX) * 2.0f) - 1.0f) * scale1;
     }
-
-    // Initialize fc2 weights.
-    float scale2 = 1.0f / sqrtf((float)net->hidden_dim);
-    for (int i = 0; i < net->output_dim * net->hidden_dim; i++) {
+    
+    float scale2 = 1.0f / sqrtf((float)hidden_dim);
+    for (int i = 0; i < num_bins * hidden_dim; i++) {
         net->fc2_weight[i] = ((((float)rand() / (float)RAND_MAX) * 2.0f) - 1.0f) * scale2;
     }
-
-    // Allocate and initialize the embedding table.
-    net->embedding_table = (float*)malloc(raw_input_dim * num_bins * embedding_dim * sizeof(float));
+    
+    net->embedding_table = (float*)malloc(input_dim * num_bins * embedding_dim * sizeof(float));
     float emb_scale = 1.0f / sqrtf((float)num_bins);
-    for (int i = 0; i < raw_input_dim * num_bins * embedding_dim; i++) {
+    for (int i = 0; i < input_dim * num_bins * embedding_dim; i++) {
         net->embedding_table[i] = ((((float)rand() / (float)RAND_MAX) * 2.0f) - 1.0f) * emb_scale;
     }
-
+    
     return net;
 }
 
 /*
-   free_net: Frees all allocated memory in the network.
+  free_net: Releases all memory allocated for the network.
 */
-void free_net(Net* net) {
-    if (net) {
+static inline void free_net(Net* net) {
+    if(net) {
         free(net->fc1_weight);
         free(net->fc2_weight);
         free(net->fc1_weight_grad);
@@ -179,7 +213,7 @@ void free_net(Net* net) {
         free(net->fc1_v);
         free(net->fc2_m);
         free(net->fc2_v);
-        free(net->layer1_output);
+        free(net->hidden_output);
         free(net->predictions);
         free(net->error);
         free(net->pre_activation);
@@ -190,29 +224,21 @@ void free_net(Net* net) {
 }
 
 /*
-   embed_input: Converts raw continuous inputs into concatenated embeddings.
-   raw_input: Array of shape [batch_size x raw_input_dim].
-   embedded_output: Array (preallocated) of shape [batch_size x (raw_input_dim * embedding_dim)].
+  embed_input: For each raw input (shape: [batch_size x input_dim]) and given per‑feature
+  min and max (both arrays of length input_dim), determines the bin for each feature value
+  and copies the corresponding embedding vector into embedded_output.
+  The output shape is [batch_size x (input_dim * embedding_dim)].
 */
-void embed_input(Net* net, float* raw_input, float* embedded_output) {
-    float min_val = INPUT_RANGE_MIN;
-    float max_val = INPUT_RANGE_MAX;
-    float range = max_val - min_val;
-
+static inline void embed_input(Net* net, float* raw_input, float* embedded_output, float* in_min, float* in_max) {
     for (int i = 0; i < net->batch_size; i++) {
-        for (int j = 0; j < net->raw_input_dim; j++) {
-            float val = raw_input[i * net->raw_input_dim + j];
-            int bin_idx = (int)(((val - min_val) / range) * net->num_bins);
-            if (bin_idx < 0)
-                bin_idx = 0;
-            else if (bin_idx >= net->num_bins)
-                bin_idx = net->num_bins - 1;
-
+        for (int j = 0; j < net->input_dim; j++) {
+            float val = raw_input[i * net->input_dim + j];
+            int b = bin_value(val, in_min[j], in_max[j], net->num_bins);
             float* emb = net->embedding_table +
                          j * (net->num_bins * net->embedding_dim) +
-                         bin_idx * net->embedding_dim;
+                         b * net->embedding_dim;
             float* dest = embedded_output +
-                          i * (net->raw_input_dim * net->embedding_dim) +
+                          i * (net->input_dim * net->embedding_dim) +
                           j * net->embedding_dim;
             memcpy(dest, emb, net->embedding_dim * sizeof(float));
         }
@@ -220,58 +246,50 @@ void embed_input(Net* net, float* raw_input, float* embedded_output) {
 }
 
 /*
-   forward_pass: Computes a forward propagation of the network.
-   X: Pre-embedded input of shape [batch_size x (raw_input_dim * embedding_dim)].
-   - Hidden layer: applies affine transformation (using fc1_weight) then Swish activation.
-   - Output layer: computes logits using fc2_weight.
+  forward_pass: Performs a forward pass using the embedded input X (of shape: [batch_size x embedded_input_dim]).
+  It computes the hidden layer activations using Swish activation and then computes the output logits.
 */
-void forward_pass(Net* net, float* X) {
-    // Hidden layer affine transformation.
+static inline void forward_pass(Net* net, float* X) {
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                net->batch_size, net->hidden_dim, net->input_dim,
-                1.0f, X, net->input_dim, net->fc1_weight, net->hidden_dim,
-                0.0f, net->layer1_output, net->hidden_dim);
-
-    // Save pre-activation values.
-    memcpy(net->pre_activation, net->layer1_output,
-           net->batch_size * net->hidden_dim * sizeof(float));
-
-    // Swish activation: A = Z * sigmoid(Z).
+                net->batch_size, net->hidden_dim, net->embedded_input_dim,
+                1.0f, X, net->embedded_input_dim,
+                net->fc1_weight, net->hidden_dim,
+                0.0f, net->hidden_output, net->hidden_dim);
+    
+    memcpy(net->pre_activation, net->hidden_output, net->batch_size * net->hidden_dim * sizeof(float));
+    
     for (int i = 0; i < net->batch_size * net->hidden_dim; i++) {
-        float z = net->layer1_output[i];
-        net->layer1_output[i] = z / (1.0f + expf(-z));
+        float z = net->hidden_output[i];
+        net->hidden_output[i] = z / (1.0f + expf(-z));  // Swish activation: z * sigmoid(z)
     }
-
-    // Output layer: Compute logits.
+    
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                net->batch_size, net->output_dim, net->hidden_dim,
-                1.0f, net->layer1_output, net->hidden_dim, net->fc2_weight, net->output_dim,
-                0.0f, net->predictions, net->output_dim);
+                net->batch_size, net->num_bins, net->hidden_dim,
+                1.0f, net->hidden_output, net->hidden_dim,
+                net->fc2_weight, net->num_bins,
+                0.0f, net->predictions, net->num_bins);
 }
 
 /*
-   calculate_loss: Applies softmax to logits, computes the cross‑entropy loss,
-   and sets net->error to (softmax - one_hot) for the target labels.
-   target_labels: Array of integer labels (length: batch_size).
-   Returns average loss over the batch.
+  calculate_loss: Applies softmax to the predictions, computes the cross‑entropy loss
+  (averaged over the batch), and sets net->error = softmax(probabilities) - one_hot(target).
 */
-float calculate_loss(Net* net, int* target_labels) {
+static inline float calculate_loss(Net* net, int* target_labels) {
     float loss = 0.0f;
     int batch = net->batch_size;
-    int num_classes = net->output_dim;
-    float* probs = (float*)malloc(num_classes * sizeof(float));
+    int classes = net->num_bins;
+    float* probs = (float*)malloc(classes * sizeof(float));
     if (!probs) {
         fprintf(stderr, "Failed to allocate memory for probabilities.\n");
         exit(EXIT_FAILURE);
     }
-
     for (int i = 0; i < batch; i++) {
-        float* logits = net->predictions + i * num_classes;
-        softmax(logits, probs, num_classes);
+        float* logits = net->predictions + i * classes;
+        softmax(logits, probs, classes);
         int target = target_labels[i];
         loss -= logf(probs[target] + net->epsilon);
-        for (int j = 0; j < num_classes; j++) {
-            net->error[i * num_classes + j] = probs[j] - ((j == target) ? 1.0f : 0.0f);
+        for (int j = 0; j < classes; j++) {
+            net->error[i * classes + j] = probs[j] - ((j == target) ? 1.0f : 0.0f);
         }
     }
     free(probs);
@@ -279,57 +297,58 @@ float calculate_loss(Net* net, int* target_labels) {
 }
 
 /*
-   zero_gradients: Resets gradients to zero before backpropagation.
+  zero_gradients: Resets the stored gradients for fc1 and fc2.
 */
-void zero_gradients(Net* net) {
-    memset(net->fc1_weight_grad, 0, net->hidden_dim * net->input_dim * sizeof(float));
-    memset(net->fc2_weight_grad, 0, net->output_dim * net->hidden_dim * sizeof(float));
+static inline void zero_gradients(Net* net) {
+    memset(net->fc1_weight_grad, 0, net->hidden_dim * net->embedded_input_dim * sizeof(float));
+    memset(net->fc2_weight_grad, 0, net->num_bins * net->hidden_dim * sizeof(float));
 }
 
 /*
-   backward_pass: Computes gradients for the network using the chain rule.
-   X: Pre-embedded input of shape [batch_size x input_dim].
+  backward_pass: Performs backpropagation. Given the embedded input X,
+  computes gradients for fc2 and fc1.
 */
-void backward_pass(Net* net, float* X) {
-    // Gradient for fc2 weights: fc2_weight_grad = (layer1_output)^T * error.
+static inline void backward_pass(Net* net, float* X) {
+    // Compute the gradient for fc2 weights: hidden_output^T * error.
     cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
-                net->hidden_dim, net->output_dim, net->batch_size,
-                1.0f, net->layer1_output, net->hidden_dim, net->error, net->output_dim,
-                0.0f, net->fc2_weight_grad, net->output_dim);
-
-    // Propagate error into hidden layer: error_hidden = error * (fc2_weight)^T.
+                net->hidden_dim, net->num_bins, net->batch_size,
+                1.0f, net->hidden_output, net->hidden_dim,
+                net->error, net->num_bins,
+                0.0f, net->fc2_weight_grad, net->num_bins);
+    
+    // Backpropagate error to hidden layer: error_hidden = error * fc2_weight^T.
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
-                net->batch_size, net->hidden_dim, net->output_dim,
-                1.0f, net->error, net->output_dim, net->fc2_weight, net->output_dim,
+                net->batch_size, net->hidden_dim, net->num_bins,
+                1.0f, net->error, net->num_bins,
+                net->fc2_weight, net->num_bins,
                 0.0f, net->error_hidden, net->hidden_dim);
-
-    // Apply derivative of Swish activation.
-    // Derivative: sigmoid(z) + z * sigmoid(z) * (1 - sigmoid(z)).
+    
+    // Account for the derivative of the Swish activation.
     for (int i = 0; i < net->batch_size * net->hidden_dim; i++) {
         float z = net->pre_activation[i];
         float sigmoid = 1.0f / (1.0f + expf(-z));
-        net->error_hidden[i] *= sigmoid + z * sigmoid * (1.0f - sigmoid);
+        net->error_hidden[i] *= (sigmoid + z * sigmoid * (1.0f - sigmoid));
     }
-
-    // Gradient for fc1 weights: fc1_weight_grad = (X)^T * (error_hidden).
+    
+    // Compute gradient for fc1 weights: X^T * error_hidden.
     cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
-                net->input_dim, net->hidden_dim, net->batch_size,
-                1.0f, X, net->input_dim, net->error_hidden, net->hidden_dim,
+                net->embedded_input_dim, net->hidden_dim, net->batch_size,
+                1.0f, X, net->embedded_input_dim,
+                net->error_hidden, net->hidden_dim,
                 0.0f, net->fc1_weight_grad, net->hidden_dim);
 }
 
 /*
-   update_weights: Applies the AdamW update rule to the network weights.
-   learning_rate: Base learning rate.
+  update_weights: Updates the network weights using the AdamW optimizer.
+  learning_rate: Base learning rate.
 */
-void update_weights(Net* net, float learning_rate) {
-    net->t++;  // Increment time step.
+static inline void update_weights(Net* net, float learning_rate) {
+    net->t++;
     float beta1_t = powf(net->beta1, net->t);
     float beta2_t = powf(net->beta2, net->t);
     float alpha_t = learning_rate * sqrtf(1.0f - beta2_t) / (1.0f - beta1_t);
-
-    // Update fc1 weights.
-    for (int i = 0; i < net->hidden_dim * net->input_dim; i++) {
+    
+    for (int i = 0; i < net->hidden_dim * net->embedded_input_dim; i++) {
         float grad = net->fc1_weight_grad[i] / net->batch_size;
         net->fc1_m[i] = net->beta1 * net->fc1_m[i] + (1.0f - net->beta1) * grad;
         net->fc1_v[i] = net->beta2 * net->fc1_v[i] + (1.0f - net->beta2) * grad * grad;
@@ -337,8 +356,7 @@ void update_weights(Net* net, float learning_rate) {
         net->fc1_weight[i] = net->fc1_weight[i] * (1.0f - learning_rate * net->weight_decay) - update_val;
     }
     
-    // Update fc2 weights.
-    for (int i = 0; i < net->output_dim * net->hidden_dim; i++) {
+    for (int i = 0; i < net->num_bins * net->hidden_dim; i++) {
         float grad = net->fc2_weight_grad[i] / net->batch_size;
         net->fc2_m[i] = net->beta1 * net->fc2_m[i] + (1.0f - net->beta1) * grad;
         net->fc2_v[i] = net->beta2 * net->fc2_v[i] + (1.0f - net->beta2) * grad * grad;
@@ -348,81 +366,69 @@ void update_weights(Net* net, float learning_rate) {
 }
 
 /*
-   save_model: Saves the network parameters and Adam state to a binary file.
+  save_model: Saves network dimensions, weights, Adam state, and embedding table to a binary file.
 */
-void save_model(Net* net, const char* filename) {
+static inline void save_model(Net* net, const char* filename) {
     FILE* file = fopen(filename, "wb");
     if (!file) {
         fprintf(stderr, "Error opening file for writing: %s\n", filename);
         return;
     }
-
-    // Save network dimensions.
-    fwrite(&net->raw_input_dim, sizeof(int), 1, file);
+    fwrite(&net->input_dim, sizeof(int), 1, file);
     fwrite(&net->num_bins, sizeof(int), 1, file);
     fwrite(&net->embedding_dim, sizeof(int), 1, file);
-    fwrite(&net->input_dim, sizeof(int), 1, file);
+    fwrite(&net->embedded_input_dim, sizeof(int), 1, file);
     fwrite(&net->hidden_dim, sizeof(int), 1, file);
-    fwrite(&net->output_dim, sizeof(int), 1, file);
     fwrite(&net->batch_size, sizeof(int), 1, file);
-
-    // Save weights.
-    fwrite(net->fc1_weight, sizeof(float), net->hidden_dim * net->input_dim, file);
-    fwrite(net->fc2_weight, sizeof(float), net->output_dim * net->hidden_dim, file);
-
-    // Save Adam state.
+    
+    fwrite(net->fc1_weight, sizeof(float), net->hidden_dim * net->embedded_input_dim, file);
+    fwrite(net->fc2_weight, sizeof(float), net->num_bins * net->hidden_dim, file);
+    
     fwrite(&net->t, sizeof(int), 1, file);
-    fwrite(net->fc1_m, sizeof(float), net->hidden_dim * net->input_dim, file);
-    fwrite(net->fc1_v, sizeof(float), net->hidden_dim * net->input_dim, file);
-    fwrite(net->fc2_m, sizeof(float), net->output_dim * net->hidden_dim, file);
-    fwrite(net->fc2_v, sizeof(float), net->output_dim * net->hidden_dim, file);
-
-    // Save embedding table.
-    size_t emb_table_size = (size_t)net->raw_input_dim * net->num_bins * net->embedding_dim;
+    fwrite(net->fc1_m, sizeof(float), net->hidden_dim * net->embedded_input_dim, file);
+    fwrite(net->fc1_v, sizeof(float), net->hidden_dim * net->embedded_input_dim, file);
+    fwrite(net->fc2_m, sizeof(float), net->num_bins * net->hidden_dim, file);
+    fwrite(net->fc2_v, sizeof(float), net->num_bins * net->hidden_dim, file);
+    
+    size_t emb_table_size = (size_t)net->input_dim * net->num_bins * net->embedding_dim;
     fwrite(net->embedding_table, sizeof(float), emb_table_size, file);
-
+    
     fclose(file);
     printf("Model saved to %s\n", filename);
 }
 
 /*
-   load_model: Loads network parameters and Adam state from a binary file.
-   Returns a pointer to a newly initialized network.
+  load_model: Loads network dimensions, weights, Adam state, and the embedding table from a binary file.
+  Returns a pointer to the loaded network.
 */
-Net* load_model(const char* filename) {
+static inline Net* load_model(const char* filename) {
     FILE* file = fopen(filename, "rb");
     if (!file) {
         fprintf(stderr, "Error opening file for reading: %s\n", filename);
         return NULL;
     }
-
-    int raw_input_dim, num_bins, embedding_dim, input_dim, hidden_dim, output_dim, batch_size;
-    fread(&raw_input_dim, sizeof(int), 1, file);
+    int input_dim, num_bins, embedding_dim, embedded_input_dim, hidden_dim, batch_size;
+    fread(&input_dim, sizeof(int), 1, file);
     fread(&num_bins, sizeof(int), 1, file);
     fread(&embedding_dim, sizeof(int), 1, file);
-    fread(&input_dim, sizeof(int), 1, file);
+    fread(&embedded_input_dim, sizeof(int), 1, file);
     fread(&hidden_dim, sizeof(int), 1, file);
-    fread(&output_dim, sizeof(int), 1, file);
     fread(&batch_size, sizeof(int), 1, file);
-
-    // Initialize network.
-    Net* net = init_net(raw_input_dim, num_bins, embedding_dim, hidden_dim, output_dim, batch_size);
-
-    // Load weights.
-    fread(net->fc1_weight, sizeof(float), hidden_dim * input_dim, file);
-    fread(net->fc2_weight, sizeof(float), output_dim * hidden_dim, file);
-
-    // Load Adam state.
+    
+    Net* net = init_net(input_dim, num_bins, embedding_dim, hidden_dim, batch_size);
+    
+    fread(net->fc1_weight, sizeof(float), hidden_dim * embedded_input_dim, file);
+    fread(net->fc2_weight, sizeof(float), num_bins * hidden_dim, file);
+    
     fread(&net->t, sizeof(int), 1, file);
-    fread(net->fc1_m, sizeof(float), hidden_dim * input_dim, file);
-    fread(net->fc1_v, sizeof(float), hidden_dim * input_dim, file);
-    fread(net->fc2_m, sizeof(float), output_dim * hidden_dim, file);
-    fread(net->fc2_v, sizeof(float), output_dim * hidden_dim, file);
-
-    // Load embedding table.
-    size_t emb_table_size = (size_t)raw_input_dim * num_bins * embedding_dim;
+    fread(net->fc1_m, sizeof(float), hidden_dim * embedded_input_dim, file);
+    fread(net->fc1_v, sizeof(float), hidden_dim * embedded_input_dim, file);
+    fread(net->fc2_m, sizeof(float), num_bins * hidden_dim, file);
+    fread(net->fc2_v, sizeof(float), num_bins * hidden_dim, file);
+    
+    size_t emb_table_size = (size_t)input_dim * num_bins * embedding_dim;
     fread(net->embedding_table, sizeof(float), emb_table_size, file);
-
+    
     fclose(file);
     printf("Model loaded from %s\n", filename);
     return net;
