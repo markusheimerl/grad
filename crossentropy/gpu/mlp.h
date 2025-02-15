@@ -1,3 +1,4 @@
+/* mlp.h */
 #ifndef MLP_H
 #define MLP_H
 
@@ -33,15 +34,19 @@
   adapted for GPU training using cross‑entropy loss for classification.
   Each raw input (a float) is binned and an embedding vector is looked up.
   The concatenated embedding then flows through a hidden layer with Swish
-  activation into an output layer that produces logits. The cross‑entropy loss
-  is computed by applying a softmax on the logits.
+  activation into an output layer that produces logits.
+  
+  To predict multiple outputs the final output “vector” is arranged as a 
+  concatenation of num_raw_targets softmax groups. In particular, if the number 
+  of classes (bins) per output is target_bins then the final output has 
+  dimension: output_dim = num_raw_targets * target_bins.
 */
 
 typedef struct {
 
     // Embedding parameters.
     int raw_input_dim;    // Number of raw (continuous) input features.
-    int num_bins;         // Number of bins per feature.
+    int num_bins;         // Number of bins per feature (for embedding lookup).
     int embedding_dim;    // Dimension of each embedding vector.
     // The effective input dimension = raw_input_dim * embedding_dim.
     // The embedding table is stored as a contiguous array of size: 
@@ -52,11 +57,16 @@ typedef struct {
     // Network weights and gradients.
     int input_dim;    // = raw_input_dim * embedding_dim.
     int hidden_dim;
-    int output_dim;   // For classification, this equals the number of classes.
+    // For multiple outputs, we predict num_raw_targets outputs and each one is 
+    // discretized into target_bins classes.
+    int num_raw_targets;  // Number of continuous target values.
+    int target_bins;      // Number of bins (classes) per target.
+    int output_dim;       // = num_raw_targets * target_bins.
     int batch_size;
     
     // Device pointers for fully‑connected layer weights & gradients.
-    // fc1: dimensions hidden_dim x input_dim; fc2: dimensions output_dim x hidden_dim.
+    // fc1: dimensions hidden_dim x input_dim; 
+    // fc2: dimensions output_dim x hidden_dim.
     float* d_fc1_weight;
     float* d_fc2_weight;
     float* d_fc1_weight_grad;
@@ -86,7 +96,7 @@ typedef struct {
     float* d_pre_activation;  // Pre‑activation of hidden layer (batch_size x hidden_dim).
     float* d_error_hidden;    // Error backpropagated into hidden layer (batch_size x hidden_dim).
     
-    // For transferring input and (if needed) labels.
+    // For transferring input and, if needed, labels.
     // d_X holds the embedded input (batch_size x input_dim).
     // d_y is not used for cross–entropy loss.
     float* d_X;
@@ -99,9 +109,9 @@ typedef struct {
 
 // ----------------------------------------------------------------------------
 // GPU Kernel: embed_input_kernel
-// For each sample and feature, determine the bin (from INPUT_RANGE_MIN/MAX)
-// and write the corresponding embedding vector (of length embedding_dim)
-// into the concatenated output (of shape batch_size x (raw_input_dim * embedding_dim)).
+// For each sample and feature, determine the bin (using INPUT_RANGE_MIN/MAX)
+// and write the corresponding embedding vector of length embedding_dim into the 
+// concatenated output (of shape batch_size x (raw_input_dim * embedding_dim)).
  // ----------------------------------------------------------------------------
 __global__ void embed_input_kernel(
     const float* raw_input,           // shape: (batch_size x raw_input_dim)
@@ -136,7 +146,7 @@ __global__ void embed_input_kernel(
 // ----------------------------------------------------------------------------
 // Host function: embed_input
 // Copies raw input (host pointer) to device temporarily and launches the embedding
-// kernel to fill net->d_X (embedded representation).
+// kernel to fill net->d_X (the embedded representation).
 // ----------------------------------------------------------------------------
 void embed_input(Net* net, float* raw_input_h) {
     int raw_input_size = net->batch_size * net->raw_input_dim * sizeof(float);
@@ -147,7 +157,7 @@ void embed_input(Net* net, float* raw_input_h) {
     int total = net->batch_size * net->raw_input_dim;
     int block_size = 256;
     int num_blocks = (total + block_size - 1) / block_size;
-    // Note: INPUT_RANGE_MIN and INPUT_RANGE_MAX are assumed to be defined (e.g., via a header).
+    // Note: INPUT_RANGE_MIN and INPUT_RANGE_MAX are assumed defined (e.g., in data.h).
     embed_input_kernel<<<num_blocks, block_size>>>(
         d_raw_input,
         net->d_embedding_table,
@@ -165,10 +175,15 @@ void embed_input(Net* net, float* raw_input_h) {
 
 // ----------------------------------------------------------------------------
 // Function: init_net
-// Initializes the network – allocations, random weights, Adam buffers, embedding table.
+// Initializes the network – allocating memory, initializing random weights, 
+// Adam buffers, and the embedding table.
+// Updated to support multiple outputs (each with target_bins classes):
+//   • num_raw_targets: # of continuous outputs to predict,
+//   • target_bins: # of discrete bins per output.
+// The final output dimension = num_raw_targets * target_bins.
 // ----------------------------------------------------------------------------
-Net* init_net(int raw_input_dim, int num_bins, int embedding_dim,
-              int hidden_dim, int output_dim, int batch_size)
+Net* init_net(int raw_input_dim, int embedding_num_bins, int embedding_dim,
+              int hidden_dim, int num_raw_targets, int target_bins, int batch_size)
 {
     Net* net = (Net*)malloc(sizeof(Net));
     if (!net) {
@@ -177,11 +192,13 @@ Net* init_net(int raw_input_dim, int num_bins, int embedding_dim,
     }
     
     net->raw_input_dim = raw_input_dim;
-    net->num_bins = num_bins;
+    net->num_bins = embedding_num_bins;
     net->embedding_dim = embedding_dim;
     net->input_dim = raw_input_dim * embedding_dim;
     net->hidden_dim = hidden_dim;
-    net->output_dim = output_dim;
+    net->num_raw_targets = num_raw_targets;
+    net->target_bins = target_bins;
+    net->output_dim = num_raw_targets * target_bins;
     net->batch_size = batch_size;
     
     // Adam hyperparameters.
@@ -196,54 +213,54 @@ Net* init_net(int raw_input_dim, int num_bins, int embedding_dim,
     
     // Allocate and initialize host memory for FC weights.
     net->h_fc1_weight = (float*)malloc(hidden_dim * net->input_dim * sizeof(float));
-    net->h_fc2_weight = (float*)malloc(output_dim * hidden_dim * sizeof(float));
+    net->h_fc2_weight = (float*)malloc(net->output_dim * hidden_dim * sizeof(float));
     float scale1 = 1.0f / sqrtf((float)net->input_dim);
     for (int i = 0; i < hidden_dim * net->input_dim; i++) {
         net->h_fc1_weight[i] = (((float)rand()/(float)RAND_MAX) * 2 - 1) * scale1;
     }
     float scale2 = 1.0f / sqrtf((float)hidden_dim);
-    for (int i = 0; i < output_dim * hidden_dim; i++) {
+    for (int i = 0; i < net->output_dim * hidden_dim; i++) {
         net->h_fc2_weight[i] = (((float)rand()/(float)RAND_MAX) * 2 - 1) * scale2;
     }
     
     // Allocate device memory for FC weights and gradients.
     CHECK_CUDA(cudaMalloc(&net->d_fc1_weight, hidden_dim * net->input_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_fc2_weight, output_dim * hidden_dim * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&net->d_fc2_weight, net->output_dim * hidden_dim * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&net->d_fc1_weight_grad, hidden_dim * net->input_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_fc2_weight_grad, output_dim * hidden_dim * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&net->d_fc2_weight_grad, net->output_dim * hidden_dim * sizeof(float)));
     CHECK_CUDA(cudaMemcpy(net->d_fc1_weight, net->h_fc1_weight,
                           hidden_dim * net->input_dim * sizeof(float),
                           cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(net->d_fc2_weight, net->h_fc2_weight,
-                          output_dim * hidden_dim * sizeof(float),
+                          net->output_dim * hidden_dim * sizeof(float),
                           cudaMemcpyHostToDevice));
     
     // Allocate and initialize Adam buffers.
     CHECK_CUDA(cudaMalloc(&net->d_fc1_m, hidden_dim * net->input_dim * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&net->d_fc1_v, hidden_dim * net->input_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_fc2_m, output_dim * hidden_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_fc2_v, output_dim * hidden_dim * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&net->d_fc2_m, net->output_dim * hidden_dim * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&net->d_fc2_v, net->output_dim * hidden_dim * sizeof(float)));
     CHECK_CUDA(cudaMemset(net->d_fc1_m, 0, hidden_dim * net->input_dim * sizeof(float)));
     CHECK_CUDA(cudaMemset(net->d_fc1_v, 0, hidden_dim * net->input_dim * sizeof(float)));
-    CHECK_CUDA(cudaMemset(net->d_fc2_m, 0, output_dim * hidden_dim * sizeof(float)));
-    CHECK_CUDA(cudaMemset(net->d_fc2_v, 0, output_dim * hidden_dim * sizeof(float)));
+    CHECK_CUDA(cudaMemset(net->d_fc2_m, 0, net->output_dim * hidden_dim * sizeof(float)));
+    CHECK_CUDA(cudaMemset(net->d_fc2_v, 0, net->output_dim * hidden_dim * sizeof(float)));
     
     // Allocate helper arrays.
     CHECK_CUDA(cudaMalloc(&net->d_layer1_output, batch_size * hidden_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_predictions, batch_size * output_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_error, batch_size * output_dim * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&net->d_predictions, batch_size * net->output_dim * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&net->d_error, batch_size * net->output_dim * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&net->d_pre_activation, batch_size * hidden_dim * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&net->d_error_hidden, batch_size * hidden_dim * sizeof(float)));
     
     // Allocate memory for network input (after embedding) and target output.
     CHECK_CUDA(cudaMalloc(&net->d_X, batch_size * net->input_dim * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&net->d_y, batch_size * output_dim * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&net->d_y, batch_size * net->output_dim * sizeof(float)));
     
     // Allocate and initialize the embedding table.
-    size_t emb_table_size = raw_input_dim * num_bins * embedding_dim * sizeof(float);
+    size_t emb_table_size = raw_input_dim * embedding_num_bins * embedding_dim * sizeof(float);
     net->h_embedding_table = (float*)malloc(emb_table_size);
-    float emb_scale = 1.0f / sqrtf((float)num_bins);
-    for (int i = 0; i < raw_input_dim * num_bins * embedding_dim; i++) {
+    float emb_scale = 1.0f / sqrtf((float)embedding_num_bins);
+    for (int i = 0; i < raw_input_dim * embedding_num_bins * embedding_dim; i++) {
         net->h_embedding_table[i] = (((float)rand()/(float)RAND_MAX) * 2 - 1) * emb_scale;
     }
     CHECK_CUDA(cudaMalloc(&net->d_embedding_table, emb_table_size));
@@ -318,79 +335,84 @@ void forward_pass(Net* net) {
 
 // ----------------------------------------------------------------------------
 // GPU Kernel: cross_entropy_loss_kernel
-// For each sample (row in d_predictions), this kernel computes the softmax and 
-// cross‑entropy loss (with an epsilon for stability). It also sets d_error 
-// to (softmax(probabilities) - one_hot(target)).
+// For each output group (each softmax) in each sample, this kernel computes the softmax and 
+// cross‑entropy loss (with epsilon for numerical stability). It also sets d_error 
+// to (softmax(prob) - one_hot(target)).
+// Each sample has num_raw_targets groups, each of length target_bins.
 // ----------------------------------------------------------------------------
 __global__ void cross_entropy_loss_kernel(const float* predictions,
                                             const int* target_labels,
                                             float* out_loss,
                                             float* d_error,
                                             int batch_size,
-                                            int num_classes,
+                                            int num_raw_targets,
+                                            int target_bins,
                                             float epsilon)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < batch_size) {
-        int offset = i * num_classes;
+    int total_groups = batch_size * num_raw_targets;
+    if (i < total_groups) {
+        int sample = i / num_raw_targets;
+        int out_idx = i % num_raw_targets;
+        int offset = sample * (num_raw_targets * target_bins) + out_idx * target_bins;
         float max_logit = predictions[offset];
         // Find maximum logit for numerical stability.
-        for (int j = 1; j < num_classes; j++) {
+        for (int j = 1; j < target_bins; j++) {
             float logit = predictions[offset + j];
             if (logit > max_logit)
                 max_logit = logit;
         }
         float sum_exp = 0.0f;
-        for (int j = 0; j < num_classes; j++) {
+        for (int j = 0; j < target_bins; j++) {
             sum_exp += expf(predictions[offset + j] - max_logit);
         }
-        float loss_i = 0.0f;
-        int target = target_labels[i];
-        for (int j = 0; j < num_classes; j++) {
+        float loss_group = 0.0f;
+        int target = target_labels[sample * num_raw_targets + out_idx];
+        for (int j = 0; j < target_bins; j++) {
             float exp_val = expf(predictions[offset + j] - max_logit);
             float prob = exp_val / sum_exp;
-            // Store gradient: (softmax(prob) - one_hot)
             d_error[offset + j] = prob - ((j == target) ? 1.0f : 0.0f);
             if (j == target) {
-                loss_i = -logf(prob + epsilon);
+                loss_group = -logf(prob + epsilon);
             }
         }
-        out_loss[i] = loss_i;
+        out_loss[i] = loss_group;
     }
 }
 
 // ----------------------------------------------------------------------------
 // Function: calculate_loss
-// Computes the average cross‑entropy loss over the batch and sets d_error
-// (the gradient at the output layer). The target labels (discrete class indices)
-// are provided from the host as an integer array of length batch_size.
+// Computes the average cross‑entropy loss over all output groups and samples,
+// and sets d_error (the gradient at the output layer). The target labels 
+// (discrete class indices) are provided from the host as an array of length 
+// (batch_size * num_raw_targets).
 // ----------------------------------------------------------------------------
 float calculate_loss(Net* net, int* target_labels_h) {
-    int batch = net->batch_size;
+    int total_groups = net->batch_size * net->num_raw_targets;
     
     // Allocate device memory for target labels and copy from host.
     int *d_target_labels;
-    CHECK_CUDA(cudaMalloc(&d_target_labels, batch * sizeof(int)));
-    CHECK_CUDA(cudaMemcpy(d_target_labels, target_labels_h, batch * sizeof(int), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMalloc(&d_target_labels, total_groups * sizeof(int)));
+    CHECK_CUDA(cudaMemcpy(d_target_labels, target_labels_h, total_groups * sizeof(int), cudaMemcpyHostToDevice));
     
-    // Allocate device memory for per-sample loss.
+    // Allocate device memory for per-group loss.
     float* d_loss;
-    CHECK_CUDA(cudaMalloc(&d_loss, batch * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&d_loss, total_groups * sizeof(float)));
     
     int block_size = 256;
-    int num_blocks = (batch + block_size - 1) / block_size;
-    cross_entropy_loss_kernel<<<num_blocks, block_size>>>(net->d_predictions, d_target_labels, d_loss, net->d_error, batch, net->output_dim, net->epsilon);
+    int num_blocks = (total_groups + block_size - 1) / block_size;
+    cross_entropy_loss_kernel<<<num_blocks, block_size>>>(net->d_predictions, d_target_labels, d_loss, net->d_error, net->batch_size, net->num_raw_targets, net->target_bins, net->epsilon);
     CHECK_CUDA(cudaDeviceSynchronize());
     
     // Copy loss values to host and compute the average.
-    float* h_loss = (float*)malloc(batch * sizeof(float));
-    CHECK_CUDA(cudaMemcpy(h_loss, d_loss, batch * sizeof(float), cudaMemcpyDeviceToHost));
+    float* h_loss = (float*)malloc(total_groups * sizeof(float));
+    CHECK_CUDA(cudaMemcpy(h_loss, d_loss, total_groups * sizeof(float), cudaMemcpyDeviceToHost));
     
     float loss = 0.0f;
-    for (int i = 0; i < batch; i++) {
+    for (int i = 0; i < total_groups; i++) {
         loss += h_loss[i];
     }
-    loss /= batch;
+    loss /= total_groups;
     
     free(h_loss);
     cudaFree(d_loss);
@@ -411,8 +433,7 @@ void zero_gradients(Net* net) {
 // ----------------------------------------------------------------------------
 // GPU Kernel: swish_backward_kernel
 // Computes the derivative of the Swish activation function and multiplies it
-// with the backpropagated error.
-// The derivative is: sigmoid(x) + x * sigmoid(x) * (1 - sigmoid(x))
+// with the backpropagated error. The derivative is: sigmoid(x) + x * sigmoid(x) * (1 - sigmoid(x))
 // ----------------------------------------------------------------------------
 __global__ void swish_backward_kernel(float* error_hidden, const float* pre_activation, int size) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -591,7 +612,8 @@ void save_model(Net* net, const char* filename) {
     fwrite(&net->embedding_dim, sizeof(int), 1, file);
     fwrite(&net->input_dim, sizeof(int), 1, file);
     fwrite(&net->hidden_dim, sizeof(int), 1, file);
-    fwrite(&net->output_dim, sizeof(int), 1, file);
+    fwrite(&net->num_raw_targets, sizeof(int), 1, file);
+    fwrite(&net->target_bins, sizeof(int), 1, file);
     fwrite(&net->batch_size, sizeof(int), 1, file);
     
     // Save fc1 and fc2 weights.
@@ -600,7 +622,7 @@ void save_model(Net* net, const char* filename) {
     
     // Save Adam state.
     fwrite(&net->t, sizeof(int), 1, file);
-    // (For simplicity we do not save Adam moment vectors.)
+    // (For simplicity we do not save the Adam moments.)
     
     // Save embedding table.
     fwrite(net->h_embedding_table, sizeof(float), emb_table_count, file);
@@ -620,21 +642,22 @@ Net* load_model(const char* filename) {
         return NULL;
     }
     
-    int raw_input_dim, num_bins, embedding_dim, input_dim, hidden_dim, output_dim, batch_size;
+    int raw_input_dim, num_bins, embedding_dim, input_dim, hidden_dim, num_raw_targets, target_bins, batch_size;
     fread(&raw_input_dim, sizeof(int), 1, file);
     fread(&num_bins, sizeof(int), 1, file);
     fread(&embedding_dim, sizeof(int), 1, file);
     fread(&input_dim, sizeof(int), 1, file);
     fread(&hidden_dim, sizeof(int), 1, file);
-    fread(&output_dim, sizeof(int), 1, file);
+    fread(&num_raw_targets, sizeof(int), 1, file);
+    fread(&target_bins, sizeof(int), 1, file);
     fread(&batch_size, sizeof(int), 1, file);
     
     // Initialize network.
-    Net* net = init_net(raw_input_dim, num_bins, embedding_dim, hidden_dim, output_dim, batch_size);
+    Net* net = init_net(raw_input_dim, num_bins, embedding_dim, hidden_dim, num_raw_targets, target_bins, batch_size);
     
     // Load fc1 and fc2 weights.
     fread(net->h_fc1_weight, sizeof(float), hidden_dim * input_dim, file);
-    fread(net->h_fc2_weight, sizeof(float), output_dim * hidden_dim, file);
+    fread(net->h_fc2_weight, sizeof(float), (num_raw_targets * target_bins) * hidden_dim, file);
     fread(&net->t, sizeof(int), 1, file);
     
     // Copy weights to device.
@@ -642,7 +665,7 @@ Net* load_model(const char* filename) {
                           hidden_dim * input_dim * sizeof(float),
                           cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(net->d_fc2_weight, net->h_fc2_weight,
-                          output_dim * hidden_dim * sizeof(float),
+                          net->output_dim * hidden_dim * sizeof(float),
                           cudaMemcpyHostToDevice));
     
     // Load embedding table.
@@ -659,7 +682,7 @@ Net* load_model(const char* filename) {
 
 // ----------------------------------------------------------------------------
 // Function: free_net
-// Frees device and host memory allocated for the network.
+// Frees all device and host memory allocated for the network.
 // ----------------------------------------------------------------------------
 void free_net(Net* net) {
     // Free device memory.

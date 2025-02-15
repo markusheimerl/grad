@@ -1,23 +1,9 @@
-/* gpu/mlp.c – Adapted for classification with cross‑entropy loss on GPU
-
-   Workflow:
-     1. generate_synthetic_data produces raw inputs X and continuous targets y.
-     2. The true minimum and maximum of y are computed.
-     3. Each continuous target is mapped into one of target_bins (classes)
-        to yield discrete labels (y_class).
-     4. The network (with embedding lookup and two FC layers using Swish)
-        is trained using cross‑entropy loss (computed by a GPU kernel) on y_class.
-     5. After training the model is saved and re‑loaded to verify its performance.
-     6. Finally, classification accuracy and continuous prediction error
-        (based on each predicted bin’s center) are computed and printed.
-*/
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
-#include "../../data.h"     // Provides generate_synthetic_data and save_data_to_csv, and definitions for INPUT_RANGE_MIN/MAX.
-#include "mlp.h"         // Contains GPU network definitions and functions.
+#include "../../data.h"     // Provides generate_synthetic_data and save_data_to_csv, and defines INPUT_RANGE_MIN/MAX.
+#include "mlp.h"          // Contains GPU network definitions and functions.
 
 int main() {
     // Seed the random number generator.
@@ -28,15 +14,15 @@ int main() {
     //----------------------------------------------------------------------------
     const int raw_input_dim = 8;         // Number of raw input features.
     const int num_samples     = 1024;      // Number of samples.
-    const int target_dim      = 1;         // Continuous target dimension.
+    const int num_raw_targets = 8;         // Number of continuous target values
 
     // Embedding lookup parameters.
-    const int embedding_num_bins = 10;     // Number of bins per feature for embedding lookup.
+    const int embedding_num_bins = 16;     // Number of bins per feature for embedding lookup.
     const int embedding_dim     = 8;       // Dimension of each embedding vector.
 
     // MLP parameters.
     const int hidden_dim  = 1024;
-    const int target_bins = 256;           // Number of discrete bins (classes) for the target.
+    const int target_bins = 512;           // Number of discrete bins (classes) for each output.
     const int batch_size  = num_samples;    // Full‐batch training.
 
     //----------------------------------------------------------------------------
@@ -44,11 +30,12 @@ int main() {
     //----------------------------------------------------------------------------
     // Generate synthetic data: X (raw inputs) and y (continuous targets).
     float *X, *y;
-    generate_synthetic_data(&X, &y, num_samples, raw_input_dim, target_dim);
+    generate_synthetic_data(&X, &y, num_samples, raw_input_dim, num_raw_targets);
 
     // Determine the true minimum and maximum of the continuous targets.
     float out_min = y[0], out_max = y[0];
-    for (int i = 1; i < num_samples * target_dim; i++) {
+    int total_targets = num_samples * num_raw_targets;
+    for (int i = 1; i < total_targets; i++) {
         if (y[i] < out_min)
             out_min = y[i];
         if (y[i] > out_max)
@@ -60,30 +47,32 @@ int main() {
 
     //----------------------------------------------------------------------------
     // Compute discrete labels: Map each continuous target in [out_min, out_max]
-    // into a bin (class) in [0, target_bins-1].
+    // into a bin in [0, target_bins-1] for each output.
     //----------------------------------------------------------------------------
-    int* y_class = (int*)malloc(num_samples * sizeof(int));
+    int* y_class = (int*)malloc(total_targets * sizeof(int));
     for (int i = 0; i < num_samples; i++) {
-        // Since target_dim == 1, each target is y[i].
-        float normalized = (y[i] - out_min) / out_range;
-        int bin = (int)(normalized * target_bins);
-        if (bin < 0)
-            bin = 0;
-        if (bin >= target_bins)
-            bin = target_bins - 1;
-        y_class[i] = bin;
+        for (int j = 0; j < num_raw_targets; j++) {
+            int index = i * num_raw_targets + j;
+            float normalized = (y[index] - out_min) / out_range;
+            int bin = (int)(normalized * target_bins);
+            if (bin < 0)
+                bin = 0;
+            if (bin >= target_bins)
+                bin = target_bins - 1;
+            y_class[index] = bin;
+        }
     }
 
     //----------------------------------------------------------------------------
     // Initialize the GPU network.
     //----------------------------------------------------------------------------
     Net* net = init_net(raw_input_dim, embedding_num_bins, embedding_dim,
-                         hidden_dim, target_bins, batch_size);
+                         hidden_dim, num_raw_targets, target_bins, batch_size);
 
     //----------------------------------------------------------------------------
     // TRAINING PARAMETERS
     //----------------------------------------------------------------------------
-    const int num_epochs = 2000;
+    const int num_epochs = 20000;
     const float learning_rate = 0.001f;
 
     //----------------------------------------------------------------------------
@@ -97,8 +86,6 @@ int main() {
         forward_pass(net);
 
         // Compute cross‑entropy loss (and set the gradient d_error).
-        // (calculate_loss copies y_class from host to device and uses a kernel
-        // to compute softmax, cross‑entropy loss, and the error gradient.)
         float loss = calculate_loss(net, y_class);
 
         // Zero gradients.
@@ -124,7 +111,7 @@ int main() {
     strftime(data_fname, sizeof(data_fname), "%Y%m%d_%H%M%S_data.csv", localtime(&now));
     save_model(net, model_fname);
     // Note: save_data_to_csv (from data.h) saves X and y (continuous targets).
-    save_data_to_csv(X, y, num_samples, raw_input_dim, target_dim, data_fname);
+    save_data_to_csv(X, y, num_samples, raw_input_dim, num_raw_targets, data_fname);
 
     //----------------------------------------------------------------------------
     // Verify the saved model.
@@ -138,37 +125,42 @@ int main() {
 
     //----------------------------------------------------------------------------
     // EVALUATION:
-    // For each sample, determine the predicted bin (via argmax over the logits),
-    // then convert it to a continuous prediction by taking the bin’s center.
-    // Also, compute classification accuracy.
+    // For each sample and for each output, determine the predicted bin (via argmax
+    // over the corresponding group of logits), then convert it to a continuous
+    // prediction (the bin’s center). Also, compute overall classification accuracy.
     //----------------------------------------------------------------------------
     int correct = 0;
     double sum_abs_error = 0.0;
     float bin_width = out_range / target_bins;
+    int total_predictions = num_samples * num_raw_targets;
 
     // Copy predictions from device to host.
-    int pred_size = batch_size * target_bins * sizeof(float);
+    int pred_size = batch_size * net->output_dim * sizeof(float);
     float* h_predictions = (float*)malloc(pred_size);
     CHECK_CUDA(cudaMemcpy(h_predictions, net->d_predictions, pred_size, cudaMemcpyDeviceToHost));
 
     for (int i = 0; i < num_samples; i++) {
-        int predicted_bin = 0;
-        float max_logit = h_predictions[i * target_bins];
-        for (int j = 1; j < target_bins; j++) {
-            float logit = h_predictions[i * target_bins + j];
-            if (logit > max_logit) {
-                max_logit = logit;
-                predicted_bin = j;
+        for (int j = 0; j < num_raw_targets; j++) {
+            int group_offset = i * (num_raw_targets * target_bins) + j * target_bins;
+            int predicted_bin = 0;
+            float max_logit = h_predictions[group_offset];
+            for (int k = 1; k < target_bins; k++) {
+                float logit = h_predictions[group_offset + k];
+                if (logit > max_logit) {
+                    max_logit = logit;
+                    predicted_bin = k;
+                }
             }
+            int label = y_class[i * num_raw_targets + j];
+            if (predicted_bin == label)
+                correct++;
+            float predicted_cont = out_min + (predicted_bin + 0.5f) * bin_width;
+            float true_cont = y[i * num_raw_targets + j];
+            sum_abs_error += fabs(predicted_cont - true_cont);
         }
-        if (predicted_bin == y_class[i])
-            correct++;
-        // Convert predicted bin to a continuous prediction.
-        float predicted_cont = out_min + (predicted_bin + 0.5f) * bin_width;
-        sum_abs_error += fabs(predicted_cont - y[i]);
     }
-    float accuracy = 100.0f * ((float)correct) / num_samples;
-    float mae = sum_abs_error / num_samples;
+    float accuracy = 100.0f * ((float)correct) / total_predictions;
+    float mae = sum_abs_error / total_predictions;
     printf("\nClassification Accuracy: %.2f%%\n", accuracy);
     printf("Mean Absolute Error (Continuous Prediction): %.5f\n", mae);
 
@@ -176,20 +168,26 @@ int main() {
     // Print sample predictions (first 15 samples).
     //----------------------------------------------------------------------------
     printf("\nSample Predictions (first 15 samples):\n");
-    printf("Sample\tPredictedBin\tPredictedCont\tTrueBin\tTrueCont\n");
-    printf("------------------------------------------------------------\n");
-    for (int i = 0; i < 15; i++) {
-        int predicted_bin = 0;
-        float max_logit = h_predictions[i * target_bins];
-        for (int j = 1; j < target_bins; j++) {
-            float logit = h_predictions[i * target_bins + j];
-            if (logit > max_logit) {
-                max_logit = logit;
-                predicted_bin = j;
+    printf("Sample\tOutputIdx\tPredictedBin\tPredictedCont\tTrueBin\tTrueCont\n");
+    printf("--------------------------------------------------------------------------\n");
+    int samples_to_print = (num_samples < 15) ? num_samples : 15;
+    for (int i = 0; i < samples_to_print; i++) {
+        for (int j = 0; j < num_raw_targets; j++) {
+            int group_offset = i * (num_raw_targets * target_bins) + j * target_bins;
+            int predicted_bin = 0;
+            float max_logit = h_predictions[group_offset];
+            for (int k = 1; k < target_bins; k++) {
+                float logit = h_predictions[group_offset + k];
+                if (logit > max_logit) {
+                    max_logit = logit;
+                    predicted_bin = k;
+                }
             }
+            float predicted_cont = out_min + (predicted_bin + 0.5f) * bin_width;
+            int true_bin = y_class[i * num_raw_targets + j];
+            float true_cont = y[i * num_raw_targets + j];
+            printf("%d:\t%d\t\t%d\t\t%.5f\t\t%d\t%.5f\n", i, j, predicted_bin, predicted_cont, true_bin, true_cont);
         }
-        float predicted_cont = out_min + (predicted_bin + 0.5f) * bin_width;
-        printf("%d:\t%d\t\t%.5f\t\t%d\t%.5f\n", i, predicted_bin, predicted_cont, y_class[i], y[i]);
     }
 
     //----------------------------------------------------------------------------
