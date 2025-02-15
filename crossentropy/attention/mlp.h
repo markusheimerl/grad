@@ -348,9 +348,10 @@ static inline void forward_pass(Net* net, float* X) {
     int tokens = net->input_dim;
     int d_dim = net->embedding_dim;
     int total_tokens = net->batch_size * tokens;
+    int ff_hidden = net->ff_hidden_dim;
 
     // --- Self-Attention Part ---
-    // Compute Q, K, V using matrix multiplications.
+    // Compute Q, K, V using matrix multiplications
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                 total_tokens, d_dim, d_dim,
                 1.0f, X, d_dim,
@@ -375,14 +376,14 @@ static inline void forward_pass(Net* net, float* X) {
         float* scores = net->attn_scores + s * tokens * tokens;
         float* attn_out = net->predictions + s * tokens * d_dim;
 
-        // Compute scores = Q * K^T scaled.
+        // Compute scores = Q * K^T scaled
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     tokens, tokens, d_dim,
                     scale, Q, d_dim,
                     K, d_dim,
                     0.0f, scores, tokens);
 
-        // Apply softmax to each row.
+        // Apply softmax to each row
         for (int i = 0; i < tokens; i++) {
             float* score_row = scores + i * tokens;
             float* softmax_row = (float*)malloc(tokens * sizeof(float));
@@ -391,7 +392,7 @@ static inline void forward_pass(Net* net, float* X) {
             free(softmax_row);
         }
 
-        // Compute attention output: attn_out = scores * V.
+        // Compute attention output: attn_out = scores * V
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                     tokens, d_dim, tokens,
                     1.0f, scores, tokens,
@@ -400,49 +401,36 @@ static inline void forward_pass(Net* net, float* X) {
     }
 
     // --- First Residual: r = X + attention_output ---
-    for (int i = 0; i < net->batch_size * tokens * d_dim; i++) {
+    for (int i = 0; i < total_tokens * d_dim; i++) {
         net->ff_residual[i] = X[i] + net->predictions[i];
     }
 
-    // --- Feed–Forward Network with Residual ---
-    // For each sample and each token, compute:
-    //   hidden = ReLU(r * W_ff1)  [W_ff1: [d_dim x ff_hidden_dim]]
-    //   f = hidden * W_ff2       [W_ff2: [ff_hidden_dim x d_dim]]
-    //   final_output = r + f.
-    for (int s = 0; s < net->batch_size; s++) {
-        for (int t = 0; t < tokens; t++) {
-            int token_offset = s * tokens * d_dim + t * d_dim;
-            float* r = net->ff_residual + token_offset;
-            float f_output[128]; // maximum d_dim is assumed to be <= 128 (adjust if needed)
-            for (int i = 0; i < d_dim; i++) {
-                f_output[i] = 0.0f;
-            }
-            // Allocate temporary buffer for hidden layer output.
-            int hidden_size = net->ff_hidden_dim;
-            float* hidden = (float*)malloc(hidden_size * sizeof(float));
-            // Compute hidden = r * W_ff1. (W_ff1: [d_dim x hidden_size])
-            for (int j = 0; j < hidden_size; j++) {
-                float sum = 0.0f;
-                for (int k = 0; k < d_dim; k++) {
-                    sum += r[k] * net->W_ff1[k * hidden_size + j];
-                }
-                // Apply ReLU.
-                hidden[j] = (sum > 0.0f) ? sum : 0.0f;
-            }
-            // Compute feed–forward output f = hidden * W_ff2. (W_ff2: [hidden_size x d_dim])
-            for (int i = 0; i < d_dim; i++) {
-                float sum = 0.0f;
-                for (int j = 0; j < hidden_size; j++) {
-                    sum += hidden[j] * net->W_ff2[j * d_dim + i];
-                }
-                f_output[i] = sum;
-            }
-            free(hidden);
-            // Final output = r + f_output, store in predictions.
-            for (int i = 0; i < d_dim; i++) {
-                net->predictions[token_offset + i] = r[i] + f_output[i];
-            }
-        }
+    // --- Feed-Forward Network with Residual ---
+    // Compute hidden = ReLU(r * W_ff1) for all tokens at once
+    float* hidden = (float*)malloc(total_tokens * ff_hidden * sizeof(float));
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                total_tokens, ff_hidden, d_dim,
+                1.0f, net->ff_residual, d_dim,
+                net->W_ff1, ff_hidden,
+                0.0f, hidden, ff_hidden);
+
+    // Apply ReLU
+    for (int i = 0; i < total_tokens * ff_hidden; i++) {
+        hidden[i] = (hidden[i] > 0.0f) ? hidden[i] : 0.0f;
+    }
+
+    // Compute f = hidden * W_ff2 for all tokens at once
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                total_tokens, d_dim, ff_hidden,
+                1.0f, hidden, ff_hidden,
+                net->W_ff2, d_dim,
+                0.0f, net->predictions, d_dim);
+
+    free(hidden);
+
+    // Final residual connection
+    for (int i = 0; i < total_tokens * d_dim; i++) {
+        net->predictions[i] += net->ff_residual[i];
     }
 }
 
