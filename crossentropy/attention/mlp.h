@@ -17,6 +17,11 @@
   self–attention (of shape [batch_size x (input_dim*embedding_dim)] ) is interpreted
   directly as the logits (for each token/output, there are embedding_dim = num_bins logits).
 
+  In this modified version we add a feed–forward network after self–attention and add
+  two residual connections:
+    x = x + attention(x)
+    x = x + feed_forward(x)
+    
   This header defines the network structure and all related utility and training functions.
 */
 
@@ -46,7 +51,20 @@ typedef struct {
     float* W_V_m;
     float* W_V_v;
 
-    // Adam hyper‐parameters.
+    // Feed–forward network parameters.
+    // We use a two–layer network: first layer: [embedding_dim x ff_hidden_dim], then
+    // second layer: [ff_hidden_dim x embedding_dim]. Here we set ff_hidden_dim = 4 * embedding_dim.
+    int ff_hidden_dim;
+    float* W_ff1;       // [embedding_dim x ff_hidden_dim]
+    float* W_ff1_grad;
+    float* W_ff1_m;
+    float* W_ff1_v;
+    float* W_ff2;       // [ff_hidden_dim x embedding_dim]
+    float* W_ff2_grad;
+    float* W_ff2_m;
+    float* W_ff2_v;
+
+    // Adam hyper–parameters.
     float beta1;
     float beta2;
     float epsilon;
@@ -54,19 +72,22 @@ typedef struct {
     float weight_decay;
 
     // Helper arrays for forward/backward passes.
-    // predictions: output logits from the self–attention layer.
+    // predictions: final output logits after feed–forward block.
     // It has shape: [batch_size x (input_dim * embedding_dim)].
     float* predictions;
     // error: gradients for the output (same shape as predictions).
     float* error;
 
-    // Temporary buffers to store Q, K, V and the attention scores.
-    // Each of Q, K, V has shape: [batch_size x (input_dim * embedding_dim)]
+    // Temporary buffers for self–attention.
+    // attn_Q, attn_K, attn_V: each has shape [batch_size x (input_dim * embedding_dim)]
     float* attn_Q;
     float* attn_K;
     float* attn_V;
     // attn_scores: for each sample, a matrix of shape [input_dim x input_dim].
     float* attn_scores;
+    // Buffer to store the result of the first residual connection (i.e. x + attention(x))
+    // used as input to the feed–forward network.
+    float* ff_residual;
 
     // Dimensions.
     int batch_size;  // Number of samples per batch.
@@ -146,7 +167,7 @@ static inline void compute_min_max(const float* data, int num_samples, int num_f
 /* ---------------- Network Initialization and Freeing ---------------- */
 
 /*
-  init_net: Initializes the network with an embedding lookup and a self–attention layer.
+  init_net: Initializes the network with an embedding lookup, self–attention and a feed–forward network.
   Parameters:
     input_dim: number of raw input features.
     num_bins: number of bins (used for embedding lookup and as number of logits per output).
@@ -217,6 +238,34 @@ static inline Net* init_net(int input_dim, int num_bins, int embedding_dim,
     net->attn_V = (float*)malloc(batch_size * input_dim * embedding_dim * sizeof(float));
     // attn_scores: shape = [batch_size x (input_dim * input_dim)]
     net->attn_scores = (float*)malloc(batch_size * input_dim * input_dim * sizeof(float));
+    // Buffer for feed-forward residual: same shape as predictions.
+    net->ff_residual = (float*)malloc(batch_size * input_dim * embedding_dim * sizeof(float));
+
+    // Initialize feed-forward network parameters.
+    net->ff_hidden_dim = 4 * embedding_dim;
+    int ff1_size = embedding_dim * net->ff_hidden_dim;
+    int ff2_size = net->ff_hidden_dim * embedding_dim;
+    net->W_ff1 = (float*)malloc(ff1_size * sizeof(float));
+    net->W_ff1_grad = (float*)malloc(ff1_size * sizeof(float));
+    net->W_ff1_m = (float*)calloc(ff1_size, sizeof(float));
+    net->W_ff1_v = (float*)calloc(ff1_size, sizeof(float));
+    net->W_ff2 = (float*)malloc(ff2_size * sizeof(float));
+    net->W_ff2_grad = (float*)malloc(ff2_size * sizeof(float));
+    net->W_ff2_m = (float*)calloc(ff2_size, sizeof(float));
+    net->W_ff2_v = (float*)calloc(ff2_size, sizeof(float));
+
+    // Initialize feed-forward weights.
+    float ff1_scale = 1.0f / sqrtf((float)embedding_dim);
+    for (int i = 0; i < ff1_size; i++) {
+        net->W_ff1[i] = ((((float)rand() / (float)RAND_MAX) * 2.0f) - 1.0f) * ff1_scale;
+    }
+    memset(net->W_ff1_grad, 0, ff1_size * sizeof(float));
+
+    float ff2_scale = 1.0f / sqrtf((float)net->ff_hidden_dim);
+    for (int i = 0; i < ff2_size; i++) {
+        net->W_ff2[i] = ((((float)rand() / (float)RAND_MAX) * 2.0f) - 1.0f) * ff2_scale;
+    }
+    memset(net->W_ff2_grad, 0, ff2_size * sizeof(float));
 
     return net;
 }
@@ -245,6 +294,15 @@ static inline void free_net(Net* net) {
         free(net->attn_K);
         free(net->attn_V);
         free(net->attn_scores);
+        free(net->ff_residual);
+        free(net->W_ff1);
+        free(net->W_ff1_grad);
+        free(net->W_ff1_m);
+        free(net->W_ff1_v);
+        free(net->W_ff2);
+        free(net->W_ff2_grad);
+        free(net->W_ff2_m);
+        free(net->W_ff2_v);
         free(net);
     }
 }
@@ -273,12 +331,26 @@ static inline void embed_input(Net* net, float* raw_input, float* embedded_outpu
     }
 }
 
+/*
+  forward_pass: Computes the forward pass.
+  Steps:
+    1. Compute self–attention. For each sample:
+         Q = X * W_Q, K = X * W_K, V = X * W_V.
+       Then compute attention scores = softmax((Q * K^T)/sqrt(d)) and output = scores * V.
+    2. Residual connection: r = X + attention_output. Save r to ff_residual.
+    3. Feed–forward network: for each token, compute:
+         hidden = ReLU(r * W_ff1)
+         f = hidden * W_ff2
+         final = r + f.
+       The final result is stored in net->predictions.
+*/
 static inline void forward_pass(Net* net, float* X) {
     int tokens = net->input_dim;
     int d_dim = net->embedding_dim;
     int total_tokens = net->batch_size * tokens;
 
-    // Q, K, V computations remain the same
+    // --- Self-Attention Part ---
+    // Compute Q, K, V using matrix multiplications.
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                 total_tokens, d_dim, d_dim,
                 1.0f, X, d_dim,
@@ -301,30 +373,76 @@ static inline void forward_pass(Net* net, float* X) {
         float* K = net->attn_K + s * tokens * d_dim;
         float* V = net->attn_V + s * tokens * d_dim;
         float* scores = net->attn_scores + s * tokens * tokens;
-        float* output = net->predictions + s * tokens * d_dim;
+        float* attn_out = net->predictions + s * tokens * d_dim;
 
-        // Q * K^T
+        // Compute scores = Q * K^T scaled.
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     tokens, tokens, d_dim,
                     scale, Q, d_dim,
                     K, d_dim,
                     0.0f, scores, tokens);
 
-        // Apply softmax to each row
+        // Apply softmax to each row.
         for (int i = 0; i < tokens; i++) {
-            float* score_row = scores + i*tokens;
+            float* score_row = scores + i * tokens;
             float* softmax_row = (float*)malloc(tokens * sizeof(float));
             softmax(score_row, softmax_row, tokens);
             memcpy(score_row, softmax_row, tokens * sizeof(float));
             free(softmax_row);
         }
 
-        // scores * V
+        // Compute attention output: attn_out = scores * V.
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                     tokens, d_dim, tokens,
                     1.0f, scores, tokens,
                     V, d_dim,
-                    0.0f, output, d_dim);
+                    0.0f, attn_out, d_dim);
+    }
+
+    // --- First Residual: r = X + attention_output ---
+    for (int i = 0; i < net->batch_size * tokens * d_dim; i++) {
+        net->ff_residual[i] = X[i] + net->predictions[i];
+    }
+
+    // --- Feed–Forward Network with Residual ---
+    // For each sample and each token, compute:
+    //   hidden = ReLU(r * W_ff1)  [W_ff1: [d_dim x ff_hidden_dim]]
+    //   f = hidden * W_ff2       [W_ff2: [ff_hidden_dim x d_dim]]
+    //   final_output = r + f.
+    for (int s = 0; s < net->batch_size; s++) {
+        for (int t = 0; t < tokens; t++) {
+            int token_offset = s * tokens * d_dim + t * d_dim;
+            float* r = net->ff_residual + token_offset;
+            float f_output[128]; // maximum d_dim is assumed to be <= 128 (adjust if needed)
+            for (int i = 0; i < d_dim; i++) {
+                f_output[i] = 0.0f;
+            }
+            // Allocate temporary buffer for hidden layer output.
+            int hidden_size = net->ff_hidden_dim;
+            float* hidden = (float*)malloc(hidden_size * sizeof(float));
+            // Compute hidden = r * W_ff1. (W_ff1: [d_dim x hidden_size])
+            for (int j = 0; j < hidden_size; j++) {
+                float sum = 0.0f;
+                for (int k = 0; k < d_dim; k++) {
+                    sum += r[k] * net->W_ff1[k * hidden_size + j];
+                }
+                // Apply ReLU.
+                hidden[j] = (sum > 0.0f) ? sum : 0.0f;
+            }
+            // Compute feed–forward output f = hidden * W_ff2. (W_ff2: [hidden_size x d_dim])
+            for (int i = 0; i < d_dim; i++) {
+                float sum = 0.0f;
+                for (int j = 0; j < hidden_size; j++) {
+                    sum += hidden[j] * net->W_ff2[j * d_dim + i];
+                }
+                f_output[i] = sum;
+            }
+            free(hidden);
+            // Final output = r + f_output, store in predictions.
+            for (int i = 0; i < d_dim; i++) {
+                net->predictions[token_offset + i] = r[i] + f_output[i];
+            }
+        }
     }
 }
 
@@ -364,46 +482,103 @@ static inline float calculate_loss(Net* net, int* target_labels) {
 }
 
 /*
-  zero_gradients: Resets the gradients stored for the attention weights.
+  zero_gradients: Resets the gradients stored for the attention and feed–forward weights.
 */
 static inline void zero_gradients(Net* net) {
     int attn_dim = net->embedding_dim * net->embedding_dim;
     memset(net->W_Q_grad, 0, attn_dim * sizeof(float));
     memset(net->W_K_grad, 0, attn_dim * sizeof(float));
     memset(net->W_V_grad, 0, attn_dim * sizeof(float));
+
+    int ff1_size = net->embedding_dim * net->ff_hidden_dim;
+    int ff2_size = net->ff_hidden_dim * net->embedding_dim;
+    memset(net->W_ff1_grad, 0, ff1_size * sizeof(float));
+    memset(net->W_ff2_grad, 0, ff2_size * sizeof(float));
 }
 
-/*
-  backward_pass: Computes the gradients for the self–attention layer.
-  X is the embedded input (shape: [batch_size x (input_dim*embedding_dim)]).
-  This routine computes gradients w.r.t. the attention parameters WQ, WK, WV.
-  (Gradients to X, and therefore to the embedding lookup, are omitted as in the original code.)
-  
-  The backward sweep is computed for every sample as follows:
-    Let X (tokens) produce Q, K, V via:
-       Q = X * W_Q,  K = X * W_K,  V = X * W_V.
-    The self–attention computes for each query token i:
-       O(i) = sum_j softmax(scores[i,j]) * V(j),    with scores[i,j] = (Q(i)·K(j))/sqrt(d)
-    Given error gradients dL/dO stored in net->error, we compute:
-       dL/dV, dL/dQ, and dL/dK (which then lead to gradients in W_Q, W_K, W_V).
-  
-  This implementation uses simple nested loops (with stack arrays) for clarity.
-*/
 static inline void backward_pass(Net* net, float* X) {
     int tokens = net->input_dim;
     int d_dim = net->embedding_dim;
+    int batch = net->batch_size;
+    int total_tokens = batch * tokens;
+    int ff_hidden = net->ff_hidden_dim;
     float inv_sqrt = 1.0f / sqrtf((float)d_dim);
-    
+
     zero_gradients(net);
+
+    // --- Backward Pass for Feed-Forward Block ---
+    // Allocate buffers for the entire batch
+    float* hidden = (float*)malloc(total_tokens * ff_hidden * sizeof(float));
+    float* pre_act = (float*)malloc(total_tokens * ff_hidden * sizeof(float));
     
-    for (int s = 0; s < net->batch_size; s++) {
+    // Forward computation to get hidden states (needed for gradients)
+    // pre_act = ff_residual * W_ff1
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                total_tokens, ff_hidden, d_dim,
+                1.0f, net->ff_residual, d_dim,
+                net->W_ff1, ff_hidden,
+                0.0f, pre_act, ff_hidden);
+    
+    // Apply ReLU to get hidden states
+    for (int i = 0; i < total_tokens * ff_hidden; i++) {
+        hidden[i] = (pre_act[i] > 0.0f) ? pre_act[i] : 0.0f;
+    }
+
+    // Compute d_hidden = error * W_ff2^T
+    float* d_hidden = (float*)malloc(total_tokens * ff_hidden * sizeof(float));
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                total_tokens, ff_hidden, d_dim,
+                1.0f, net->error, d_dim,
+                net->W_ff2, d_dim,
+                0.0f, d_hidden, ff_hidden);
+
+    // Apply ReLU gradient
+    for (int i = 0; i < total_tokens * ff_hidden; i++) {
+        d_hidden[i] = (pre_act[i] > 0.0f) ? d_hidden[i] : 0.0f;
+    }
+
+    // Compute W_ff2 gradients: ff2_grad += hidden^T * error
+    cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                ff_hidden, d_dim, total_tokens,
+                1.0f, hidden, ff_hidden,
+                net->error, d_dim,
+                1.0f, net->W_ff2_grad, d_dim);
+
+    // Compute W_ff1 gradients: ff1_grad += ff_residual^T * d_hidden
+    cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                d_dim, ff_hidden, total_tokens,
+                1.0f, net->ff_residual, d_dim,
+                d_hidden, ff_hidden,
+                1.0f, net->W_ff1_grad, ff_hidden);
+
+    // Compute d_ff_input = d_hidden * W_ff1^T
+    float* d_ff_input = (float*)malloc(total_tokens * d_dim * sizeof(float));
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                total_tokens, d_dim, ff_hidden,
+                1.0f, d_hidden, ff_hidden,
+                net->W_ff1, ff_hidden,
+                0.0f, d_ff_input, d_dim);
+
+    // Update error for attention backward pass: error += d_ff_input
+    for (int i = 0; i < total_tokens * d_dim; i++) {
+        net->error[i] += d_ff_input[i];
+    }
+
+    // Free temporary buffers
+    free(hidden);
+    free(pre_act);
+    free(d_hidden);
+    free(d_ff_input);
+
+    // --- Backward Pass for Self-Attention Block ---
+    for (int s = 0; s < batch; s++) {
         float* Q = net->attn_Q + s * tokens * d_dim;
         float* K = net->attn_K + s * tokens * d_dim;
         float* V = net->attn_V + s * tokens * d_dim;
         float* scores = net->attn_scores + s * tokens * tokens;
         float* out_error = net->error + s * tokens * d_dim;
         float* X_sample = X + s * tokens * d_dim;
-        
+
         float* dQ = (float*)malloc(tokens * d_dim * sizeof(float));
         float* dK = (float*)malloc(tokens * d_dim * sizeof(float));
         float* dV = (float*)malloc(tokens * d_dim * sizeof(float));
@@ -411,17 +586,15 @@ static inline void backward_pass(Net* net, float* X) {
         memset(dK, 0, tokens * d_dim * sizeof(float));
         memset(dV, 0, tokens * d_dim * sizeof(float));
 
-        // Compute dV: scores^T * out_error
+        // Compute dV: dV = scores^T * out_error
         cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
                     tokens, d_dim, tokens,
                     1.0f, scores, tokens,
                     out_error, d_dim,
                     0.0f, dV, d_dim);
 
-        // For each query token i compute attention gradients
+        // Compute intermediate dA = out_error * V^T
         float* dA = (float*)malloc(tokens * tokens * sizeof(float));
-        
-        // Compute out_error * V^T
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     tokens, tokens, d_dim,
                     1.0f, out_error, d_dim,
@@ -432,43 +605,39 @@ static inline void backward_pass(Net* net, float* X) {
         for (int i = 0; i < tokens; i++) {
             float sum_d = 0.0f;
             for (int j = 0; j < tokens; j++) {
-                sum_d += scores[i*tokens + j] * dA[i*tokens + j];
+                sum_d += scores[i * tokens + j] * dA[i * tokens + j];
             }
             for (int j = 0; j < tokens; j++) {
-                dA[i*tokens + j] = scores[i*tokens + j] * (dA[i*tokens + j] - sum_d);
+                dA[i * tokens + j] = scores[i * tokens + j] * (dA[i * tokens + j] - sum_d);
             }
         }
 
-        // Compute dQ: dA * K * inv_sqrt
+        // Compute dQ, dK, dV
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                     tokens, d_dim, tokens,
                     inv_sqrt, dA, tokens,
                     K, d_dim,
                     0.0f, dQ, d_dim);
 
-        // Compute dK: dA^T * Q * inv_sqrt
         cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
                     tokens, d_dim, tokens,
                     inv_sqrt, dA, tokens,
                     Q, d_dim,
                     0.0f, dK, d_dim);
 
-        // Compute gradients for W_Q, W_K, W_V
-        // dW_Q = X_sample^T * dQ
+        // Accumulate gradients for W_Q, W_K, W_V
         cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
                     d_dim, d_dim, tokens,
                     1.0f, X_sample, d_dim,
                     dQ, d_dim,
                     1.0f, net->W_Q_grad, d_dim);
 
-        // dW_K = X_sample^T * dK
         cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
                     d_dim, d_dim, tokens,
                     1.0f, X_sample, d_dim,
                     dK, d_dim,
                     1.0f, net->W_K_grad, d_dim);
 
-        // dW_V = X_sample^T * dV
         cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
                     d_dim, d_dim, tokens,
                     1.0f, X_sample, d_dim,
@@ -483,7 +652,7 @@ static inline void backward_pass(Net* net, float* X) {
 }
 
 /*
-  update_weights: Updates the network weights (W_Q, W_K, W_V) using AdamW.
+  update_weights: Updates the network weights (attention and feed–forward parameters) using AdamW.
   learning_rate: base learning rate.
 */
 static inline void update_weights(Net* net, float learning_rate) {
@@ -516,10 +685,28 @@ static inline void update_weights(Net* net, float learning_rate) {
         float update_val = alpha_t * net->W_V_m[i] / (sqrtf(net->W_V_v[i]) + net->epsilon);
         net->W_V[i] = net->W_V[i] * (1.0f - learning_rate * net->weight_decay) - update_val;
     }
+    // Update Feed–Forward weights.
+    int ff1_size = net->embedding_dim * net->ff_hidden_dim;
+    for (int i = 0; i < ff1_size; i++) {
+        float grad = net->W_ff1_grad[i] / net->batch_size;
+        net->W_ff1_m[i] = net->beta1 * net->W_ff1_m[i] + (1.0f - net->beta1) * grad;
+        net->W_ff1_v[i] = net->beta2 * net->W_ff1_v[i] + (1.0f - net->beta2) * grad * grad;
+        float update_val = alpha_t * net->W_ff1_m[i] / (sqrtf(net->W_ff1_v[i]) + net->epsilon);
+        net->W_ff1[i] = net->W_ff1[i] * (1.0f - learning_rate * net->weight_decay) - update_val;
+    }
+    int ff2_size = net->ff_hidden_dim * net->embedding_dim;
+    for (int i = 0; i < ff2_size; i++) {
+        float grad = net->W_ff2_grad[i] / net->batch_size;
+        net->W_ff2_m[i] = net->beta1 * net->W_ff2_m[i] + (1.0f - net->beta1) * grad;
+        net->W_ff2_v[i] = net->beta2 * net->W_ff2_v[i] + (1.0f - net->beta2) * grad * grad;
+        float update_val = alpha_t * net->W_ff2_m[i] / (sqrtf(net->W_ff2_v[i]) + net->epsilon);
+        net->W_ff2[i] = net->W_ff2[i] * (1.0f - learning_rate * net->weight_decay) - update_val;
+    }
 }
 
 /*
-  save_model: Saves network dimensions, weights, Adam state, and the embedding table to a binary file.
+  save_model: Saves network dimensions, weights, Adam state, and the embedding table (and feed–forward parameters)
+  to a binary file.
 */
 static inline void save_model(Net* net, const char* filename) {
     FILE* file = fopen(filename, "wb");
@@ -532,12 +719,13 @@ static inline void save_model(Net* net, const char* filename) {
     fwrite(&net->embedding_dim, sizeof(int), 1, file);
     fwrite(&net->output_dim, sizeof(int), 1, file);
     fwrite(&net->batch_size, sizeof(int), 1, file);
-    
+
     int attn_dim = net->embedding_dim * net->embedding_dim;
     fwrite(net->W_Q, sizeof(float), attn_dim, file);
     fwrite(net->W_K, sizeof(float), attn_dim, file);
     fwrite(net->W_V, sizeof(float), attn_dim, file);
-    
+
+    // Write Adam state for attention.
     fwrite(&net->t, sizeof(int), 1, file);
     fwrite(net->W_Q_m, sizeof(float), attn_dim, file);
     fwrite(net->W_Q_v, sizeof(float), attn_dim, file);
@@ -545,17 +733,29 @@ static inline void save_model(Net* net, const char* filename) {
     fwrite(net->W_K_v, sizeof(float), attn_dim, file);
     fwrite(net->W_V_m, sizeof(float), attn_dim, file);
     fwrite(net->W_V_v, sizeof(float), attn_dim, file);
-    
+
+    // Write embedding table.
     int emb_table_size = net->input_dim * net->num_bins * net->embedding_dim;
     fwrite(net->embedding_table, sizeof(float), emb_table_size, file);
-    
+
+    // Write feed–forward network parameters.
+    fwrite(&net->ff_hidden_dim, sizeof(int), 1, file);
+    int ff1_size = net->embedding_dim * net->ff_hidden_dim;
+    int ff2_size = net->ff_hidden_dim * net->embedding_dim;
+    fwrite(net->W_ff1, sizeof(float), ff1_size, file);
+    fwrite(net->W_ff2, sizeof(float), ff2_size, file);
+    fwrite(net->W_ff1_m, sizeof(float), ff1_size, file);
+    fwrite(net->W_ff1_v, sizeof(float), ff1_size, file);
+    fwrite(net->W_ff2_m, sizeof(float), ff2_size, file);
+    fwrite(net->W_ff2_v, sizeof(float), ff2_size, file);
+
     fclose(file);
     printf("Model saved to %s\n", filename);
 }
 
 /*
-  load_model: Loads network dimensions, weights, Adam state, and the embedding table from a binary file.
-  Returns a pointer to the loaded network.
+  load_model: Loads network dimensions, weights, Adam state, and the embedding table (and feed–forward parameters)
+  from a binary file. Returns a pointer to the loaded network.
 */
 static inline Net* load_model(const char* filename) {
     FILE* file = fopen(filename, "rb");
@@ -569,14 +769,14 @@ static inline Net* load_model(const char* filename) {
     fread(&embedding_dim, sizeof(int), 1, file);
     fread(&output_dim, sizeof(int), 1, file);
     fread(&batch_size, sizeof(int), 1, file);
-    
+
     Net* net = init_net(input_dim, num_bins, embedding_dim, output_dim, batch_size);
-    
+
     int attn_dim = embedding_dim * embedding_dim;
     fread(net->W_Q, sizeof(float), attn_dim, file);
     fread(net->W_K, sizeof(float), attn_dim, file);
     fread(net->W_V, sizeof(float), attn_dim, file);
-    
+
     fread(&net->t, sizeof(int), 1, file);
     fread(net->W_Q_m, sizeof(float), attn_dim, file);
     fread(net->W_Q_v, sizeof(float), attn_dim, file);
@@ -584,10 +784,21 @@ static inline Net* load_model(const char* filename) {
     fread(net->W_K_v, sizeof(float), attn_dim, file);
     fread(net->W_V_m, sizeof(float), attn_dim, file);
     fread(net->W_V_v, sizeof(float), attn_dim, file);
-    
+
     int emb_table_size = input_dim * num_bins * embedding_dim;
     fread(net->embedding_table, sizeof(float), emb_table_size, file);
-    
+
+    // Load feed–forward network parameters.
+    fread(&net->ff_hidden_dim, sizeof(int), 1, file);
+    int ff1_size = embedding_dim * net->ff_hidden_dim;
+    int ff2_size = net->ff_hidden_dim * embedding_dim;
+    fread(net->W_ff1, sizeof(float), ff1_size, file);
+    fread(net->W_ff2, sizeof(float), ff2_size, file);
+    fread(net->W_ff1_m, sizeof(float), ff1_size, file);
+    fread(net->W_ff1_v, sizeof(float), ff1_size, file);
+    fread(net->W_ff2_m, sizeof(float), ff2_size, file);
+    fread(net->W_ff2_v, sizeof(float), ff2_size, file);
+
     fclose(file);
     printf("Model loaded from %s\n", filename);
     return net;

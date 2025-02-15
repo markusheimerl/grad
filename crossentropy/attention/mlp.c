@@ -71,14 +71,14 @@ int main() {
     for (int epoch = 0; epoch < num_epochs; epoch++) {
         // Embed raw input using per–feature min/max.
         embed_input(net, X, embedded_input, input_min, input_max);
-        // Forward pass: use self–attention.
+        // Forward pass: use self–attention then feed–forward with residuals.
         forward_pass(net, embedded_input);
         float loss = calculate_loss(net, y_class);
-        // Zero gradients in attention parameters.
+        // Zero gradients in attention and feed–forward parameters.
         zero_gradients(net);
         // Backward pass.
         backward_pass(net, embedded_input);
-        // Update attention weight parameters.
+        // Update attention and feed–forward weight parameters.
         update_weights(net, learning_rate);
         
         if ((epoch + 1) % 100 == 0) {
