@@ -273,22 +273,12 @@ static inline void embed_input(Net* net, float* raw_input, float* embedded_outpu
     }
 }
 
-/*
-  forward_pass: Performs the self–attention forward pass.
-  X has shape [batch_size x (input_dim * embedding_dim)] (each sample contains input_dim tokens).
-  For each sample, we first compute Q, K, and V:
-      Q = X * W_Q,  K = X * W_K,  V = X * W_V.
-  Then for each token (as query) we compute scores = Q * Kᵀ / sqrt(embedding_dim),
-  apply softmax row–wise, and compute the output as (attn_row * V).
-  The resulting output (of shape [input_dim x embedding_dim]) is stored in net->predictions.
-*/
 static inline void forward_pass(Net* net, float* X) {
-    int tokens = net->input_dim;        // number of tokens per sample.
-    int d_dim = net->embedding_dim;       // token dimension.
+    int tokens = net->input_dim;
+    int d_dim = net->embedding_dim;
     int total_tokens = net->batch_size * tokens;
 
-    /* Compute Q_all = X * W_Q, K_all = X * W_K, V_all = X * W_V.
-       Here X is viewed as a matrix of dimension [total_tokens x d_dim] and each W is [d_dim x d_dim]. */
+    // Q, K, V computations remain the same
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                 total_tokens, d_dim, d_dim,
                 1.0f, X, d_dim,
@@ -305,43 +295,36 @@ static inline void forward_pass(Net* net, float* X) {
                 net->W_V, d_dim,
                 0.0f, net->attn_V, d_dim);
 
-    // For each sample, compute attention scores for each token.
     float scale = 1.0f / sqrtf((float)d_dim);
     for (int s = 0; s < net->batch_size; s++) {
-        // pointers for current sample.
         float* Q = net->attn_Q + s * tokens * d_dim;
         float* K = net->attn_K + s * tokens * d_dim;
         float* V = net->attn_V + s * tokens * d_dim;
         float* scores = net->attn_scores + s * tokens * tokens;
         float* output = net->predictions + s * tokens * d_dim;
 
-        // For each query token i.
+        // Q * K^T
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                    tokens, tokens, d_dim,
+                    scale, Q, d_dim,
+                    K, d_dim,
+                    0.0f, scores, tokens);
+
+        // Apply softmax to each row
         for (int i = 0; i < tokens; i++) {
-            // Compute scores for query token i against all keys.
-            for (int j = 0; j < tokens; j++) {
-                float dot = 0.0f;
-                for (int k = 0; k < d_dim; k++) {
-                    dot += Q[i*d_dim + k] * K[j*d_dim + k];
-                }
-                scores[i*tokens + j] = dot * scale;
-            }
-            // Apply softmax on row i of scores.
-            {
-                float* score_row = scores + i*tokens;
-                float* softmax_row = (float*)malloc(tokens * sizeof(float));
-                softmax(score_row, softmax_row, tokens);
-                memcpy(score_row, softmax_row, tokens * sizeof(float));
-                free(softmax_row);
-            }
-            // Compute the attended output for query i: sum_{j} (score_ij * V_j)
-            for (int k = 0; k < d_dim; k++) {
-                float sum = 0.0f;
-                for (int j = 0; j < tokens; j++) {
-                    sum += scores[i*tokens + j] * V[j*d_dim + k];
-                }
-                output[i*d_dim + k] = sum;
-            }
+            float* score_row = scores + i*tokens;
+            float* softmax_row = (float*)malloc(tokens * sizeof(float));
+            softmax(score_row, softmax_row, tokens);
+            memcpy(score_row, softmax_row, tokens * sizeof(float));
+            free(softmax_row);
         }
+
+        // scores * V
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                    tokens, d_dim, tokens,
+                    1.0f, scores, tokens,
+                    V, d_dim,
+                    0.0f, output, d_dim);
     }
 }
 
@@ -410,94 +393,92 @@ static inline void backward_pass(Net* net, float* X) {
     int tokens = net->input_dim;
     int d_dim = net->embedding_dim;
     float inv_sqrt = 1.0f / sqrtf((float)d_dim);
-    // Zero gradients for attention weights.
+    
     zero_gradients(net);
-    // For each sample in the batch:
+    
     for (int s = 0; s < net->batch_size; s++) {
-        // Pointers for sample s.
         float* Q = net->attn_Q + s * tokens * d_dim;
         float* K = net->attn_K + s * tokens * d_dim;
         float* V = net->attn_V + s * tokens * d_dim;
         float* scores = net->attn_scores + s * tokens * tokens;
         float* out_error = net->error + s * tokens * d_dim;
         float* X_sample = X + s * tokens * d_dim;
-        // Allocate gradients for Q, K, V for this sample.
-        float dQ[tokens * d_dim];
-        float dK[tokens * d_dim];
-        float dV[tokens * d_dim];
-        for (int i = 0; i < tokens * d_dim; i++){
-            dQ[i] = 0.0f;
-            dK[i] = 0.0f;
-            dV[i] = 0.0f;
-        }
-        // For each query token i.
+        
+        float* dQ = (float*)malloc(tokens * d_dim * sizeof(float));
+        float* dK = (float*)malloc(tokens * d_dim * sizeof(float));
+        float* dV = (float*)malloc(tokens * d_dim * sizeof(float));
+        memset(dQ, 0, tokens * d_dim * sizeof(float));
+        memset(dK, 0, tokens * d_dim * sizeof(float));
+        memset(dV, 0, tokens * d_dim * sizeof(float));
+
+        // Compute dV: scores^T * out_error
+        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                    tokens, d_dim, tokens,
+                    1.0f, scores, tokens,
+                    out_error, d_dim,
+                    0.0f, dV, d_dim);
+
+        // For each query token i compute attention gradients
+        float* dA = (float*)malloc(tokens * tokens * sizeof(float));
+        
+        // Compute out_error * V^T
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                    tokens, tokens, d_dim,
+                    1.0f, out_error, d_dim,
+                    V, d_dim,
+                    0.0f, dA, tokens);
+
+        // Apply softmax derivative
         for (int i = 0; i < tokens; i++) {
-            // Temporary array for dA (gradient w.r.t. attention weights before softmax derivative).
-            float dA[tokens];
-            for (int j = 0; j < tokens; j++)
-                dA[j] = 0.0f;
-            // For token i, error (dL/dO) is a vector of length d_dim.
-            float* err_i = out_error + i * d_dim;
-            // For each key token j, compute dot{err_i, V_j}.
-            for (int j = 0; j < tokens; j++) {
-                float dot = 0.0f;
-                float* V_j = V + j * d_dim;
-                for (int k = 0; k < d_dim; k++) {
-                    dot += err_i[k] * V_j[k];
-                }
-                dA[j] = dot;
-            }
-            // Compute sum_{j} (score[i,j] * dA[j]) for the softmax derivative.
             float sum_d = 0.0f;
             for (int j = 0; j < tokens; j++) {
-                sum_d += scores[i*tokens + j] * dA[j];
+                sum_d += scores[i*tokens + j] * dA[i*tokens + j];
             }
-            // Now accumulate gradients.
             for (int j = 0; j < tokens; j++) {
-                float dscore = scores[i*tokens + j] * (dA[j] - sum_d);
-                // Gradient wrt Q for query token i.
-                for (int k = 0; k < d_dim; k++) {
-                    dQ[i*d_dim + k] += dscore * inv_sqrt * K[j*d_dim + k];
-                }
-                // Gradient wrt K for key token j.
-                for (int k = 0; k < d_dim; k++) {
-                    dK[j*d_dim + k] += dscore * inv_sqrt * Q[i*d_dim + k];
-                }
-            }
-        }
-        // Compute gradient wrt V:
-        // For each query token i: O(i) = sum_{j} (score[i,j] * V(j)).
-        // Thus, dV(j) accumulates contributions from every query i.
-        for (int i = 0; i < tokens; i++) {
-            for (int j = 0; j < tokens; j++) {
-                float attn_weight = scores[i*tokens + j];
-                float* err_i = out_error + i*d_dim;
-                for (int k = 0; k < d_dim; k++) {
-                    dV[j*d_dim + k] += attn_weight * err_i[k];
-                }
+                dA[i*tokens + j] = scores[i*tokens + j] * (dA[i*tokens + j] - sum_d);
             }
         }
 
-        // Now, Q = X_sample * W_Q, so dW_Q += X_sample^T * dQ,
-        // similarly for K and V.
-        for (int p = 0; p < d_dim; p++) {
-            for (int q = 0; q < d_dim; q++) {
-                float sumQ = 0.0f;
-                float sumK = 0.0f;
-                float sumV = 0.0f;
-                for (int a = 0; a < tokens; a++) {
-                    sumQ += X_sample[a*d_dim + p] * dQ[a*d_dim + q];
-                    sumK += X_sample[a*d_dim + p] * dK[a*d_dim + q];
-                    sumV += X_sample[a*d_dim + p] * dV[a*d_dim + q];
-                }
-                net->W_Q_grad[p*d_dim + q] += sumQ;
-                net->W_K_grad[p*d_dim + q] += sumK;
-                net->W_V_grad[p*d_dim + q] += sumV;
-            }
-        }
-        /* Note: We omit the gradient to X_sample (which would propagate to the embedding_table)
-           in a similar way to the original code.
-        */
+        // Compute dQ: dA * K * inv_sqrt
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                    tokens, d_dim, tokens,
+                    inv_sqrt, dA, tokens,
+                    K, d_dim,
+                    0.0f, dQ, d_dim);
+
+        // Compute dK: dA^T * Q * inv_sqrt
+        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                    tokens, d_dim, tokens,
+                    inv_sqrt, dA, tokens,
+                    Q, d_dim,
+                    0.0f, dK, d_dim);
+
+        // Compute gradients for W_Q, W_K, W_V
+        // dW_Q = X_sample^T * dQ
+        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                    d_dim, d_dim, tokens,
+                    1.0f, X_sample, d_dim,
+                    dQ, d_dim,
+                    1.0f, net->W_Q_grad, d_dim);
+
+        // dW_K = X_sample^T * dK
+        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                    d_dim, d_dim, tokens,
+                    1.0f, X_sample, d_dim,
+                    dK, d_dim,
+                    1.0f, net->W_K_grad, d_dim);
+
+        // dW_V = X_sample^T * dV
+        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                    d_dim, d_dim, tokens,
+                    1.0f, X_sample, d_dim,
+                    dV, d_dim,
+                    1.0f, net->W_V_grad, d_dim);
+
+        free(dQ);
+        free(dK);
+        free(dV);
+        free(dA);
     }
 }
 
