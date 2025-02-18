@@ -10,45 +10,43 @@
 #define INPUT_RANGE_MIN -3.0f
 #define INPUT_RANGE_MAX 3.0f
 
-float synth_fn(const float* x, int sample_idx, int fx, int dim) {
-    float t = sample_idx * 0.1;
-    
+float synth_fn(const float* x, int fx, int dim) {
     switch(dim % MAX_SYNTHETIC_OUTPUTS) {
         case 0: 
-            return sinf(x[0 % fx]*2)*cosf(x[1 % fx]*1.5f) * expf(-0.1f * t) + 
+            return sinf(x[0 % fx]*2)*cosf(x[1 % fx]*1.5f) + 
                    powf(x[2 % fx],2)*x[3 % fx] + 
                    expf(-powf(x[4 % fx]-x[5 % fx],2)) + 
-                   0.5f*sinf(x[6 % fx]*x[7 % fx]*(float)M_PI) * (1.0f - expf(-0.2f * t)) +
+                   0.5f*sinf(x[6 % fx]*x[7 % fx]*(float)M_PI) +
                    tanhf(x[8 % fx] + x[9 % fx]) +
                    0.3f*cosf(x[10 % fx]*x[11 % fx]) +
                    0.2f*powf(x[12 % fx], 2) +
                    x[13 % fx]*sinf(x[14 % fx]);
             
         case 1: 
-            return tanhf(x[0 % fx]+x[1 % fx])*sinf(x[2 % fx]*2 + t) + 
+            return tanhf(x[0 % fx]+x[1 % fx])*sinf(x[2 % fx]*2) + 
                    logf(fabsf(x[3 % fx])+1)*cosf(x[4 % fx]) + 
-                   0.3f*powf(x[5 % fx]-x[6 % fx],3) * expf(-0.15f * t) +
+                   0.3f*powf(x[5 % fx]-x[6 % fx],3) +
                    expf(-powf(x[7 % fx],2)) +
                    sinf(x[8 % fx]*x[9 % fx]*0.5f) +
-                   0.4f*cosf(x[10 % fx] + x[11 % fx] * t) +
+                   0.4f*cosf(x[10 % fx] + x[11 % fx]) +
                    powf(x[12 % fx]*x[13 % fx], 2) +
                    0.1f*x[14 % fx];
             
         case 2: 
             return expf(-powf(x[0 % fx]-0.5f,2))*sinf(x[1 % fx]*3) + 
-                   powf(cosf(x[2 % fx]),2)*x[3 % fx] * (1.0f - expf(-0.1f * t)) + 
+                   powf(cosf(x[2 % fx]),2)*x[3 % fx] + 
                    0.2f*sinhf(x[4 % fx]*x[5 % fx]) +
                    0.5f*tanhf(x[6 % fx] + x[7 % fx]) +
-                   powf(x[8 % fx], 3)*0.1f * expf(-0.05f * t) +
+                   powf(x[8 % fx], 3)*0.1f +
                    cosf(x[9 % fx]*x[10 % fx]*(float)M_PI) +
                    0.3f*expf(-powf(x[11 % fx]-x[12 % fx],2)) +
                    0.2f*(x[13 % fx] + x[14 % fx]);
             
         case 3:
             return powf(sinf(x[0 % fx]*x[1 % fx]), 2) +
-                   0.4f*tanhf(x[2 % fx] + x[3 % fx]*x[4 % fx] * t) +
+                   0.4f*tanhf(x[2 % fx] + x[3 % fx]*x[4 % fx]) +
                    expf(-fabsf(x[5 % fx]-x[6 % fx])) +
-                   0.3f*cosf(x[7 % fx]*x[8 % fx]*2) * expf(-0.2f * t) +
+                   0.3f*cosf(x[7 % fx]*x[8 % fx]*2) +
                    powf(x[9 % fx], 2)*sinf(x[10 % fx]) +
                    0.2f*logf(fabsf(x[11 % fx]*x[12 % fx])+1) +
                    0.1f*(x[13 % fx] - x[14 % fx]);
@@ -72,7 +70,7 @@ void generate_synthetic_data(float** X, float** y, int num_samples, int input_di
     // Generate output data using synth_fn
     for (int i = 0; i < num_samples; i++) {
         for (int j = 0; j < output_dim; j++) {
-            (*y)[i * output_dim + j] = synth_fn(&(*X)[i * input_dim], i, input_dim, j);
+            (*y)[i * output_dim + j] = synth_fn(&(*X)[i * input_dim], input_dim, j);
         }
     }
 }
@@ -110,6 +108,7 @@ void save_data_to_csv(float* X, float* y, int num_samples, int input_dim, int ou
     printf("Data saved to %s\n", filename);
 }
 
+// Load CSV data
 void load_csv(const char* filename, float** X, float** y, int* num_samples, int size_x, int size_y) {
     FILE* file = fopen(filename, "r");
     if (!file) {
