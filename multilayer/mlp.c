@@ -2,11 +2,12 @@
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
-#include "../../data.h"
+#include "../data.h"
 #include "mlp.h"
 
 int main() {
     srand(time(NULL));
+    openblas_set_num_threads(4);
 
     // Parameters
     const int input_dim = 16;
@@ -23,7 +24,7 @@ int main() {
     Net* net = init_net(input_dim, hidden_dim, output_dim, batch_size);
     
     // Training parameters
-    const int num_epochs = 10000;
+    const int num_epochs = 1000;
     const float learning_rate = 0.0009f;
     
     // Training loop
@@ -65,16 +66,8 @@ int main() {
     // Load the model back
     net = load_model(model_fname);
     
-    // Allocate host memory for predictions
-    float* h_predictions = (float*)malloc(num_samples * output_dim * sizeof(float));
-
     // Forward pass with loaded model
     forward_pass(net, X);
-    
-    // Copy predictions from device to host
-    CHECK_CUDA(cudaMemcpy(h_predictions, net->d_predictions, 
-                         num_samples * output_dim * sizeof(float),
-                         cudaMemcpyDeviceToHost));
     
     // Calculate and print loss with loaded model
     float verification_loss = calculate_loss(net, y);
@@ -94,7 +87,7 @@ int main() {
         float ss_res = 0.0f;
         float ss_tot = 0.0f;
         for (int j = 0; j < num_samples; j++) {
-            float diff_res = y[j * output_dim + i] - h_predictions[j * output_dim + i];
+            float diff_res = y[j * output_dim + i] - net->predictions[j * output_dim + i];
             float diff_tot = y[j * output_dim + i] - y_mean;
             ss_res += diff_res * diff_res;
             ss_tot += diff_tot * diff_tot;
@@ -111,7 +104,7 @@ int main() {
     for (int i = 0; i < output_dim; i++) {
         printf("\ny%d:\n", i);
         for (int j = 0; j < 15; j++) {
-            float pred = h_predictions[j * output_dim + i];
+            float pred = net->predictions[j * output_dim + i];
             float actual = y[j * output_dim + i];
             float diff = pred - actual;
             printf("Sample %d:\t%8.3f\t%8.3f\t%8.3f\n", j, pred, actual, diff);
@@ -120,7 +113,7 @@ int main() {
         // Calculate MAE for this output
         float mae = 0.0f;
         for (int j = 0; j < num_samples; j++) {
-            mae += fabs(h_predictions[j * output_dim + i] - y[j * output_dim + i]);
+            mae += fabs(net->predictions[j * output_dim + i] - y[j * output_dim + i]);
         }
         mae /= num_samples;
         printf("Mean Absolute Error for y%d: %.3f\n", i, mae);
@@ -129,7 +122,6 @@ int main() {
     // Cleanup
     free(X);
     free(y);
-    free(h_predictions);
     free_net(net);
     
     return 0;
